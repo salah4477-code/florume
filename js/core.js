@@ -82,14 +82,14 @@
       setTimeout(() => el.classList.add('out'), 2600);
       setTimeout(() => el.remove(), 3000);
     },
-    modal({ title, body, submit = 'حفظ', wide = false, onSubmit, onOpen, footer }) {
+    modal({ title, body, submit = 'حفظ', wide = false, onSubmit, onOpen, footer, tools }) {
       const wrap = document.getElementById('modal');
       wrap.innerHTML = `
         <div class="modal-backdrop" data-close></div>
         <form class="modal-card ${wide ? 'wide' : ''}" id="modal-form" novalidate>
           <header class="modal-head"><h2>${title}</h2><button type="button" class="icon-btn" data-close aria-label="إغلاق">✕</button></header>
           <div class="modal-body">${body}</div>
-          <footer class="modal-foot">${footer != null ? footer : `${onSubmit ? `<button class="btn btn-primary" type="submit">${submit}</button>` : ''}<button class="btn" type="button" data-close>${onSubmit ? 'إلغاء' : 'إغلاق'}</button>`}</footer>
+          <footer class="modal-foot">${tools ? '<button type="button" class="btn" data-modal-print>طباعة</button><button type="button" class="btn" data-modal-excel>تصدير Excel</button>' : ''}${footer != null ? footer : `${onSubmit ? `<button class="btn btn-primary" type="submit">${submit}</button>` : ''}<button class="btn" type="button" data-close>${onSubmit ? 'إلغاء' : 'إغلاق'}</button>`}</footer>
         </form>`;
       wrap.hidden = false;
       document.body.classList.add('no-scroll');
@@ -103,6 +103,12 @@
         const res = onSubmit(form, new FormData(form));
         if (res !== false) UI.close();
       });
+      if (tools) {
+        const target = () => form.querySelector(tools.target || '.modal-body');
+        const meta = () => ({ business: DB.state.settings.businessName, subtitle: tools.subtitle || '' });
+        form.querySelector('[data-modal-print]').addEventListener('click', () => FX.printDoc({ ...meta(), title: tools.title, subtitle: tools.subtitle, html: FX.cleanForPrint(target()), invoice: tools.invoice }));
+        form.querySelector('[data-modal-excel]').addEventListener('click', () => FX.exportExcel(`${tools.file || 'florume'}-${today()}.xlsx`, FX.collectSheets(form.querySelector('.modal-body'), tools.title), meta()));
+      }
       if (onOpen) onOpen(form);
       const first = form.querySelector('.modal-body input:not([type=hidden]), .modal-body select, .modal-body textarea');
       if (first) setTimeout(() => first.focus(), 30);
@@ -121,19 +127,10 @@
     },
     pill(text, kind = '') { return `<span class="pill pill-${kind}">${esc(text)}</span>`; },
     empty(text, action = '') { return `<div class="empty"><p>${text}</p>${action}</div>`; },
-    // ملف للتنزيل: خارج الإطار ننزّله مباشرة، وداخل الإطار نعرض المحتوى للنسخ
-    offerFile(filename, content, mime = 'text/plain') {
-      if (!inFrame) {
-        try {
-          const blob = new Blob([mime.includes('csv') ? '﻿' + content : content], { type: mime + ';charset=utf-8' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob); a.download = filename;
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-          UI.toast(`تم تنزيل ${filename}`);
-          return;
-        } catch (e) { /* ننتقل للنسخ */ }
-      }
+    // ملف للحفظ: عبر صلاحية الحفظ أو التنزيل المباشر، وإن لم يتاحا نعرض المحتوى للنسخ
+    async offerFile(filename, content) {
+      const res = await FX.saveFile(filename, content);
+      if (res !== null) return;
       UI.modal({ title: `نسخ ${esc(filename)}`, wide: true,
         body: `<p class="muted">انسخ المحتوى واحفظه في ملف باسم <code>${esc(filename)}</code>.</p><textarea id="f-export" class="export-box" readonly>${esc(content)}</textarea>`,
         footer: `<button class="btn btn-primary" type="button" id="copy-btn">نسخ</button><button class="btn" type="button" data-close>إغلاق</button>`,
@@ -142,10 +139,6 @@
           const fallback = () => { ta.focus(); ta.select(); UI.toast('تم تحديد النص — اضغط Ctrl+C'); };
           try { navigator.clipboard.writeText(content).then(() => UI.toast('تم النسخ'), fallback); } catch (e) { fallback(); }
         }) });
-    },
-    csv(filename, headers, rows) {
-      const cell = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-      UI.offerFile(filename, [headers, ...rows].map((r) => r.map(cell).join(',')).join('\n'), 'text/csv');
     },
   };
 
