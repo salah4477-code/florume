@@ -179,7 +179,7 @@
     const git = (bs.assets.find((a) => a.name === 'بضاعة في الطريق') || {}).amount || 0;
     const low = s.products.map((p) => ({ p, st: j.inventory.products[p.id] })).filter((x) => x.st.available <= num(x.p.minStock ?? s.settings.lowStock) && (x.st.qty > 0 || x.st.reserved)).slice(0, 6);
     const pending = s.sales.filter((x) => x.status === 'pending' || x.status === 'shipped').sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
-    const alertList = OPS.alerts(s, j, today(), s.settings.alerts);
+    const alerts = alertList();
     const np = cur.is.netProfit;
 
     return `
@@ -201,7 +201,7 @@
           ${statTile({ label: 'النقدية في كل الحسابات', value: money0(bs.totalCash), note: `مستحق من شركات الشحن ${fmt(Math.round(courierBal))}` })}
         </div>
       </section>
-      ${alertList.length ? `<section class="panel alerts-panel"><h2 class="section-title">تنبيهات تحتاج متابعة <a class="link-btn" href="#alerts">عرض الكل (${alertList.length})</a></h2>${alertItems(alertList.slice(0, 4))}</section>` : ''}
+      ${alerts.length ? `<section class="panel alerts-panel"><h2 class="section-title">تنبيهات تحتاج متابعة <a class="link-btn" href="#alerts">عرض الكل (${alerts.length})</a></h2>${alertItems(alerts.slice(0, 4))}</section>` : ''}
       <section class="panel chart-panel">
         <div class="panel-head"><h2 class="section-title">قيمة الطلبات ${unit === 'day' ? 'يوم بيوم' : unit === 'week' ? 'أسبوع بأسبوع' : 'شهر بشهر'}</h2><span class="muted">إجمالي ${money0(trendTotal)} · حسب تاريخ الطلب، من غير فواتير الدعاية</span></div>
         ${trend.length > 1 ? CH.area(trend, { label: 'قيمة الطلبات في الفترة' }) : UI.empty('اختار فترة أطول من يوم عشان يظهر الرسم')}
@@ -691,7 +691,8 @@
   function shipmentForm(sh) {
     const s = S();
     if (!s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
-    const isNew = !sh;
+    const isNew = !sh || !!sh.__draft;
+    if (sh && sh.__draft) { sh = { ...sh }; delete sh.__draft; }
     const sup0 = s.suppliers[0];
     sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' };
     const body = `
@@ -903,10 +904,11 @@
         ${UI.field('الدولة', UI.select('country', COUNTRIES, x.country))}
         ${UI.field('عملة التعامل', UI.select('currency', CURRENCIES, x.currency))}
         ${UI.field('الهاتف / واتساب', UI.input('phone', x.phone, 'inputmode="tel"'))}
+        ${UI.field('مدة التوريد (يوم)', UI.input('leadDays', x.leadDays || '', 'type="number" min="1" step="1"'), { hint: 'من الطلب لحد الوصول — لتخطيط إعادة الطلب' })}
         ${UI.field('ملاحظات / العنوان', UI.input('notes', x.notes), { cls: 'span-2' })}
       </div>`,
       onOpen(f) { f.country.addEventListener('change', () => { f.currency.value = { SA: 'SAR', AE: 'AED', EG: 'EGP' }[f.country.value] || 'USD'; }); },
-      onSubmit(f, fd) { DB.upsert('suppliers', { ...x, name: fd.get('name').trim(), country: fd.get('country'), currency: fd.get('currency'), phone: fd.get('phone').trim(), notes: fd.get('notes') }); UI.toast('تم حفظ المورد'); render(); } });
+      onSubmit(f, fd) { DB.upsert('suppliers', { ...x, name: fd.get('name').trim(), country: fd.get('country'), currency: fd.get('currency'), phone: fd.get('phone').trim(), leadDays: fd.get('leadDays') === '' ? '' : num(fd.get('leadDays')), notes: fd.get('notes') }); UI.toast('تم حفظ المورد'); render(); } });
   }
 
   function paymentForm(p, supplierId) {
@@ -952,23 +954,35 @@
   // =====================================================================
   // العملاء
   // =====================================================================
-  let custQ = '';
+  let custQ = '', custSeg = '';
+  // رسالة واتساب «آن الأوان تطلب تاني» من القالب في الإعدادات
+  const reorderText = (c, productId) => String(S().settings.waReorder || '').replace(/\{name\}/g, c.name || '').replace(/\{product\}/g, productId ? productLabel(productById(productId)) : 'عطرك');
   function customers() {
     const s = S(), j = J();
-    const stats = {};
-    s.sales.forEach((x) => {
-      const st = (stats[x.customerId] = stats[x.customerId] || { orders: 0, total: 0, profit: 0, returns: 0, last: '' });
-      if (!Acc.BOOKED.has(x.status) || isPromo(x)) return;
-      const p = Acc.saleProfit(x, j);
-      st.orders++; if (x.status === 'returned') st.returns++; else st.total += p.total;
-      st.profit += p.profit; if (x.date > st.last) st.last = x.date;
-    });
+    const seg = PLAN.customerSegments(s, j, today());
+    const by = Object.fromEntries(seg.rows.map((r) => [r.customerId, r]));
+    const returns = {};
+    s.sales.forEach((x) => { if (x.status === 'returned' && !isPromo(x)) returns[x.customerId] = (returns[x.customerId] || 0) + 1; });
+    const segKind = { vip: 'promo', repeat: 'good', new: 'info', due: 'warn', sleeping: 'mute', none: 'mute' };
     const q = custQ.trim().toLowerCase();
-    const rows = s.customers.filter((c) => !q || `${c.name} ${c.phone} ${c.city}`.toLowerCase().includes(q)).map((c) => ({ c, st: stats[c.id] || { orders: 0, total: 0, profit: 0, returns: 0, last: '' } }))
-      .sort((a, b) => b.st.total - a.st.total).map(({ c, st }) => `<tr>${td(`<b>${esc(c.name)}</b>`)}${td(esc(c.phone || ''), 'mono')}${td(esc(c.city || ''))}${tdn(st.orders)}${tdn(st.returns ? `<span class="bad-text">${st.returns}</span>` : '0')}${tdn(fmt(st.total))}${tdn(fmt(st.profit))}${td(fmtDate(st.last))}${actions(btn('تعديل', 'editCustomer', c.id), btn('حذف', 'delCustomer', c.id, 'danger'))}</tr>`);
-    return `${header('العملاء', 'مرتبون حسب إجمالي المشتريات.', '<button class="btn btn-primary" data-action="newCustomer">+ عميل جديد</button>')}
+    const rows = s.customers.filter((c) => (!q || `${c.name} ${c.phone} ${c.city}`.toLowerCase().includes(q)) && (!custSeg || by[c.id].segment === custSeg))
+      .map((c) => ({ c, r: by[c.id] })).sort((a, b) => (custSeg === 'due' ? b.r.since - a.r.since : b.r.spend - a.r.spend))
+      .map(({ c, r }) => {
+        const wa = (r.segment === 'due' || r.segment === 'sleeping') && OPS.waPhone(c.phone) ? `<a class="link-btn" href="${esc(OPS.waLink(c.phone, reorderText(c, r.lastProductId)))}" target="_blank" rel="noopener">واتساب</a>` : '';
+        return `<tr>${td(`<b>${esc(c.name)}</b> ${UI.pill(PLAN.SEGMENTS[r.segment], segKind[r.segment])}`)}${td(esc(c.phone || ''), 'mono')}${td(esc(c.city || ''))}${tdn(r.orders)}${tdn(returns[c.id] ? `<span class="bad-text">${returns[c.id]}</span>` : '0')}${tdn(fmt(r.spend))}${tdn(fmt(r.profit || 0))}${td(r.last ? `${fmtDate(r.last)} <small class="muted">(${r.since} يوم)</small>` : '—')}${td(r.lastProductId ? esc(productLabel(productById(r.lastProductId))) : '—')}${actions(wa, btn('تعديل', 'editCustomer', c.id), btn('حذف', 'delCustomer', c.id, 'danger'))}</tr>`;
+      });
+    const tabs = [['', `الكل (${s.customers.length})`], ...Object.entries(PLAN.SEGMENTS).filter(([k]) => seg.counts[k]).map(([k, l]) => [k, `${l} (${seg.counts[k]})`])];
+    return `${header('العملاء', 'مقسّمين حسب سلوك الشراء. العطر بيخلص في حوالي 3 شهور — «آن الأوان يطلب تاني» فرصة بيع جاهزة.', '<button class="btn btn-primary" data-action="newCustomer">+ عميل جديد</button>')}
+      <section class="kpis">
+        ${kpi('عملاء اشتروا', fmt(seg.rows.filter((r) => r.orders).length))}
+        ${kpi('نسبة اللي رجعوا اشتروا تاني', pct(seg.repeatRate), 'عميل اشترى مرتين أو أكتر')}
+        ${kpi('متوسط الطلبات للعميل', fmt(seg.avgOrders, 1))}
+        ${kpi('آن الأوان يطلبوا', fmt(seg.counts.due), `آخر طلب من ${s.settings.reorderAfterDays || 75} يوم أو أكتر`, seg.counts.due ? 'good' : '')}
+      </section>
+      <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="tab ${custSeg === k ? 'active' : ''}" aria-selected="${custSeg === k}" data-action="pickSeg" data-id="${k}">${l}</button>`).join('')}</nav>
       <div class="filters"><input type="search" id="f-cq" placeholder="بحث بالاسم أو الموبايل أو المدينة" value="${esc(custQ)}" data-input="custQ"></div>
-      ${table(['العميل', 'الموبايل', 'المدينة', '#الطلبات', '#المرتجعات', '#إجمالي المشتريات', '#الربح منه', 'آخر طلب', ''], rows, { empty: 'لا يوجد عملاء' })}`;
+      ${table(['العميل', 'الموبايل', 'المحافظة', '#الطلبات', '#المرتجعات', '#إجمالي المشتريات', '#الربح منه', 'آخر طلب', 'آخر عطر', ''], rows, { empty: 'لا يوجد عملاء هنا' })}
+      ${custSeg === 'due' ? '<p class="muted">زرار واتساب بيفتح رسالة جاهزة من القالب اللي في الإعدادات (فيها اسم العميل وآخر عطر اشتراه).</p>' : ''}`;
   }
   function customerForm(c) {
     const isNew = !c;
@@ -1189,6 +1203,15 @@
           ${UI.field('قبل ميعاد سداد المورد', UI.input('al_dueDays', st.alerts.dueDays, 'type="number" min="0"'))}
           ${UI.field('منتج ما اتباعش (ركود)', UI.input('al_stagnantDays', st.alerts.stagnantDays, 'type="number" min="7"'))}
         </div>
+        <h2 class="section-title">التخطيط</h2>
+        <div class="form-grid">
+          ${UI.field('الهامش المستهدف ٪', UI.input('targetMargin', st.targetMargin ?? 30, 'type="number" min="0" max="90" step="1"'), { hint: 'بعد التكلفة ومصاريف الطلب' })}
+          ${UI.field('مدة التوريد الافتراضية (يوم)', UI.input('leadDays', st.leadDays ?? 14, 'type="number" min="1" step="1"'), { hint: 'من الطلب لحد ما البضاعة توصل' })}
+          ${UI.field('أيام أمان', UI.input('safetyDays', st.safetyDays ?? 7, 'type="number" min="0" step="1"'))}
+          ${UI.field('تطلب بضاعة تكفي كام يوم', UI.input('coverDays', st.coverDays ?? 30, 'type="number" min="7" step="1"'))}
+          ${UI.field('العميل يطلب تاني بعد (يوم)', UI.input('reorderAfterDays', st.reorderAfterDays ?? 75, 'type="number" min="14" step="1"'))}
+        </div>
+        ${UI.field('رسالة «آن الأوان تطلب تاني»', `<textarea id="f-waReorder" name="waReorder" rows="2">${esc(st.waReorder || '')}</textarea>`, { hint: '{name} = اسم العميل، {product} = آخر عطر اشتراه' })}
         <h2 class="section-title">عينة هدية مع كل طلب</h2>
         <div class="form-grid">
           ${UI.field('العينة الافتراضية', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...s.products.map((p) => ({ v: p.id, l: productLabel(p) }))], st.sampleProductId || ''), { hint: 'بتتحط لوحدها في كل طلب جديد وتقدر تشيلها' })}
@@ -1269,8 +1292,13 @@
   // =====================================================================
   // التنبيهات
   // =====================================================================
-  const ALERT_TYPES = { recurring: 'مصروفات ثابتة مستحقة', pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
-  const alertList = () => OPS.alerts(S(), J(), today(), S().settings.alerts);
+  const ALERT_TYPES = { reorder: 'إعادة الطلب', recurring: 'مصروفات ثابتة مستحقة', pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
+  const alertList = () => {
+    const list = OPS.alerts(S(), J(), today(), S().settings.alerts);
+    const now = PLAN.reorderPlan(S(), J(), today()).filter((r) => r.status === 'now');
+    if (now.length) list.unshift({ type: 'reorder', level: 'warn', days: 0, title: `${now.length} منتج لازم تطلبه دلوقتي عشان ما يخلصش قبل ما الشحنة توصل`, detail: now.slice(0, 3).map((r) => `${productLabel(productById(r.productId))} (يكفي ${r.coverDays} يوم)`).join('، '), action: 'goPlanReorder', id: '' });
+    return list;
+  };
   const alertItems = (list) => `<ul class="alert-list">${list.map((a) => `<li class="al-${a.level}"><i aria-hidden="true"></i><div><b>${esc(a.title)}</b><small class="muted">${esc(a.detail)}</small></div>${a.action ? `<button type="button" class="link-btn" data-action="${a.action}" data-id="${esc(a.id || '')}">عرض</button>` : ''}</li>`).join('')}</ul>`;
   let alertFilter = '';
   function alertsPage() {
@@ -1305,6 +1333,68 @@
         ${good.length ? `<ul class="check-list">${good.map((c) => `<li>✔ ${esc(c.label)}</li>`).join('')}</ul>` : UI.empty('كل الفحوصات فيها ملاحظات')}
       </section>
       <p class="muted">افحص بعد أي استيراد من Excel أو استرجاع نسخة احتياطية، وآخر كل شهر قبل مراجعة التقارير.</p>`;
+  }
+
+  // =====================================================================
+  // التخطيط: التسعير، إعادة الطلب، التدفق النقدي
+  // =====================================================================
+  let planTab = 'pricing';
+  const PLAN_TABS = { pricing: 'حاسبة التسعير', reorder: 'إعادة الطلب', cash: 'التدفق النقدي المتوقع' };
+  function planningPage() {
+    const tabs = `<nav class="tabs" role="tablist">${Object.entries(PLAN_TABS).map(([k, l]) => `<button role="tab" class="tab ${planTab === k ? 'active' : ''}" aria-selected="${planTab === k}" data-action="pickPlan" data-id="${k}">${l}</button>`).join('')}</nav>`;
+    return `${header('التخطيط', 'قرارات قبل ما تحصل: بتبيع بكام، تطلب إمتى وكام، والفلوس هتكفي ولا لأ.')}${tabs}<section class="report">${planTab === 'pricing' ? pricingView() : planTab === 'reorder' ? reorderView() : cashView()}</section>`;
+  }
+  function pricingView() {
+    const s = S(), pr = PLAN.pricing(s, J(), today());
+    const o = pr.overheads;
+    const stKind = { ok: ['كويس', 'good'], low: ['هامش أقل من المستهدف', 'warn'], loss: ['بيخسر', 'bad'], none: ['من غير سعر', 'mute'] };
+    const rows = pr.rows.map((r) => `<tr>${td(esc(productLabel(productById(r.productId))))}${tdn(fmt(r.price))}${tdn(fmt(r.avgCost))}${tdn(r.repl ? `<span class="${r.fxUp ? 'bad-text' : ''}">${fmt(r.repl.costNow)}</span><br><small class="muted">${fmt(r.repl.unitForeign)} ${r.repl.currency} × ${fmt(r.repl.rateNow, 2)}</small>` : '—')}${tdn(fmt(r.overhead))}${tdn(`<b>${fmt(r.breakEven)}</b>`)}${tdn(r.targetPrice == null ? '—' : fmt(r.targetPrice))}${tdn(r.netMargin == null ? '—' : `<span class="${r.netMargin < 0 ? 'bad-text' : ''}">${pct(r.netMargin)}</span>`)}${td(UI.pill(stKind[r.status][0], stKind[r.status][1]))}${actions(btn('تعديل السعر', 'editProduct', r.productId))}</tr>`);
+    return `<h2>مصاريف الطلب الواحد <small class="muted">متوسط آخر 90 يوم — ${o.orders} طلب</small></h2>
+      <div class="summary">
+        <div><span>شحن علينا − اللي بنحصّله</span><b>${fmt(Math.max(0, o.courierFee - o.shipCharged))}</b></div>
+        <div><span>تكلفة الإعلان للطلب (CPA)</span><b>${fmt(o.cpa)}</b></div>
+        <div><span>خسارة المرتجع المتوقعة (${pct(o.returnRate)})</span><b>${fmt(o.returnLoss)}</b></div>
+        <div><span>عمولة الدفع</span><b>${fmt(o.payFee)}</b></div>
+        <div><span>عمولات مؤثرين وعينات</span><b>${fmt(o.extras)}</b></div>
+        <div><span>إجمالي للطلب</span><b>${fmt(o.perOrder)} ج.م</b></div>
+        <div class="strong"><span>من متوسط قيمة الطلب ${fmt(o.orderValue)}</span><b>${pct(o.share)}</b></div>
+      </div>
+      ${table(['المنتج', '#السعر الحالي', '#متوسط التكلفة', '#التكلفة لو اشتريت النهارده', '#نصيبها من المصاريف', '#أقل سعر من غير خسارة', `#سعر لهامش ${fmt(pr.target * 100)}٪`, '#الهامش الصافي', 'الحالة', ''], rows, { empty: 'مفيش منتجات ليها تكلفة لسه' })}
+      <p class="muted">مصاريف الطلب بتتحسب كنسبة من السعر (${pct(o.share)})، فالقطعة الأغلى بتشيل نصيب أكبر. «أقل سعر» = أعلى تكلفة (المتوسط أو لو اشتريت بسعر صرف النهارده) ÷ (1 − ${pct(o.share)}). «سعر الهامش» مقرّب لأقرب 5 جنيه. الهامش المستهدف وسعر الصرف بيتغيروا من الإعدادات. التكلفة الحمرا معناها إن سعر الصرف زاد عن آخر شحنة.</p>`;
+  }
+  function reorderView() {
+    const s = S(), plan = PLAN.reorderPlan(s, J(), today());
+    const k = { now: ['اطلب دلوقتي', 'bad'], soon: ['اطلب قريب', 'warn'], ok: ['كفاية', 'good'], idle: ['مش بيتباع', 'mute'] };
+    const rows = plan.map((r) => `<tr>${td(esc(productLabel(productById(r.productId))))}${tdn(fmt(r.sold))}${tdn(fmt(r.perMonth, 1))}${tdn(fmt(r.available))}${tdn(r.incoming ? fmt(r.incoming) : '—')}${tdn(r.coverDays == null ? '—' : `${fmt(r.coverDays)} يوم`)}${td(r.runOut ? fmtDate(r.runOut) : '—')}${tdn(r.lead + ' يوم')}${tdn(r.suggest ? `<b>${fmt(r.suggest)}</b>` : '—')}${td(UI.pill(k[r.status][0], k[r.status][1]))}</tr>`);
+    const bySup = {};
+    plan.filter((r) => r.suggest > 0 && r.supplierId && (r.status === 'now' || r.status === 'soon')).forEach((r) => (bySup[r.supplierId] = bySup[r.supplierId] || []).push(r));
+    return `<h2>إعادة الطلب <small class="muted">سرعة البيع من آخر 60 يوم · أمان ${s.settings.safetyDays ?? 7} يوم · تغطية ${s.settings.coverDays ?? 30} يوم</small></h2>
+      ${Object.keys(bySup).length ? `<div class="btn-row">${Object.entries(bySup).map(([sid, list]) => `<button class="btn btn-primary" data-action="draftShipment" data-id="${sid}">اعمل طلب شراء لـ ${esc(nameOf('suppliers', sid))} (${list.length} صنف)</button>`).join('')}</div>` : ''}
+      ${table(['المنتج', '#اتباع (60 يوم)', '#في الشهر', '#المتاح', '#جاي في شحنة', '#يكفي', 'هيخلص يوم', '#مدة التوريد', '#الكمية المقترحة', 'الحالة'], rows)}
+      <p class="muted">الكمية المقترحة = سرعة البيع × (مدة التوريد + أيام الأمان + مدة التغطية) − المتاح − الجاي. مدة التوريد من المورد (تتعدل في بيانات المورد) أو الإعدادات.</p>`;
+  }
+  function draftShipment(supplierId) {
+    const s = S(), sup = DB.find('suppliers', supplierId);
+    const items = PLAN.reorderPlan(s, J(), today()).filter((r) => r.supplierId === supplierId && r.suggest > 0 && (r.status === 'now' || r.status === 'soon')).map((r) => {
+      const last = [...s.shipments].filter((sh) => sh.supplierId === supplierId && sh.items.some((it) => it.productId === r.productId)).sort((a, b) => (a.orderDate < b.orderDate ? 1 : -1))[0];
+      return { productId: r.productId, qty: r.suggest, unitCost: last ? last.items.find((it) => it.productId === r.productId).unitCost : '' };
+    });
+    location.hash = 'shipments';
+    shipmentForm({ __draft: true, id: uid(), ref: '', supplierId, currency: sup.currency, rate: s.settings.rates[sup.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items, costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: 'طلب مقترح من تخطيط إعادة الطلب' });
+  }
+  function cashView() {
+    const fc = PLAN.cashForecast(S(), J(), today(), 8);
+    const series = fc.weeks.map((w) => ({ label: `أسبوع ${fmtDate(w.from)}`, short: w.from.slice(8, 10) + '/' + w.from.slice(5, 7), balance: w.balance }));
+    const rows = fc.weeks.map((w) => `<tr class="${w.balance < 0 ? 'row-bad' : ''}">${td(`${fmtDate(w.from)} — ${fmtDate(w.to)}`)}${tdn(fmt(w.inflow))}${tdn(fmt(w.outflow))}${tdn(`<b class="${w.balance < 0 ? 'bad-text' : ''}">${fmt(w.balance)}</b>`)}${td(w.items.length ? `<details><summary>${w.items.length} بند</summary><ul class="fc-items">${w.items.map((i) => `<li><span>${fmtDate(i.date)} · ${esc(i.label)}</span><b class="${i.amount < 0 ? 'bad-text' : 'good-text'}">${fmt(i.amount)}</b></li>`).join('')}</ul></details>` : '—')}</tr>`);
+    return `<section class="kpis">
+        ${kpi('النقدية النهارده', money0(fc.start))}
+        ${kpi('أقل رصيد متوقع', money0(fc.lowest), 'خلال 8 أسابيع', fc.lowest < 0 ? 'bad' : '')}
+        ${kpi('أول أسبوع بالسالب', fc.firstNegative ? fmtDate(fc.firstNegative) : 'مفيش', fc.firstNegative ? 'دبّر فلوس قبله أو أجّل دفعة' : 'الفلوس كفاية', fc.firstNegative ? 'bad' : 'good')}
+      </section>
+      <div class="panel chart-panel"><div class="panel-head"><h2 class="section-title">الرصيد المتوقع آخر كل أسبوع</h2><span class="muted">الأسابيع اللي تحت الصفر بتنزل تحت الخط</span></div>${CH.columns(series, { key: 'balance', label: 'الرصيد المتوقع أسبوعيًا' })}</div>
+      ${table(['الأسبوع', '#داخل', '#خارج', '#الرصيد آخر الأسبوع', 'التفاصيل'], rows)}
+      ${fc.noDue.length ? `<p class="warn-text">شحنات عليها فلوس للمورد من غير ميعاد سداد (مش محسوبة): ${fc.noDue.map((x) => `${esc(x.ref || '')} ${fmt(x.amount)} ج.م`).join('، ')} — حط ميعاد السداد في الشحنة.</p>` : ''}
+      <p class="muted">الداخل: تحصيل شركات الشحن المتوقع (المسلّم بعد ${S().settings.alerts.settleDays} يوم، والمشحون وقيد التجهيز بعد خصم نسبة المرتجع). الخارج: مستحقات الموردين حسب ميعاد السداد بسعر الصرف الحالي، المصروفات الثابتة، وعمولات المؤثرين المستحقة. المصروفات المتغيرة (إعلانات، تغليف) مش محسوبة.</p>`;
   }
 
   // =====================================================================
@@ -2009,6 +2099,7 @@
     partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
     newDistribution: distributionForm, delDistribution: (id) => del('distributions', id, 'هذا التوزيع'),
     pickAlert: (id) => { alertFilter = id; render(); },
+    pickPlan: (id) => { planTab = id; render(); }, goPlanReorder: () => { planTab = 'reorder'; location.hash = 'planning'; render(); }, pickSeg: (id) => { custSeg = id; render(); }, draftShipment: (id) => draftShipment(id),
     newCoupon: () => couponForm(), editCoupon: (id) => couponForm(DB.find('coupons', id)), payCommission: (id) => commissionPayForm(DB.find('coupons', id)),
     delCoupon: (id) => del('coupons', id, 'هذا الكود', () => used(id, [['sales', (x, i) => x.couponId === i], ['commissionPayments', (x, i) => x.couponId === i]])),
     assemble: assembleForm,
@@ -2112,6 +2203,7 @@
     partners: { title: 'الشركاء وتوزيع الأرباح', render: partnersPage },
     alerts: { title: 'التنبيهات', render: alertsPage },
     health: { title: 'فحص سلامة البيانات', render: healthPage },
+    planning: { title: 'التخطيط', render: planningPage },
     reports: { title: 'التقارير', render: reports, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
@@ -2172,6 +2264,8 @@
       st.alerts = Object.fromEntries(Object.keys(OPS.ALERT_DEFAULTS).map((k) => [k, String(fd.get('al_' + k)).trim() === '' ? OPS.ALERT_DEFAULTS[k] : Math.max(0, num(fd.get('al_' + k)))]));
       st.waFooter = fd.get('waFooter').trim();
       st.sampleProductId = fd.get('sampleProductId'); st.sampleQty = num(fd.get('sampleQty')) || 1;
+      ['targetMargin', 'leadDays', 'safetyDays', 'coverDays', 'reorderAfterDays'].forEach((k) => { if (fd.get(k) !== '') st[k] = num(fd.get(k)); });
+      st.waReorder = fd.get('waReorder');
       DB.save(); UI.toast('تم حفظ الإعدادات'); renderBrand(); render();
     });
   }
@@ -2192,6 +2286,7 @@
     partners: '<path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.9-3.9a3 3 0 0 0-4.2 0l-.9.9a1 1 0 1 1-3-3l2.8-2.8a5.8 5.8 0 0 1 7.1-.9l.5.3a2 2 0 0 0 1.4.2L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/>',
     alerts: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
     health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
+    planning: '<path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
     reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',

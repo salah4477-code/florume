@@ -11,7 +11,7 @@ const read = (f) => fs.readFileSync(path.join(root, f), 'utf8');
 
 const html = read('index.html');
 const css = read('css/style.css');
-const js = ['js/accounting.js', 'js/export.js', 'js/importer.js', 'js/ops.js', 'js/rules.js', 'js/charts.js', 'js/core.js', 'js/pages.js'].map(read).join('\n');
+const js = ['js/accounting.js', 'js/export.js', 'js/importer.js', 'js/ops.js', 'js/planning.js', 'js/rules.js', 'js/charts.js', 'js/core.js', 'js/pages.js'].map(read).join('\n');
 const safeJs = js.replace(/<\/script/gi, '<\\/script');
 
 const between = (a, b) => html.slice(html.indexOf(a) + a.length, html.indexOf(b)).trim();

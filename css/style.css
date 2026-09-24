@@ -320,6 +320,9 @@ tr.row-warn td { background: var(--warn-soft); }
 a.link-btn { text-decoration: none; }
 .small-note { font-size: .8rem; align-self: center; }
 .rates-wrap { max-height: 46vh; overflow-y: auto; }
+.fc-items { list-style: none; margin: 6px 0 0; padding: 0; min-width: 260px; }
+.fc-items li { display: flex; justify-content: space-between; gap: 12px; font-size: .84rem; padding: 2px 0; }
+.due-panel { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .rates-wrap input { width: 110px; }
 tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent); }
 .check-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 16px; color: var(--good); font-weight: 500; }
