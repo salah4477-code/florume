@@ -78,86 +78,141 @@
     return false;
   }
 
-  // ---------- رسم بياني بسيط بالأعمدة ----------
-  function barChart(series, key, label) {
-    const W = 560, H = 210, padL = 8, padR = 56, padT = 14, padB = 30;
-    const vals = series.map((s) => s[key]);
-    const maxV = Math.max(0, ...vals), minV = Math.min(0, ...vals);
-    const nice = (v) => { if (!v) return 0; const p = Math.pow(10, Math.floor(Math.log10(Math.abs(v)))); return Math.sign(v) * Math.ceil(Math.abs(v) / p) * p; };
-    const top = nice(maxV) || 1, bottom = nice(minV);
-    const y = (v) => padT + ((top - v) / (top - bottom)) * (H - padT - padB);
-    const bw = (W - padL - padR) / series.length;
-    const ticks = bottom < 0 ? (-bottom / (top - bottom) > 0.15 ? [top, 0, bottom] : [top, 0]) : [top, top / 2, 0];
-    const col = (i) => series.length - 1 - i; // من اليمين لليسار
-    const monthName = (m) => new Date(m + '-01T00:00:00').toLocaleDateString('ar-EG', { month: 'short' });
-    return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(label)}">
-      ${ticks.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}" class="${t === 0 ? 'axis' : 'grid'}"/><text x="${W - padR + 6}" y="${y(t) + 4}" class="tick" text-anchor="start">${t ? fmt(t / 1000, 1) + 'k' : '0'}</text>`).join('')}
-      ${series.map((s, i) => {
-        const v = s[key]; const x = padL + col(i) * bw + bw * 0.22; const w = bw * 0.56;
-        const y0 = y(Math.max(v, 0)), h = Math.max(Math.abs(y(v) - y(0)), v ? 1.5 : 0);
-        const cx = padL + col(i) * bw + bw / 2;
-        return `<g class="bar-g" data-tip="${esc(monthName(s.month))} ${s.month.slice(0, 4)}: ${fmt(v)} ج.م">
-          <rect x="${padL + col(i) * bw}" y="${padT}" width="${bw}" height="${H - padT - padB}" class="hit"/>
-          <rect x="${x}" y="${y0}" width="${w}" height="${h}" rx="3" class="bar ${v < 0 ? 'neg' : ''} ${i === series.length - 1 ? 'last' : ''}"/>
-          <text x="${cx}" y="${H - 10}" class="tick" text-anchor="middle">${esc(monthName(s.month))}</text></g>`;
-      }).join('')}
-    </svg>`;
-  }
-
   // =====================================================================
   // لوحة التحكم
   // =====================================================================
+  const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+  const monthShort = (ym) => new Date(ym + '-01T00:00:00').toLocaleDateString('ar-EG', { month: 'short' });
+  const monthLong = (ym) => new Date(ym + '-01T00:00:00').toLocaleDateString('ar-EG-u-nu-latn', { month: 'long', year: 'numeric' });
+  // الفترة السابقة للمقارنة: الشهر/الربع/السنة اللي قبلها، والفترة المخصصة بنفس الطول
+  function previousRange() {
+    if (!period.from || !period.to) return null;
+    const shiftMonths = (iso, n) => { const [y, m] = iso.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); return d.toISOString().slice(0, 7); };
+    const months = { month: 1, lastMonth: 1, quarter: 3, year: 12 }[period.preset];
+    if (months) { const fromYm = shiftMonths(period.from, -months); return { from: `${fromYm}-01`, to: monthEnd(shiftMonths(period.to, -months)), label: months === 12 ? 'العام السابق' : months === 3 ? 'الربع السابق' : 'الشهر السابق' }; }
+    const len = daysBetween(period.from, period.to) + 1;
+    return { from: addDays(period.from, -len), to: addDays(period.from, -1), label: 'الفترة السابقة' };
+  }
+  // مؤشرات فترة واحدة
+  function periodMetrics(s, j, from, to) {
+    const is = Acc.incomeStatement(s, j, from, to);
+    const booked = s.sales.filter((x) => (!from || x.date >= from) && (!to || x.date <= to) && Acc.BOOKED.has(x.status) && !isPromo(x));
+    const returned = booked.filter((x) => x.status === 'returned').length;
+    const kept = booked.length - returned;
+    return { is, orders: booked.length, kept, returned, aov: kept ? is.netSales / kept : 0, returnRate: booked.length ? returned / booked.length : 0 };
+  }
+  // التغيير عن الفترة السابقة: السهم للاتجاه، واللون حسب هل الزيادة كويسة
+  function delta(cur, prev, { goodUp = true, pctPoints = false, label } = {}) {
+    if (prev == null) return '';
+    const diff = pctPoints ? (cur - prev) * 100 : prev ? ((cur - prev) / Math.abs(prev)) * 100 : cur ? null : 0;
+    if (diff == null) return `<span class="delta flat">جديد مقارنة بـ${label}</span>`;
+    if (Math.abs(diff) < 0.05) return `<span class="delta flat">— زي ${label}</span>`;
+    const up = diff > 0, good = up === goodUp;
+    return `<span class="delta ${good ? 'up' : 'down'}"><i aria-hidden="true">${up ? '▲' : '▼'}</i> ${fmt(Math.abs(diff), 1)}${pctPoints ? ' نقطة' : '%'} <small>عن ${label}</small></span>`;
+  }
+  const statTile = ({ label, value, deltaHtml = '', note = '', spark = '', cls = '' }) => `<div class="stat ${cls}"><span class="stat-label">${label}</span><strong class="stat-value">${value}</strong>${deltaHtml}${note ? `<span class="stat-note">${note}</span>` : ''}${spark}</div>`;
+
   function dashboard() {
     const s = S(), j = J();
-    const is = Acc.incomeStatement(s, j, period.from, period.to);
+    const cur = periodMetrics(s, j, period.from, period.to);
+    const pr = previousRange();
+    const prev = pr ? periodMetrics(s, j, pr.from, pr.to) : null;
+    const P = (f) => (prev ? f(prev) : null);
     const bs = Acc.balanceSheet(s, j, today());
-    const sales = s.sales.filter((x) => inPeriod(x.date));
-    const booked = sales.filter((x) => Acc.BOOKED.has(x.status) && !isPromo(x));
-    const alertList = OPS.alerts(s, j, today(), s.settings.alerts);
-    const returned = booked.filter((x) => x.status === 'returned').length;
+    // آخر 12 شهر للخطوط المصغرة والأعمدة
+    const endYm = (period.to || today()).slice(0, 7);
+    const months = [];
+    for (let i = 11; i >= 0; i--) { const [y, m] = endYm.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 - i, 1)); months.push(d.toISOString().slice(0, 7)); }
+    const monthly = months.map((ym) => { const mm = periodMetrics(s, j, `${ym}-01`, monthEnd(ym)); return { ym, label: monthLong(ym), short: monthShort(ym), netSales: mm.is.netSales, grossProfit: mm.is.grossProfit, netProfit: mm.is.netProfit, opex: mm.is.totalOpex, orders: mm.kept, returnRate: mm.returnRate * 100 }; });
+    const firstActive = monthly.findIndex((m) => m.netSales || m.opex);
+    const shown = monthly.slice(Math.min(Math.max(firstActive, 0), 6)); // من أول شهر فيه نشاط، ومش أقل من 6 شهور
+    const sp = (key) => CH.sparkline(monthly.slice(Math.max(firstActive, 0)).map((m) => m[key]), 'آخر 12 شهر');
+    const cmp = pr ? pr.label : '';
+
+    // المبيعات اليومية (أو الأسبوعية/الشهرية للفترات الطويلة) حسب تاريخ الطلب
+    const from = period.from || (s.sales.map((x) => x.date).sort()[0] || today());
+    let to = period.to && period.to < today() ? period.to : today();
+    if (to < from) to = from;
+    const span = daysBetween(from, to) + 1;
+    const unit = span > 186 ? 'month' : span > 62 ? 'week' : 'day';
+    const bucket = (d) => (unit === 'month' ? d.slice(0, 7) : unit === 'week' ? addDays(from, Math.floor(daysBetween(from, d) / 7) * 7) : d);
+    const buckets = new Map();
+    for (let d = from, guard = 0; d <= to && guard < 800; d = addDays(d, 1), guard++) { const b = bucket(d); if (!buckets.has(b)) buckets.set(b, { value: 0, n: 0 }); }
+    s.sales.forEach((x) => {
+      if (x.date < from || x.date > to || !Acc.BOOKED.has(x.status) || isPromo(x)) return;
+      const b = buckets.get(bucket(x.date)); if (!b) return;
+      b.value += Acc.saleTotals(x).total; b.n += 1;
+    });
+    const trend = [...buckets.entries()].map(([k, b]) => ({ label: unit === 'month' ? monthLong(k) : unit === 'week' ? `أسبوع ${fmtDate(k)}` : fmtDate(k), short: unit === 'month' ? monthShort(k) : k.slice(8, 10) + '/' + k.slice(5, 7), value: b.value, extra: `${b.n} طلب` }));
+    const trendTotal = trend.reduce((a, t) => a + t.value, 0);
+
+    const channels = Acc.channelPerformance(s, j, period.from, period.to).map((r) => ({ label: CHANNELS[r.channel] || r.channel, value: r.revenue, extra: `${r.orders} طلب` }));
+    const inPer = s.sales.filter((x) => inPeriod(x.date) && !isPromo(x));
+    const stat = (k) => inPer.filter((x) => x.status === k).length;
+    const statusParts = [{ key: 'delivered', label: STATUSES.delivered, value: stat('delivered') }, { key: 'shipped', label: STATUSES.shipped, value: stat('shipped') }, { key: 'pending', label: STATUSES.pending, value: stat('pending') }, { key: 'returned', label: STATUSES.returned, value: stat('returned') }, { key: 'cancelled', label: STATUSES.cancelled, value: stat('cancelled') }];
+    const top = Acc.productPerformance(s, j, period.from, period.to).slice(0, 5).map((r) => ({ label: productLabel(productById(r.productId)), value: r.profit, extra: `${fmt(r.qty)} قطعة · هامش ${pct(r.margin)}` }));
+    const cash = Acc.cashBalances(s, j).map((a) => ({ label: a.name, value: a.balance }));
     const courierBal = Object.values(Acc.courierBalances(s, j)).reduce((a, b) => a + b, 0);
     const supBal = Object.values(j.suppliers.balances).reduce((a, b) => a + b.egp, 0);
     const invValue = Object.values(j.inventory.products).reduce((a, b) => a + b.value, 0);
     const git = (bs.assets.find((a) => a.name === 'بضاعة في الطريق') || {}).amount || 0;
-    const series = Acc.monthlySeries(s, j, 6, today().slice(0, 7));
-    const low = s.products.map((p) => ({ p, st: j.inventory.products[p.id] })).filter((x) => x.st.available <= num(x.p.minStock ?? s.settings.lowStock)).slice(0, 6);
-    const top = Acc.productPerformance(s, j, period.from, period.to).slice(0, 5);
+    const low = s.products.map((p) => ({ p, st: j.inventory.products[p.id] })).filter((x) => x.st.available <= num(x.p.minStock ?? s.settings.lowStock) && (x.st.qty > 0 || x.st.reserved)).slice(0, 6);
     const pending = s.sales.filter((x) => x.status === 'pending' || x.status === 'shipped').sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
-    const aov = booked.length - returned ? is.netSales / (booked.length - returned) : 0;
+    const alertList = OPS.alerts(s, j, today(), s.settings.alerts);
+    const np = cur.is.netProfit;
+
     return `
-      ${header('لوحة التحكم', `${esc(s.settings.businessName)} — ملخص ${PRESETS[period.preset]}`, periodBar())}
-      <section class="kpis">
-        ${kpi('صافي المبيعات', money0(is.netSales), `${booked.length - returned} طلب · متوسط الطلب ${fmt(aov, 0)} ج.م`)}
-        ${kpi('مجمل الربح', money0(is.grossProfit), `هامش ${pct(is.grossMargin)}`)}
-        ${kpi('المصروفات التشغيلية', money0(is.totalOpex), 'شحن وإعلانات وتغليف ورواتب')}
-        ${kpi('صافي الربح', money0(is.netProfit), `هامش صافي ${pct(is.netMargin)}`, is.netProfit < 0 ? 'bad' : 'good')}
-        ${kpi('نسبة المرتجع', pct(booked.length ? returned / booked.length : 0), `${returned} من ${booked.length} طلب`, booked.length && returned / booked.length > 0.15 ? 'bad' : '')}
-      </section>
-      <section class="position">
-        <h2 class="section-title">المركز المالي اليوم</h2>
-        <div class="pos-grid">
-          <div><span>النقدية في كل الخزائن</span><b>${money0(bs.totalCash)}</b></div>
-          <div><span>مستحق من شركات الشحن</span><b>${money0(courierBal)}</b></div>
-          <div><span>المخزون بالتكلفة</span><b>${money0(invValue)}</b></div>
-          <div><span>بضاعة في الطريق</span><b>${money0(git)}</b></div>
-          <div><span>${supBal >= 0 ? 'مستحق للموردين' : 'دفعات مقدمة للموردين'}</span><b>${money0(Math.abs(supBal))}</b></div>
-          <div class="strong"><span>حقوق الملكية</span><b>${money0(bs.totalEquity)}</b></div>
+      ${header('لوحة التحكم', `${esc(s.settings.businessName)} — ${PRESETS[period.preset]}${pr ? ` · مقارنة بـ${pr.label}` : ''}`, periodBar())}
+      <section class="dash-top">
+        <div class="hero ${np < 0 ? 'neg' : ''}">
+          <span class="stat-label">صافي الربح</span>
+          <strong class="hero-value">${fmt(Math.round(np))} <small>ج.م</small></strong>
+          ${delta(np, P((p) => p.is.netProfit), { label: cmp })}
+          <div class="hero-meta"><span>هامش صافي <b>${pct(cur.is.netMargin)}</b></span><span>مجمل الربح <b>${fmt(Math.round(cur.is.grossProfit))}</b></span><span>مصروفات <b>${fmt(Math.round(cur.is.totalOpex))}</b></span></div>
+          ${CH.sparkline(monthly.slice(Math.max(firstActive, 0)).map((m) => m.netProfit), 'صافي الربح آخر 12 شهر')}
+        </div>
+        <div class="stats">
+          ${statTile({ label: 'صافي المبيعات', value: money0(cur.is.netSales), deltaHtml: delta(cur.is.netSales, P((p) => p.is.netSales), { label: cmp }), spark: sp('netSales') })}
+          ${statTile({ label: 'الطلبات', value: fmt(cur.kept), deltaHtml: delta(cur.kept, P((p) => p.kept), { label: cmp }), note: `متوسط الطلب ${fmt(Math.round(cur.aov))} ج.م`, spark: sp('orders') })}
+          ${statTile({ label: 'مجمل الربح', value: money0(cur.is.grossProfit), deltaHtml: delta(cur.is.grossProfit, P((p) => p.is.grossProfit), { label: cmp }), note: `هامش ${pct(cur.is.grossMargin)}`, spark: sp('grossProfit') })}
+          ${statTile({ label: 'المصروفات التشغيلية', value: money0(cur.is.totalOpex), deltaHtml: delta(cur.is.totalOpex, P((p) => p.is.totalOpex), { goodUp: false, label: cmp }), note: 'شحن وإعلانات وتغليف ورواتب', spark: sp('opex') })}
+          ${statTile({ label: 'نسبة المرتجع', value: pct(cur.returnRate), deltaHtml: delta(cur.returnRate, P((p) => p.returnRate), { goodUp: false, pctPoints: true, label: cmp }), note: `${cur.returned} من ${cur.orders} طلب`, spark: sp('returnRate'), cls: cur.returnRate > 0.15 ? 'bad' : '' })}
+          ${statTile({ label: 'النقدية في كل الحسابات', value: money0(bs.totalCash), note: `مستحق من شركات الشحن ${fmt(Math.round(courierBal))}` })}
         </div>
       </section>
-      <section class="grid-2">
-        <div class="panel"><h2 class="section-title">صافي المبيعات — آخر ٦ شهور</h2>${barChart(series, 'netSales', 'صافي المبيعات الشهرية')}</div>
-        <div class="panel"><h2 class="section-title">صافي الربح — آخر ٦ شهور</h2>${barChart(series, 'netProfit', 'صافي الربح الشهري')}</div>
+      ${alertList.length ? `<section class="panel alerts-panel"><h2 class="section-title">تنبيهات تحتاج متابعة <a class="link-btn" href="#alerts">عرض الكل (${alertList.length})</a></h2>${alertItems(alertList.slice(0, 4))}</section>` : ''}
+      <section class="panel chart-panel">
+        <div class="panel-head"><h2 class="section-title">قيمة الطلبات ${unit === 'day' ? 'يوم بيوم' : unit === 'week' ? 'أسبوع بأسبوع' : 'شهر بشهر'}</h2><span class="muted">إجمالي ${money0(trendTotal)} · حسب تاريخ الطلب، من غير فواتير الدعاية</span></div>
+        ${trend.length > 1 ? CH.area(trend, { label: 'قيمة الطلبات في الفترة' }) : UI.empty('اختار فترة أطول من يوم عشان يظهر الرسم')}
       </section>
-      ${alertList.length ? `<section class="panel alerts-panel"><h2 class="section-title">تنبيهات تحتاج متابعة <a class="link-btn" href="#alerts">عرض الكل (${alertList.length})</a></h2>${alertItems(alertList.slice(0, 5))}</section>` : ''}
+      <section class="grid-2">
+        <div class="panel chart-panel"><div class="panel-head"><h2 class="section-title">صافي المبيعات شهريًا</h2><span class="muted">الشهر الحالي بلون أغمق</span></div>${CH.columns(shown, { key: 'netSales', label: 'صافي المبيعات الشهرية' })}</div>
+        <div class="panel chart-panel"><div class="panel-head"><h2 class="section-title">صافي الربح شهريًا</h2><span class="muted">الشهور الخسرانة تحت خط الصفر</span></div>${CH.columns(shown, { key: 'netProfit', label: 'صافي الربح الشهري' })}</div>
+      </section>
       <section class="grid-3">
+        <div class="panel"><h2 class="section-title">المبيعات حسب القناة</h2>${CH.hbars(channels, { empty: 'لا مبيعات في هذه الفترة' })}</div>
+        <div class="panel"><h2 class="section-title">حالة الطلبات</h2>${CH.stack(statusParts, {})}</div>
+        <div class="panel"><h2 class="section-title">الأكثر ربحًا</h2>${CH.hbars(top, { empty: 'لا مبيعات في هذه الفترة' })}</div>
+      </section>
+      <section class="grid-2">
+        <div class="panel"><h2 class="section-title">المركز المالي اليوم</h2>
+          <div class="pos-grid pos-2">
+            <div><span>النقدية</span><b>${money0(bs.totalCash)}</b></div>
+            <div><span>مستحق من شركات الشحن</span><b>${money0(courierBal)}</b></div>
+            <div><span>المخزون بالتكلفة</span><b>${money0(invValue)}</b></div>
+            <div><span>بضاعة في الطريق</span><b>${money0(git)}</b></div>
+            <div><span>${supBal >= 0 ? 'مستحق للموردين' : 'دفعات مقدمة للموردين'}</span><b>${money0(Math.abs(supBal))}</b></div>
+            <div class="strong"><span>حقوق الملكية</span><b>${money0(bs.totalEquity)}</b></div>
+          </div></div>
+        <div class="panel"><h2 class="section-title">النقدية حسب الحساب</h2>${CH.hbars(cash)}</div>
+      </section>
+      <section class="grid-2">
         <div class="panel"><h2 class="section-title">طلبات مفتوحة</h2>
           ${pending.length ? `<ul class="list">${pending.map((x) => `<li><button class="link-btn" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button><span>${esc(nameOf('customers', x.customerId))}</span>${UI.pill(STATUSES[x.status], statusKind[x.status])}</li>`).join('')}</ul>` : UI.empty('لا توجد طلبات مفتوحة')}
         </div>
         <div class="panel"><h2 class="section-title">نواقص المخزون</h2>
           ${low.length ? `<ul class="list">${low.map((x) => `<li><span>${esc(productLabel(x.p))}</span><b class="${x.st.available <= 0 ? 'bad-text' : 'warn-text'}">${fmt(x.st.available)} متاح</b></li>`).join('')}</ul>` : UI.empty('كل المنتجات فوق حد الطلب')}
-        </div>
-        <div class="panel"><h2 class="section-title">الأكثر ربحًا في الفترة</h2>
-          ${top.length ? `<ul class="list">${top.map((r) => `<li><span>${esc(productLabel(productById(r.productId)))}</span><b>${fmt(r.profit, 0)} ج.م</b></li>`).join('')}</ul>` : UI.empty('لا مبيعات في هذه الفترة')}
         </div>
       </section>`;
   }
@@ -1776,8 +1831,10 @@
     const m = main();
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
-    const badge = document.getElementById('alert-badge');
-    if (badge) { let n = 0; try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ } badge.hidden = !n; badge.textContent = n; }
+    let n = 0;
+    try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
+    ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
+    CH.bindLines(m, document.getElementById('tip'));
     const pa = m.querySelector('.page-head .page-actions');
     if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
@@ -1799,7 +1856,66 @@
   }
   function renderBrand() { document.querySelectorAll('[data-brand]').forEach((el) => (el.textContent = S().settings.businessName)); }
 
+  // ---------- الأيقونات (خطوط بسيطة 24×24) ----------
+  const ICONS = {
+    dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+    sales: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
+    shipments: '<path d="M2 20a2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1 2.4 2.4 0 0 1 2-1 2.4 2.4 0 0 1 2 1 2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1 2.4 2.4 0 0 1 2-1 2.4 2.4 0 0 1 2 1 2.4 2.4 0 0 0 2 1 2.4 2.4 0 0 0 2-1"/><path d="M19.4 16.6 21 12l-9-4-9 4 1.6 4.6"/><path d="M12 8V2"/><path d="M8 4h8"/>',
+    products: '<path d="M9 3h6v3l2 2v11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V8l2-2Z"/><path d="M7 12h10"/>',
+    suppliers: '<path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/>',
+    customers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+    treasury: '<rect x="2" y="6" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M16 15h2"/>',
+    expenses: '<path d="M4 2v20l3-2 3 2 2-2 2 2 3-2 3 2V2l-3 2-3-2-2 2-2-2-3 2Z"/><path d="M8 9h8M8 13h6"/>',
+    campaigns: '<path d="m3 11 18-5v12L3 14v-3Z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>',
+    reconcile: '<path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-3.3a1 1 0 0 0-.3-.7L18 9h-4"/><path d="M14 17h1"/><circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+    partners: '<path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.9-3.9a3 3 0 0 0-4.2 0l-.9.9a1 1 0 1 1-3-3l2.8-2.8a5.8 5.8 0 0 1 7.1-.9l.5.3a2 2 0 0 0 1.4.2L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/>',
+    alerts: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+    health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
+    reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
+    bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+    moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>',
+  };
+  const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
+
+  // ---------- الوضع الليلي ----------
+  const THEME_KEY = 'florume.theme';
+  function currentTheme() { const t = document.documentElement.dataset.theme; if (t) return t; return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+  function applyTheme(t) {
+    if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+    const b = document.getElementById('theme-toggle');
+    if (b) { const dark = currentTheme() === 'dark'; b.innerHTML = icon(dark ? 'sun' : 'moon'); b.setAttribute('aria-label', dark ? 'الوضع النهاري' : 'الوضع الليلي'); b.title = b.getAttribute('aria-label'); }
+  }
+
+  // ---------- الشريط العلوي: التاريخ والساعة ----------
+  function tickClock() {
+    const now = new Date();
+    const set = (id, v) => { const el = document.getElementById(id); if (el && el.textContent !== v) el.textContent = v; };
+    try {
+      set('tb-date', now.toLocaleDateString('ar-EG-u-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
+      set('tb-hijri', now.toLocaleDateString('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }));
+      set('tb-time', now.toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }));
+    } catch (e) { set('tb-date', now.toDateString()); set('tb-time', now.toTimeString().slice(0, 8)); }
+    const h = now.getHours();
+    set('tb-greet', h < 5 ? 'سهران؟ 🌙' : h < 12 ? 'صباح الخير ☀️' : h < 17 ? 'نهارك سعيد 🌤️' : 'مساء الخير 🌙');
+  }
+
   function boot() {
+    let saved = null;
+    try { saved = localStorage.getItem(THEME_KEY); } catch (e) { /* لا شيء */ }
+    applyTheme(saved === 'dark' || saved === 'light' ? saved : null);
+    document.querySelectorAll('.nav a').forEach((a) => a.insertAdjacentHTML('afterbegin', icon(a.getAttribute('href').slice(1))));
+    document.querySelectorAll('[data-icon]').forEach((el) => (el.outerHTML = icon(el.dataset.icon)));
+    applyTheme(saved === 'dark' || saved === 'light' ? saved : null);
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+      const next = currentTheme() === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* لا شيء */ }
+      render();
+    });
+    tickClock();
+    setInterval(tickClock, 1000);
     DB.load();
     renderBrand();
     document.addEventListener('click', (e) => {
@@ -1813,8 +1929,12 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.getElementById('modal').hidden) UI.close(); });
     // تلميح الرسوم البيانية
     const tip = document.getElementById('tip');
-    document.addEventListener('mouseover', (e) => { const g = e.target.closest('[data-tip]'); if (!g) { tip.hidden = true; return; } tip.textContent = g.dataset.tip; tip.hidden = false; });
-    document.addEventListener('mousemove', (e) => { if (!tip.hidden) { tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY - 12 + 'px'; } });
+    // المنحنى الزمني بيدير تلميحه بنفسه (الخط المتتبع)
+    document.addEventListener('mouseover', (e) => { if (e.target.closest('.chart-line')) return; const g = e.target.closest('[data-tip]'); if (!g) { tip.hidden = true; return; } tip.textContent = g.dataset.tip; tip.hidden = false; });
+    document.addEventListener('mousemove', (e) => { if (!tip.hidden && !e.target.closest('.chart-line')) { tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY - 12 + 'px'; } });
+    // نفس التلميح بالتركيز من لوحة المفاتيح
+    document.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('[data-tip]'); if (!g) return; const r = g.getBoundingClientRect(); tip.textContent = g.dataset.tip; tip.hidden = false; tip.style.left = r.left + r.width / 2 + 'px'; tip.style.top = r.top - 6 + 'px'; });
+    document.addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) tip.hidden = true; });
     window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
     render();
   }

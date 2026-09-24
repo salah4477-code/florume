@@ -36,6 +36,18 @@
     <p class="side-foot">SAR · AED → EGP</p>
   </aside>
   <main class="main">
+    <header class="topbar" aria-label="شريط المعلومات">
+      <div class="tb-greet"><b id="tb-greet">أهلًا</b><small id="tb-biz" data-brand>Florume</small></div>
+      <div class="tb-clock" aria-live="off">
+        <span class="tb-date"><span id="tb-date"></span><small id="tb-hijri"></small></span>
+        <b class="tb-time" id="tb-time" dir="ltr"></b>
+      </div>
+      <div class="tb-actions">
+        <button class="btn btn-primary btn-small tb-new" data-action="newSale">+ طلب جديد</button>
+        <a class="icon-btn tb-icon" href="#alerts" aria-label="التنبيهات" title="التنبيهات"><span data-icon="bell"></span><b class="nav-badge tb-badge" id="tb-badge" hidden></b></a>
+        <button class="icon-btn tb-icon" type="button" id="theme-toggle" aria-label="تبديل الوضع الليلي" title="الوضع الليلي / النهاري"><span data-icon="moon"></span></button>
+      </div>
+    </header>
     <div class="demo-banner" id="demo-banner" hidden>
       <span><b>بيانات تجريبية.</b> الأرقام المعروضة مثال لمتجر عطور وهمي حتى تجرب النظام.</span>
       <button class="btn btn-small" data-action="clearDemo">امسحها وابدأ ببياناتي</button>
@@ -52,6 +64,7 @@
 <script src="js/importer.js"></script>
 <script src="js/ops.js"></script>
 <script src="js/rules.js"></script>
+<script src="js/charts.js"></script>
 <script src="js/core.js"></script>
 <script src="js/pages.js"></script>
 </body>
