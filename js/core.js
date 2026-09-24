@@ -103,6 +103,7 @@
         if (!onSubmit) return UI.close();
         const bad = [...form.querySelectorAll('[required]')].find((i) => !String(i.value).trim());
         if (bad) { bad.focus(); bad.classList.add('invalid'); UI.toast('أكمل الحقول المطلوبة المعلّمة بـ *', 'bad'); return; }
+        if (!UI.numbersOk(form)) return;
         const res = onSubmit(form, new FormData(form));
         if (res !== false) UI.close();
       });
@@ -116,6 +117,21 @@
       const first = form.querySelector('.modal-body input:not([type=hidden]), .modal-body select, .modal-body textarea');
       if (first) setTimeout(() => first.focus(), 30);
       return form;
+    },
+    // لا أرقام سالبة ولا خارج الحدود: نطبق min/max بنفسنا لأن الفورم novalidate
+    numbersOk(root) {
+      const bad = [...root.querySelectorAll('input[type="number"]')].find((i) => {
+        if (i.disabled || i.value === '' || i.closest('[hidden]') || i.offsetParent === null) return false;
+        const v = Number(i.value);
+        return !isFinite(v) || (i.min !== '' && v < Number(i.min)) || (i.max !== '' && v > Number(i.max));
+      });
+      if (!bad) return true;
+      const v = Number(bad.value);
+      bad.focus(); bad.classList.add('invalid');
+      const label = (bad.closest('label') && bad.closest('label').querySelector('span') || {}).textContent || bad.getAttribute('aria-label') || 'الرقم';
+      UI.toast(!isFinite(v) ? `«${label.replace('*', '').trim()}» لازم يكون رقم` : bad.min !== '' && v < Number(bad.min) ? `«${label.replace('*', '').trim()}» مينفعش يكون أقل من ${bad.min}` : `«${label.replace('*', '').trim()}» مينفعش يكون أكبر من ${bad.max}`, 'bad');
+      bad.addEventListener('input', () => bad.classList.remove('invalid'), { once: true });
+      return false;
     },
     close() { const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll'); },
     confirm(message, onYes, yes = 'نعم، احذف') {
