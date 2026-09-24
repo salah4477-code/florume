@@ -50,6 +50,33 @@
   const header = (title, sub, buttons = '') => `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="page-actions">${buttons}</div></header>`;
   const kpi = (label, value, note = '', tone = '') => `<div class="kpi ${tone}"><span class="kpi-label">${label}</span><strong class="kpi-value">${value}</strong>${note ? `<span class="kpi-note">${note}</span>` : ''}</div>`;
   const used = (id, checks) => checks.some(([list, fn]) => S()[list].some((x) => fn(x, id)));
+  const PARTY_LISTS = { supplier: 'suppliers', courier: 'couriers', partner: 'partners' };
+  const partyName = (party) => nameOf(PARTY_LISTS[party.type] || 'couriers', party.id);
+  const campaignOptions = (blank = 'بدون حملة') => [{ v: '', l: blank }, ...S().campaigns.map((c) => ({ v: c.id, l: `${c.name} (${CHANNELS[c.platform] || ''})` }))];
+  const isPromo = (x) => Acc.isPromo(x);
+
+  // ---------- قواعد الحفظ ----------
+  const fail = (msg) => { UI.toast(msg, 'bad'); return false; };
+  const dateOk = (d, label = 'التاريخ') => {
+    if (!d) return fail(`أدخل ${label}`);
+    if (RULES.beforeStart(S(), d)) return fail(`${label} ${fmtDate(d)} قبل تاريخ بداية الحسابات ${fmtDate(S().settings.startDate)} — غيّر بداية الحسابات من الإعدادات لو محتاج`);
+    return true;
+  };
+  const stockMsg = (errs, status) => 'المخزون مش كفاية — ' + errs.map((e) => `${productLabel(productById(e.productId))}: المطلوب ${fmt(e.need)} والمتاح ${fmt(e.available)}${e.incoming ? (status && status !== 'pending' ? ` (فيه ${fmt(e.incoming)} جاي في شحنة — استلمها الأول قبل ما الطلب يخرج)` : ` (وفيه ${fmt(e.incoming)} جاي في شحنة، تقدر تسجله «قيد التجهيز» كطلب مسبق)`) : ''}`).join(' · ');
+  // تحذير الخزينة بالسالب: أول ضغطة حفظ تعرض التحذير، والتانية تأكيد
+  function cashOk(f, next) {
+    const neg = RULES.negativeCash(S(), next);
+    if (!neg.length) return true;
+    const sig = neg.map((n) => `${n.id}:${n.after}`).join('|');
+    if (f.dataset.cashOk === sig) return true;
+    f.dataset.cashOk = sig;
+    let box = f.querySelector('#cash-warn');
+    if (!box) { f.querySelector('.modal-body').insertAdjacentHTML('afterbegin', '<div class="imp-box warn" id="cash-warn" role="alert"></div>'); box = f.querySelector('#cash-warn'); }
+    box.innerHTML = `<b>تنبيه: رصيد ${neg.map((n) => `«${esc(n.name)}» هيبقى ${fmt(n.after)} ج.م`).join(' و')} بعد الحفظ.</b><br>لو الفلوس دخلت الحساب فعلًا ولسه ما اتسجلتش، اضغط «حفظ» تاني للتأكيد.`;
+    box.scrollIntoView({ block: 'nearest' });
+    UI.toast('الرصيد هيبقى بالسالب — راجع التنبيه واضغط حفظ تاني للتأكيد', 'bad');
+    return false;
+  }
 
   // ---------- رسم بياني بسيط بالأعمدة ----------
   function barChart(series, key, label) {
@@ -85,7 +112,8 @@
     const is = Acc.incomeStatement(s, j, period.from, period.to);
     const bs = Acc.balanceSheet(s, j, today());
     const sales = s.sales.filter((x) => inPeriod(x.date));
-    const booked = sales.filter((x) => Acc.BOOKED.has(x.status));
+    const booked = sales.filter((x) => Acc.BOOKED.has(x.status) && !isPromo(x));
+    const alertList = OPS.alerts(s, j, today(), s.settings.alerts);
     const returned = booked.filter((x) => x.status === 'returned').length;
     const courierBal = Object.values(Acc.courierBalances(s, j)).reduce((a, b) => a + b, 0);
     const supBal = Object.values(j.suppliers.balances).reduce((a, b) => a + b.egp, 0);
@@ -120,6 +148,7 @@
         <div class="panel"><h2 class="section-title">صافي المبيعات — آخر ٦ شهور</h2>${barChart(series, 'netSales', 'صافي المبيعات الشهرية')}</div>
         <div class="panel"><h2 class="section-title">صافي الربح — آخر ٦ شهور</h2>${barChart(series, 'netProfit', 'صافي الربح الشهري')}</div>
       </section>
+      ${alertList.length ? `<section class="panel alerts-panel"><h2 class="section-title">تنبيهات تحتاج متابعة <a class="link-btn" href="#alerts">عرض الكل (${alertList.length})</a></h2>${alertItems(alertList.slice(0, 5))}</section>` : ''}
       <section class="grid-3">
         <div class="panel"><h2 class="section-title">طلبات مفتوحة</h2>
           ${pending.length ? `<ul class="list">${pending.map((x) => `<li><button class="link-btn" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button><span>${esc(nameOf('customers', x.customerId))}</span>${UI.pill(STATUSES[x.status], statusKind[x.status])}</li>`).join('')}</ul>` : UI.empty('لا توجد طلبات مفتوحة')}
@@ -136,36 +165,42 @@
   // =====================================================================
   // المبيعات
   // =====================================================================
-  let saleFilter = { q: '', status: '', channel: '' };
+  let saleFilter = { q: '', status: '', channel: '', kind: '' };
   function sales() {
     const s = S(), j = J();
     const q = saleFilter.q.trim().toLowerCase();
     const list = s.sales.filter((x) => inPeriod(x.date) && (!saleFilter.status || x.status === saleFilter.status) && (!saleFilter.channel || x.channel === saleFilter.channel)
-      && (!q || `${invoiceNo(x)} ${nameOf('customers', x.customerId)} ${(DB.find('customers', x.customerId) || {}).phone || ''}`.toLowerCase().includes(q)))
+      && (!saleFilter.kind || (saleFilter.kind === 'promo') === isPromo(x))
+      && (!q || `${invoiceNo(x)} ${x.trackingNo || ''} ${nameOf('customers', x.customerId)} ${(DB.find('customers', x.customerId) || {}).phone || ''}`.toLowerCase().includes(q)))
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.no - a.no));
-    let tot = { total: 0, cogs: 0, profit: 0 };
+    let tot = { total: 0, cogs: 0, profit: 0, promo: 0, promoCount: 0 };
     const rows = list.map((x) => {
       const p = Acc.saleProfit(x, j);
-      if (Acc.BOOKED.has(x.status) && x.status !== 'returned') { tot.total += p.total; tot.cogs += p.cogs; }
-      tot.profit += p.profit;
-      return `<tr>
-        ${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>`)}${td(fmtDate(x.date))}
+      const promo = isPromo(x);
+      if (promo) { tot.promo += p.promoCost || 0; tot.promoCount++; }
+      else {
+        if (Acc.BOOKED.has(x.status) && x.status !== 'returned') { tot.total += p.total; tot.cogs += p.cogs; }
+        tot.profit += p.profit;
+      }
+      return `<tr class="${promo ? 'promo-row' : ''}">
+        ${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>${promo ? ' ' + UI.pill('دعاية', 'promo') : ''}${x.preorder && x.status === 'pending' ? ' ' + UI.pill('طلب مسبق', 'info') : ''}`)}${td(fmtDate(x.date))}
         ${td(esc(nameOf('customers', x.customerId)))}${td(CHANNELS[x.channel] || '—')}
-        ${tdn(fmt(p.total))}${tdn(fmt(p.cogs))}${tdn(`<span class="${p.profit < 0 ? 'bad-text' : ''}">${fmt(p.profit)}</span>`)}
-        ${td(x.payment === 'cod' ? 'عند الاستلام' : esc(nameOf('accounts', x.payment)))}
+        ${tdn(promo ? '—' : fmt(p.total))}${tdn(fmt(p.cogs))}${tdn(promo ? `<span class="muted">دعاية ${fmt(p.promoCost || 0)}</span>` : `<span class="${p.profit < 0 ? 'bad-text' : ''}">${fmt(p.profit)}</span>`)}
+        ${td(promo ? 'بدون مقابل' : x.payment === 'cod' ? 'عند الاستلام' : esc(nameOf('accounts', x.payment)))}
         ${td(UI.select('st-' + x.id, STATUSES, x.status, `class="status-select s-${x.status}" data-change="saleStatus" data-id="${x.id}" aria-label="الحالة"`))}
-        ${actions(btn('تعديل', 'editSale', x.id), btn('حذف', 'delSale', x.id, 'danger'))}</tr>`;
+        ${actions(waButton(x), btn('تعديل', 'editSale', x.id), btn('حذف', 'delSale', x.id, 'danger'))}</tr>`;
     });
     return `
-      ${header('المبيعات والطلبات', 'كل طلب يُسجَّل كإيراد عند خروجه مع شركة الشحن، وتُحسب تكلفته بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
+      ${header('المبيعات والطلبات', 'كل طلب يُسجَّل كإيراد عند خروجه مع شركة الشحن، وتُحسب تكلفته بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn" data-action="newPromo">+ فاتورة دعاية</button><button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
       <div class="filters">
-        <input type="search" id="f-q" placeholder="بحث برقم الفاتورة أو العميل أو الموبايل" value="${esc(saleFilter.q)}" data-input="saleQ">
+        <input type="search" id="f-q" placeholder="بحث برقم الفاتورة أو البوليصة أو العميل أو الموبايل" value="${esc(saleFilter.q)}" data-input="saleQ">
+        ${UI.select('fkind', { '': 'كل الفواتير', sale: 'فواتير بيع', promo: 'فواتير دعاية' }, saleFilter.kind, 'data-change="saleKindFilter" aria-label="نوع الفاتورة"')}
         ${UI.select('fstatus', { '': 'كل الحالات', ...STATUSES }, saleFilter.status, 'data-change="saleStatusFilter" aria-label="الحالة"')}
         ${UI.select('fchannel', { '': 'كل القنوات', ...CHANNELS }, saleFilter.channel, 'data-change="saleChannelFilter" aria-label="القناة"')}
       </div>
       ${table(['الفاتورة', 'التاريخ', 'العميل', 'القناة', '#الإجمالي', '#التكلفة', '#الربح', 'الدفع', 'الحالة', ''], rows, {
         empty: 'لا توجد طلبات في هذه الفترة',
-        foot: rows.length ? `<tr><td colspan="4">الإجمالي (${rows.length} طلب)</td>${tdn(fmt(tot.total))}${tdn(fmt(tot.cogs))}${tdn(fmt(tot.profit))}<td colspan="3"></td></tr>` : '',
+        foot: rows.length ? `<tr><td colspan="4">إجمالي البيع (${rows.length - tot.promoCount} طلب)</td>${tdn(fmt(tot.total))}${tdn(fmt(tot.cogs))}${tdn(fmt(tot.profit))}<td colspan="3"></td></tr>${tot.promoCount ? `<tr><td colspan="4">فواتير دعاية (${tot.promoCount}) — محملة على مصروف الإعلانات</td><td></td><td></td>${tdn(fmt(tot.promo))}<td colspan="3"></td></tr>` : ''}` : '',
       })}`;
   }
 
@@ -174,37 +209,71 @@
     return `<tr class="line">
       <td>${UI.select('l-product', productOptions(), it.productId || '', 'class="l-product" aria-label="المنتج"')}<small class="l-stock muted">${st ? `متاح: ${fmt(st.available)}` : ''}</small></td>
       <td><input class="l-qty" type="number" min="1" step="1" value="${it.qty || 1}" aria-label="الكمية"></td>
-      <td><input class="l-price" type="number" min="0" step="0.01" value="${it.price ?? ''}" aria-label="السعر"></td>
+      <td class="col-price"><input class="l-price" type="number" min="0" step="0.01" value="${it.price ?? ''}" aria-label="السعر"></td>
+      <td class="col-cost num l-unitcost">0</td>
       <td class="num l-total">0</td>
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
   }
 
-  function saleForm(sale) {
+  // خانة مسح الباركود: قارئ باركود USB (يكتب الكود ثم Enter) أو كاميرا الموبايل لو المتصفح يدعمها
+  const scanBox = (placeholder = 'امسح الباركود أو اكتب كود المنتج ثم Enter') => `<div class="scan-row"><input class="scan-input" id="f-scan" placeholder="${placeholder}" autocomplete="off" aria-label="مسح الباركود"><button type="button" class="btn btn-small scan-cam">كاميرا</button></div><video class="scan-video" playsinline muted hidden></video>`;
+  function attachScanner(f, onCode) {
+    const input = f.querySelector('.scan-input');
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); const v = input.value.trim(); input.value = ''; if (v) onCode(v); } });
+    const cam = f.querySelector('.scan-cam'), video = f.querySelector('.scan-video');
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices) { cam.hidden = true; return; }
+    let stream = null, timer = null;
+    const stop = () => { clearInterval(timer); timer = null; if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; video.hidden = true; cam.textContent = 'كاميرا'; };
+    cam.addEventListener('click', async () => {
+      if (stream) return stop();
+      try {
+        const formats = await window.BarcodeDetector.getSupportedFormats();
+        const det = new window.BarcodeDetector({ formats: formats.length ? formats : undefined });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        video.srcObject = stream; video.hidden = false; await video.play(); cam.textContent = 'إيقاف الكاميرا';
+        let last = '', lastAt = 0;
+        timer = setInterval(async () => {
+          try { const codes = await det.detect(video); const v = codes[0] && codes[0].rawValue; if (v && (v !== last || Date.now() - lastAt > 1500)) { last = v; lastAt = Date.now(); onCode(v); } } catch (e) { /* إطار غير جاهز */ }
+        }, 300);
+      } catch (e) { stop(); UI.toast('تعذر تشغيل الكاميرا — استخدم قارئ الباركود أو اكتب الكود', 'bad'); }
+    });
+    const obs = new MutationObserver(() => { if (!document.body.contains(f)) { stop(); obs.disconnect(); } });
+    obs.observe(document.getElementById('modal'), { childList: true });
+  }
+
+  function saleForm(sale, kind) {
     const s = S();
     const isNew = !sale;
-    sale = sale || { id: uid(), date: today(), channel: 'instagram', status: 'pending', payment: 'cod', courierId: (s.couriers[0] || {}).id, courierFee: 0, shippingCharged: 0, discount: 0, items: [{ qty: 1 }], returnFee: 0 };
+    sale = sale || { id: uid(), kind: kind === 'promo' ? 'promo' : 'sale', date: today(), channel: 'instagram', status: 'pending', payment: 'cod', courierId: (s.couriers[0] || {}).id, courierFee: 0, shippingCharged: 0, discount: 0, items: [{ qty: 1 }], returnFee: 0, campaignId: '', trackingNo: '' };
     const custOpts = [{ v: '', l: 'اختر العميل…' }, { v: '__new', l: '+ عميل جديد' }, ...s.customers.map((c) => ({ v: c.id, l: `${c.name}${c.phone ? ' — ' + c.phone : ''}` }))];
+    const locked = !isNew && RULES.isReconciled(s, sale.id);
     const body = `
+      ${locked ? '<div class="imp-box warn"><b>الفاتورة دي دخلت في تسوية كشف شركة الشحن.</b> تقدر تعدّل العميل والقناة والحملة والملاحظات بس. لتعديل الباقي احذف التسوية الأول من شاشة «تسوية شركات الشحن».</div>' : ''}
       <div class="form-grid">
+        ${UI.field('نوع الفاتورة', UI.select('kind', { sale: 'فاتورة بيع', promo: 'فاتورة دعاية (قطع مجانية)' }, isPromo(sale) ? 'promo' : 'sale'))}
         ${UI.field('التاريخ', UI.input('date', sale.date, 'type="date" required'), { req: true })}
-        ${UI.field('العميل', UI.select('customerId', custOpts, sale.customerId || ''), {})}
+        ${UI.field('العميل / المستلم', UI.select('customerId', custOpts, sale.customerId || ''), {})}
         ${UI.field('القناة', UI.select('channel', CHANNELS, sale.channel))}
         ${UI.field('الحالة', UI.select('status', STATUSES, sale.status))}
+        ${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions(), sale.campaignId || ''), { hint: 'الطلب جه من أنهي حملة؟' })}
       </div>
+      <p class="promo-note" hidden>فاتورة الدعاية تُخرج القطع من المخزون بتكلفتها، ولا تُحسب مبيعات. التكلفة ومصاريف شحنها تروح على <b>مصروف الإعلانات والتسويق</b>${s.campaigns.length ? ' (ولو ربطتها بحملة تدخل في إنفاق الحملة)' : ''}.</p>
       <div class="form-grid new-customer" hidden>
         ${UI.field('اسم العميل', UI.input('cName', ''), { req: true })}
         ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'))}
         ${UI.field('المحافظة / المدينة', UI.input('cCity', ''))}
         ${UI.field('العنوان', UI.input('cAddress', ''))}
       </div>
-      <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر البيع</th><th class="num">الإجمالي</th><th></th></tr></thead>
+      ${scanBox()}
+      <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th class="col-price">سعر البيع</th><th class="col-cost num">تكلفة الوحدة</th><th class="num">الإجمالي</th><th></th></tr></thead>
         <tbody id="lines">${sale.items.map(saleLineRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
       <div class="form-grid">
-        ${UI.field('خصم (ج.م)', UI.input('discount', sale.discount || 0, 'type="number" min="0" step="0.01"'))}
-        ${UI.field('شحن محصل من العميل', UI.input('shippingCharged', sale.shippingCharged || 0, 'type="number" min="0" step="0.01"'))}
-        ${UI.field('طريقة الدفع', UI.select('payment', [{ v: 'cod', l: 'الدفع عند الاستلام (مع شركة الشحن)' }, ...accountOptions().map((a) => ({ v: a.v, l: 'مدفوع مقدمًا — ' + a.l }))], sale.payment))}
+        ${UI.field('خصم (ج.م)', UI.input('discount', sale.discount || 0, 'type="number" min="0" step="0.01"'), { cls: 'sale-only' })}
+        ${UI.field('شحن محصل من العميل', UI.input('shippingCharged', sale.shippingCharged || 0, 'type="number" min="0" step="0.01"'), { cls: 'sale-only' })}
+        ${UI.field('طريقة الدفع', UI.select('payment', [{ v: 'cod', l: 'الدفع عند الاستلام (مع شركة الشحن)' }, ...accountOptions().map((a) => ({ v: a.v, l: 'مدفوع مقدمًا — ' + a.l }))], sale.payment), { cls: 'sale-only' })}
         ${UI.field('شركة الشحن', UI.select('courierId', [{ v: '', l: '—' }, ...s.couriers.map((c) => ({ v: c.id, l: c.name }))], sale.courierId || ''))}
+        ${UI.field('رقم البوليصة', UI.input('trackingNo', sale.trackingNo || '', 'dir="ltr" autocomplete="off"'), { hint: 'يُستخدم في مطابقة كشف شركة الشحن' })}
         ${UI.field('تكلفة الشحن علينا', UI.input('courierFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'), { hint: 'تخصمها شركة الشحن من التحصيل' })}
       </div>
       <div class="form-grid return-fields" hidden>
@@ -214,23 +283,46 @@
       ${UI.field('ملاحظات', `<textarea id="f-notes" name="notes" rows="2">${esc(sale.notes || '')}</textarea>`)}
       <div class="summary" id="sale-summary"></div>`;
     UI.modal({
-      title: isNew ? 'طلب جديد' : `تعديل الطلب ${esc(invoiceNo(sale))}`, body, wide: true,
+      title: isNew ? (isPromo(sale) ? 'فاتورة دعاية جديدة' : 'طلب جديد') : `تعديل ${isPromo(sale) ? 'فاتورة الدعاية' : 'الطلب'} ${esc(invoiceNo(sale))}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines');
+        const promoMode = () => f.kind.value === 'promo';
         const recalc = () => {
+          const promo = promoMode();
           let gross = 0, cost = 0;
           lines.querySelectorAll('.line').forEach((r) => {
             const pid = r.querySelector('.l-product').value; const q = num(r.querySelector('.l-qty').value); const pr = num(r.querySelector('.l-price').value);
-            gross += q * pr; r.querySelector('.l-total').textContent = fmt(q * pr);
             const st = pid && J().inventory.products[pid];
+            const unit = st ? st.avgCost : 0;
+            gross += q * pr; cost += q * unit;
+            r.querySelector('.l-unitcost').textContent = fmt(unit);
+            r.querySelector('.l-total').textContent = fmt(promo ? q * unit : q * pr);
             r.querySelector('.l-stock').textContent = st ? `متاح: ${fmt(st.available)} · تكلفة ${fmt(st.avgCost, 0)}` : '';
-            if (st) cost += q * st.avgCost;
           });
-          const disc = num(f.discount.value), ship = num(f.shippingCharged.value), fee = num(f.courierFee.value);
+          const fee = num(f.courierFee.value);
+          if (promo) {
+            f.querySelector('#sale-summary').innerHTML = `<div><span>تكلفة القطع</span><b>${fmt(cost)}</b></div><div><span>شحن علينا</span><b>${fmt(fee)}</b></div><div class="strong"><span>يُحمَّل على مصروف الدعاية</span><b>${fmt(cost + fee)} ج.م</b></div><div><span>المطلوب من المستلم</span><b>0</b></div>`;
+            return;
+          }
+          const disc = num(f.discount.value), ship = num(f.shippingCharged.value);
           const total = gross - disc + ship;
           const profit = total - cost - fee;
           f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div><div class="${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
         };
+        const addProduct = (p) => {
+          const rows = [...lines.querySelectorAll('.line')];
+          const same = rows.find((r) => r.querySelector('.l-product').value === p.id);
+          if (same) { const q = same.querySelector('.l-qty'); q.value = num(q.value) + 1; }
+          else {
+            let row = rows.find((r) => !r.querySelector('.l-product').value);
+            if (!row) { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); row = lines.lastElementChild; }
+            row.querySelector('.l-product').value = p.id;
+            row.querySelector('.l-price').value = p.price || '';
+          }
+          recalc();
+          UI.toast(`+1 ${productLabel(p)}`);
+        };
+        attachScanner(f, (code) => { const p = OPS.findByCode(S().products, code); if (p) addProduct(p); else UI.toast(`مفيش منتج بالكود «${code}»`, 'bad'); });
         f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
         lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
         lines.addEventListener('change', (e) => {
@@ -239,50 +331,118 @@
         });
         f.addEventListener('input', recalc);
         const toggle = () => {
+          const promo = promoMode();
+          f.classList.toggle('promo-mode', promo);
+          f.querySelector('.promo-note').hidden = !promo;
+          f.querySelectorAll('.sale-only').forEach((el) => (el.hidden = promo));
           f.querySelector('.new-customer').hidden = f.customerId.value !== '__new';
           f.querySelector('#f-cName').required = f.customerId.value === '__new';
           f.querySelector('.return-fields').hidden = f.status.value !== 'returned';
+          recalc();
         };
-        f.customerId.addEventListener('change', toggle); f.status.addEventListener('change', toggle);
-        toggle(); recalc();
+        f.customerId.addEventListener('change', toggle); f.status.addEventListener('change', toggle); f.kind.addEventListener('change', toggle);
+        toggle();
       },
       onSubmit(f, fd) {
-        const items = [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), price: num(r.querySelector('.l-price').value) })).filter((l) => l.productId && l.qty > 0);
-        if (!items.length) { UI.toast('أضف صنفًا واحدًا على الأقل', 'bad'); return false; }
-        let customerId = fd.get('customerId');
-        if (customerId === '__new') {
-          const c = { id: uid(), name: fd.get('cName').trim(), phone: fd.get('cPhone').trim(), city: fd.get('cCity').trim(), address: fd.get('cAddress').trim() };
-          S().customers.push(c); customerId = c.id;
-        }
+        const promo = fd.get('kind') === 'promo';
+        const lines = [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), price: promo ? 0 : num(r.querySelector('.l-price').value) })).filter((l) => l.productId && l.qty > 0);
+        if (!lines.length) return fail('أضف صنفًا واحدًا على الأقل');
+        const merged = RULES.mergeLines(lines);
+        if (merged.conflicts.length) return fail(`${merged.conflicts.map((id) => productLabel(productById(id))).join('، ')} متكرر في أكتر من سطر بأسعار مختلفة — خليه سطر واحد`);
         const status = fd.get('status');
-        const obj = { ...sale, date: fd.get('date'), customerId, channel: fd.get('channel'), status, items, discount: num(fd.get('discount')), shippingCharged: num(fd.get('shippingCharged')), payment: fd.get('payment'), courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes') };
-        if (isNew) obj.no = S().settings.nextInvoiceNo++;
+        const obj = { ...sale, kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
+          discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
+          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes') };
+        if (!dateOk(obj.date, 'تاريخ الفاتورة')) return false;
+        const dErr = RULES.saleDateError(obj);
+        if (dErr) return fail(dErr);
+        const disc = RULES.discountError(obj);
+        if (disc) return fail(`الخصم ${fmt(disc.discount)} أكبر من قيمة الأصناف ${fmt(disc.gross)}`);
+        const dupTrack = RULES.trackingTaken(S(), obj.trackingNo, obj.id);
+        if (dupTrack) return fail(`رقم البوليصة ${obj.trackingNo} مسجل قبل كده على فاتورة ${invoiceNo(dupTrack)}`);
+        const lockedChanges = RULES.lockedSaleChanges(S(), isNew ? null : sale, obj);
+        if (lockedChanges.length) return fail(`الفاتورة داخلة في تسوية كشف شركة الشحن — مينفعش تغيّر: ${lockedChanges.join('، ')}`);
+        const stock = RULES.checkSaleStock(S(), J(), obj, isNew ? null : sale);
+        if (stock.errors.length) return fail(stockMsg(stock.errors, obj.status));
+        obj.preorder = stock.preorder;
+        if (isNew) obj.no = RULES.nextFreeInvoiceNo(S());
+        if (!cashOk(f, RULES.withDoc(S(), 'sales', obj))) return false;
+        if (obj.customerId === '__new') {
+          const c = { id: uid(), name: fd.get('cName').trim(), phone: fd.get('cPhone').trim(), city: fd.get('cCity').trim(), address: fd.get('cAddress').trim() };
+          S().customers.push(c); obj.customerId = c.id;
+        }
+        if (isNew) S().settings.nextInvoiceNo = obj.no + 1;
+        if (merged.merged) UI.toast('المنتج المتكرر اتجمع في سطر واحد');
+        if (stock.preorder) UI.toast('اتسجل كطلب مسبق — البضاعة جاية في شحنة في الطريق');
         DB.upsert('sales', obj);
-        UI.toast(isNew ? `تم تسجيل الطلب ${invoiceNo(obj)}` : 'تم حفظ التعديلات');
+        UI.toast(isNew ? `تم تسجيل ${promo ? 'فاتورة الدعاية' : 'الطلب'} ${invoiceNo(obj)}` : 'تم حفظ التعديلات');
         render();
       },
     });
+  }
+
+  // تكلفة كل سطر: الفعلية لو الفاتورة خرجت، والمتوسط الحالي لو لسه قيد التجهيز
+  const lineCosts = (sale) => {
+    const booked = J().inventory.saleCogs[sale.id];
+    return sale.items.map((it, i) => (booked && booked[i] != null ? booked[i] : num(it.qty) * ((J().inventory.products[it.productId] || {}).avgCost || 0)));
+  };
+
+  // نص الفاتورة لواتساب
+  function waText(sale) {
+    const s = S(), c = DB.find('customers', sale.customerId) || {};
+    const t = Acc.saleTotals(sale);
+    const lines = [`مرحبًا ${c.name || ''} 👋`];
+    if (isPromo(sale)) {
+      lines.push(`هدية من ${s.settings.businessName} 🎁`, '');
+      sale.items.forEach((it) => lines.push(`• ${productLabel(productById(it.productId))} × ${fmt(it.qty)}`));
+    } else {
+      lines.push(`فاتورة ${invoiceNo(sale)} من ${s.settings.businessName}`, `التاريخ: ${fmtDate(sale.date)}`, '');
+      sale.items.forEach((it) => lines.push(`• ${productLabel(productById(it.productId))} × ${fmt(it.qty)} = ${fmt(it.qty * it.price)} ج.م`));
+      lines.push('', `إجمالي الأصناف: ${fmt(t.gross)} ج.م`);
+      if (t.discount) lines.push(`الخصم: -${fmt(t.discount)} ج.م`);
+      if (t.shipping) lines.push(`الشحن: ${fmt(t.shipping)} ج.م`);
+      lines.push(`*المطلوب: ${fmt(t.total)} ج.م*${sale.payment === 'cod' ? ' (الدفع عند الاستلام)' : ' (مدفوع مقدمًا ✅)'}`);
+    }
+    if (sale.courierId) lines.push('', `الشحن مع ${nameOf('couriers', sale.courierId)}${sale.trackingNo ? ' — رقم البوليصة ' + sale.trackingNo : ''}`);
+    if (s.settings.waFooter) lines.push('', s.settings.waFooter);
+    return lines.join('\n');
+  }
+  function waButton(sale, cls = 'link-btn') {
+    const c = DB.find('customers', sale.customerId) || {};
+    if (!OPS.waPhone(c.phone)) return '';
+    return `<a class="${cls}" href="${esc(OPS.waLink(c.phone, waText(sale)))}" target="_blank" rel="noopener" title="إرسال الفاتورة على واتساب">واتساب</a>`;
   }
 
   function viewSale(sale) {
     const s = S();
     const c = DB.find('customers', sale.customerId) || {};
     const p = Acc.saleProfit(sale, J());
+    const promo = isPromo(sale);
+    const costs = lineCosts(sale);
+    const promoTotal = costs.reduce((a, x) => a + x, 0);
+    const itemsTable = promo
+      ? table(['الصنف', '#الكمية', '#تكلفة الوحدة', '#الإجمالي بالتكلفة'], sale.items.map((it, i) => `<tr>${td(esc(productLabel(productById(it.productId))))}${tdn(fmt(it.qty))}${tdn(fmt(it.qty ? costs[i] / it.qty : 0))}${tdn(fmt(costs[i]))}</tr>`), {
+        foot: `<tr><td colspan="3">قيمة القطع بالتكلفة</td>${tdn(fmt(promoTotal))}</tr>${num(sale.courierFee) ? `<tr><td colspan="3">مصاريف الشحن علينا</td>${tdn(fmt(sale.courierFee))}</tr>` : ''}<tr class="grand"><td colspan="3">المطلوب من المستلم</td>${tdn('0 ج.م — هدية دعائية')}</tr>`,
+      })
+      : table(['الصنف', '#الكمية', '#السعر', '#الإجمالي'], sale.items.map((it) => `<tr>${td(esc(productLabel(productById(it.productId))))}${tdn(fmt(it.qty))}${tdn(fmt(it.price))}${tdn(fmt(it.qty * it.price))}</tr>`), {
+        foot: `<tr><td colspan="3">إجمالي الأصناف</td>${tdn(fmt(p.gross))}</tr>${p.discount ? `<tr><td colspan="3">خصم</td>${tdn('-' + fmt(p.discount))}</tr>` : ''}${p.shipping ? `<tr><td colspan="3">مصاريف الشحن</td>${tdn(fmt(p.shipping))}</tr>` : ''}<tr class="grand"><td colspan="3">المطلوب</td>${tdn(fmt(p.total) + ' ج.م')}</tr>`,
+      });
+    const title = `${promo ? 'فاتورة دعاية' : 'فاتورة'} ${invoiceNo(sale)}`;
     const body = `
       <article class="invoice">
         <header class="inv-head"><div><div class="brand-mark">${esc(s.settings.businessName)}</div><small class="muted">${esc(s.settings.businessPhone || '')}</small></div>
-          <div class="inv-meta"><b>فاتورة ${esc(invoiceNo(sale))}</b><span>${fmtDate(sale.date)}</span>${UI.pill(STATUSES[sale.status], statusKind[sale.status])}</div></header>
-        <div class="inv-party"><span class="muted">العميل</span><b>${esc(c.name || '—')}</b><span>${esc(c.phone || '')}</span><span>${esc([c.city, c.address].filter(Boolean).join(' — '))}</span></div>
-        ${table(['الصنف', '#الكمية', '#السعر', '#الإجمالي'], sale.items.map((it) => `<tr>${td(esc(productLabel(productById(it.productId))))}${tdn(fmt(it.qty))}${tdn(fmt(it.price))}${tdn(fmt(it.qty * it.price))}</tr>`), {
-          foot: `<tr><td colspan="3">إجمالي الأصناف</td>${tdn(fmt(p.gross))}</tr>${p.discount ? `<tr><td colspan="3">خصم</td>${tdn('-' + fmt(p.discount))}</tr>` : ''}${p.shipping ? `<tr><td colspan="3">مصاريف الشحن</td>${tdn(fmt(p.shipping))}</tr>` : ''}<tr class="grand"><td colspan="3">المطلوب</td>${tdn(fmt(p.total) + ' ج.م')}</tr>`,
-        })}
-        <p class="muted">الدفع: ${sale.payment === 'cod' ? 'عند الاستلام' : 'مدفوع مقدمًا — ' + esc(nameOf('accounts', sale.payment))} · الشحن: ${esc(nameOf('couriers', sale.courierId))}</p>
+          <div class="inv-meta"><b>${esc(title)}</b><span>${fmtDate(sale.date)}</span>${UI.pill(STATUSES[sale.status], statusKind[sale.status])}</div></header>
+        <div class="inv-party"><span class="muted">${promo ? 'المستلم' : 'العميل'}</span><b>${esc(c.name || '—')}</b><span>${esc(c.phone || '')}</span><span>${esc([c.city, c.address].filter(Boolean).join(' — '))}</span></div>
+        ${itemsTable}
+        <p class="muted">${promo ? 'قطع مجانية لأغراض الدعاية — بدون مقابل' : `الدفع: ${sale.payment === 'cod' ? 'عند الاستلام' : 'مدفوع مقدمًا — ' + esc(nameOf('accounts', sale.payment))}`} · الشحن: ${esc(nameOf('couriers', sale.courierId))}${sale.trackingNo ? ` · بوليصة <span class="mono">${esc(sale.trackingNo)}</span>` : ''}</p>
         ${sale.notes ? `<p>${esc(sale.notes)}</p>` : ''}
       </article>
-      <div class="internal"><span>داخلي — لا يظهر للعميل:</span> التكلفة ${fmt(p.cogs)} · شحن علينا ${fmt(sale.courierFee)} · الربح <b class="${p.profit < 0 ? 'bad-text' : 'good-text'}">${fmt(p.profit)} ج.م</b></div>`;
-    UI.modal({ title: `فاتورة ${esc(invoiceNo(sale))}`, body, wide: true,
-      tools: { title: `فاتورة ${invoiceNo(sale)}`, target: '.invoice', invoice: true, file: `invoice-${invoiceNo(sale)}` },
-      footer: `<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
+      <div class="internal"><span>داخلي — لا يظهر للعميل:</span> ${promo
+        ? `يُحمَّل على مصروف الإعلانات <b class="bad-text">${fmt(Acc.BOOKED.has(sale.status) ? p.promoCost : promoTotal + num(sale.courierFee))} ج.م</b>${Acc.BOOKED.has(sale.status) ? '' : ' (تقديري — يتسجل لما تخرج الفاتورة مع الشحن)'}`
+        : `التكلفة ${fmt(p.cogs)} · شحن علينا ${fmt(sale.courierFee)} · الربح <b class="${p.profit < 0 ? 'bad-text' : 'good-text'}">${fmt(p.profit)} ج.م</b>`}${sale.campaignId ? ` · الحملة: ${esc(nameOf('campaigns', sale.campaignId))}` : ''}</div>`;
+    UI.modal({ title: esc(title), body, wide: true,
+      tools: { title, target: '.invoice', invoice: true, file: `invoice-${invoiceNo(sale)}` },
+      footer: `${waButton(sale, 'btn btn-wa') || '<span class="muted small-note">سجّل موبايل العميل لإرسال الفاتورة على واتساب</span>'}<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
       onOpen(f) {
         f.querySelector('#edit-btn').addEventListener('click', () => saleForm(sale));
       } });
@@ -312,8 +472,9 @@
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
   }
   function costRow(c = {}) {
-    return `<tr class="cost"><td><input class="c-label" value="${esc(c.label || '')}" placeholder="شحن جوي، جمارك، تخليص…" aria-label="البند"></td>
+    return `<tr class="cost"><td><input class="c-label" value="${esc(c.label || '')}" placeholder="شحن وجمارك" aria-label="البند"></td>
       <td><input class="c-amount" type="number" min="0" step="0.01" value="${c.amount ?? ''}" aria-label="المبلغ بالجنيه"></td>
+      <td>${UI.select('c-basis', Acc.COST_BASES, c.basis || 'weight', 'class="c-basis" aria-label="يتوزع حسب"')}</td>
       <td>${UI.select('c-account', accountOptions(), c.accountId || (S().accounts[0] || {}).id, 'class="c-account" aria-label="دُفع من"')}</td>
       <td><input class="c-date" type="date" value="${c.date || ''}" aria-label="تاريخ الدفع"></td>
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
@@ -324,7 +485,7 @@
     if (!s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
     const isNew = !sh;
     const sup0 = s.suppliers[0];
-    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [], notes: '' };
+    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' };
     const body = `
       <div class="form-grid">
         ${UI.field('رقم / مرجع الشحنة', UI.input('ref', sh.ref, 'placeholder="مثال: SA-2610"'))}
@@ -334,22 +495,25 @@
         ${UI.field('تاريخ الطلب', UI.input('orderDate', sh.orderDate, 'type="date" required'), { req: true })}
         ${UI.field('الحالة', UI.select('status', SHIP_STATUSES, sh.status))}
         ${UI.field('تاريخ الاستلام', UI.input('receivedDate', sh.receivedDate || today(), 'type="date"'), { cls: 'recv-field' })}
+        ${UI.field('ميعاد سداد المورد', UI.input('dueDate', sh.dueDate || '', 'type="date"'), { hint: 'هيظهرلك تنبيه قبل الميعاد لو لسه عليك رصيد' })}
       </div>
       <h3 class="sub-title">الأصناف (بسعر المورد)</h3>
       <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة <span class="cur-label"></span></th><th class="num">بالجنيه</th><th class="num">تكلفة الوحدة الواصلة</th><th></th></tr></thead>
         <tbody id="lines">${sh.items.map(shipLineRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
-      <h3 class="sub-title">مصاريف إضافية بالجنيه (شحن، جمارك، تخليص، عمولات)</h3>
-      <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
+      <h3 class="sub-title">مصاريف الشحن والجمارك بالجنيه</h3>
+      <p class="muted">لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
+      <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>يتوزع حسب</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
         <tbody id="costs">${sh.costs.map(costRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-cost">+ إضافة مصروف</button>
+      <div class="imp-box warn" id="weight-warn" hidden></div>
       ${UI.field('ملاحظات', `<textarea id="f-notes" name="notes" rows="2">${esc(sh.notes || '')}</textarea>`)}
       <div class="summary" id="ship-summary"></div>`;
     const read = (f) => ({
       ...sh, ref: f.ref.value.trim(), supplierId: f.supplierId.value, currency: f.currency.value, rate: num(f.rate.value), orderDate: f.orderDate.value, status: f.status.value,
-      receivedDate: f.status.value === 'received' ? f.receivedDate.value : '', notes: f.notes.value,
+      receivedDate: f.status.value === 'received' ? f.receivedDate.value : '', dueDate: f.dueDate.value, notes: f.notes.value,
       items: [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })).filter((l) => l.productId && l.qty > 0),
-      costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim(), amount: num(r.querySelector('.c-amount').value), accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
+      costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim() || 'شحن وجمارك', amount: num(r.querySelector('.c-amount').value), basis: r.querySelector('.c-basis').value, accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
     });
     UI.modal({
       title: isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
@@ -358,7 +522,11 @@
         const recalc = () => {
           const draft = read(f);
           const allRows = [...lines.querySelectorAll('.line')];
-          const c = Acc.shipmentCosting({ ...draft, items: allRows.map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })) });
+          const c = Acc.shipmentCosting({ ...draft, items: allRows.map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })) }, S().products);
+          const ww = f.querySelector('#weight-warn');
+          const byWeight = c.costs.some((x) => x.basis === 'weight');
+          ww.hidden = !(byWeight && c.missingWeight.filter(Boolean).length);
+          if (!ww.hidden) ww.innerHTML = `<b>${c.missingWeight.filter(Boolean).map((id) => esc(productLabel(productById(id)))).join('، ')}</b> ملوش وزن شحن ولا حجم بالمللي، فالمصاريف اتوزعت مؤقتًا بعدد القطع. سجّل الوزن أو الحجم في المنتج عشان التوزيع يبقى بالحجم.`;
           allRows.forEach((r, i) => { r.querySelector('.l-egp').textContent = fmt(c.lines[i].egp); r.querySelector('.l-landed').textContent = fmt(c.lines[i].landedUnit); });
           f.querySelector('.cur-label').textContent = `(${draft.currency})`;
           f.querySelector('.recv-field').hidden = draft.status !== 'received';
@@ -375,7 +543,11 @@
       onSubmit(f) {
         const obj = read(f);
         if (!obj.items.length) { UI.toast('أضف صنفًا واحدًا على الأقل', 'bad'); return false; }
-        if (!obj.rate) { UI.toast('أدخل سعر الصرف', 'bad'); return false; }
+        if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
+        if (!dateOk(obj.orderDate, 'تاريخ الطلب')) return false;
+        const shErr = RULES.shipmentDateError(obj);
+        if (shErr) return fail(shErr);
+        if (!cashOk(f, RULES.withDoc(S(), 'shipments', obj))) return false;
         DB.upsert('shipments', obj);
         UI.toast(isNew ? 'تم تسجيل الشحنة' : 'تم حفظ الشحنة');
         render();
@@ -384,12 +556,15 @@
   }
 
   function landedView(sh) {
-    const c = Acc.shipmentCosting(sh);
+    const c = Acc.shipmentCosting(sh, S().products);
+    const costHeads = c.costs.map((x) => `#${x.label || 'مصاريف'} للقطعة`);
+    const basisNote = c.costs.map((x) => `«${esc(x.label || 'مصاريف')}» ${fmt(x.amount)} ج.م اتوزع حسب ${Acc.COST_BASES[x.applied]}${x.applied !== x.basis ? ` (بدل ${Acc.COST_BASES[x.basis]} لأن فيه صنف ملوش وزن ولا حجم)` : ''}`).join(' · ');
     UI.modal({ title: `تكلفة الوحدة — شحنة ${esc(sh.ref)}`, wide: true, tools: { title: `تكلفة الوحدة الواصلة — شحنة ${sh.ref || ''}`, subtitle: `${nameOf('suppliers', sh.supplierId)} · سعر الصرف ${sh.rate}`, file: `landed-${sh.ref || 'shipment'}` },
-      body: `${table(['المنتج', '#الكمية', `#سعر المورد (${sh.currency})`, '#بالجنيه', '#نصيبه من المصاريف', '#تكلفة الوحدة الواصلة', '#سعر البيع', '#الهامش المتوقع'], c.lines.map((l) => {
+      body: `${basisNote ? `<p class="muted">${basisNote}</p>` : ''}${table(['المنتج', '#الكمية', '#وزن/حجم القطعة', `#سعر المورد (${sh.currency})`, '#بالجنيه', ...costHeads, '#تكلفة الوحدة الواصلة', '#سعر البيع', '#الهامش المتوقع'], c.lines.map((l) => {
         const p = productById(l.productId) || {};
-        return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(l.qty))}${tdn(fmt(l.unitCost))}${tdn(fmt(l.egp))}${tdn(fmt(l.extras))}${tdn(`<b>${fmt(l.landedUnit)}</b>`)}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - l.landedUnit) / p.price) : '—')}</tr>`;
-      }), { foot: `<tr><td>الإجمالي</td>${tdn(fmt(c.totalQty))}${tdn(fmt(c.goodsForeign))}${tdn(fmt(c.goodsEGP))}${tdn(fmt(c.extras))}${tdn(fmt(c.landedTotal))}<td colspan="2"></td></tr>` })}` });
+        return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(l.qty))}${tdn(l.unitWeight ? fmt(l.unitWeight) : '—')}${tdn(fmt(l.unitCost))}${tdn(fmt(l.qty ? l.egp / l.qty : 0))}${l.parts.map((x) => tdn(fmt(l.qty ? x / l.qty : 0))).join('')}${tdn(`<b>${fmt(l.landedUnit)}</b>`)}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - l.landedUnit) / p.price) : '—')}</tr>`;
+      }), { foot: `<tr><td>الإجمالي</td>${tdn(fmt(c.totalQty))}${tdn(c.totalWeight ? fmt(c.totalWeight) : '')}${tdn(fmt(c.goodsForeign))}${tdn(fmt(c.goodsEGP))}${c.costs.map((x) => tdn(fmt(x.amount))).join('')}${tdn(fmt(c.landedTotal))}<td colspan="2"></td></tr>` })}
+        <p class="muted">أعمدة المصاريف والبضاعة بالجنيه للقطعة الواحدة، وصف الإجمالي بإجمالي الشحنة.</p>` });
   }
 
   // =====================================================================
@@ -403,18 +578,24 @@
       totals.value += st.value; totals.retail += st.qty * num(p.price);
       const low = st.available <= num(p.minStock ?? s.settings.lowStock);
       const margin = p.price && st.avgCost ? (p.price - st.avgCost) / p.price : null;
-      return `<tr>${td(esc(p.sku || ''), 'mono')}${td(`<b>${esc(p.brand || '')}</b> ${esc(p.name)}`)}${td(p.sizeMl ? p.sizeMl + ' مل' : '—')}${td(GENDERS[p.gender] || '—')}
+      return `<tr>${td(`${esc(p.sku || '')}${p.barcode && p.barcode !== p.sku ? `<br><small class="muted">${esc(p.barcode)}</small>` : ''}`, 'mono')}${td(`<b>${esc(p.brand || '')}</b> ${esc(p.name)}${p.decantOf ? ' ' + UI.pill('ديكانت', 'info') : ''}`)}${td(p.sizeMl ? p.sizeMl + ' مل' : '—')}${td(GENDERS[p.gender] || '—')}
         ${tdn(fmt(p.price))}${tdn(fmt(st.qty))}${tdn(st.reserved ? fmt(st.reserved) : '—')}${tdn(`<span class="${st.available <= 0 ? 'bad-text' : low ? 'warn-text' : ''}">${fmt(st.available)}</span>`)}
         ${tdn(fmt(st.avgCost))}${tdn(fmt(st.value))}${tdn(margin == null ? '—' : pct(margin))}
         ${td(st.available <= 0 ? UI.pill('نفد', 'bad') : low ? UI.pill('اطلب الآن', 'warn') : UI.pill('متوفر', 'good'))}
         ${actions(btn('حركة', 'productMoves', p.id), btn('تعديل', 'editProduct', p.id), btn('حذف', 'delProduct', p.id, 'danger'))}</tr>`;
     });
     const adj = [...s.adjustments].sort((a, b) => (a.date < b.date ? 1 : -1)).map((a) => `<tr>${td(fmtDate(a.date))}${td(esc(productLabel(productById(a.productId))))}${td(Acc.ADJ_REASONS[a.reason] || a.reason)}${tdn(fmt(a.qty))}${tdn(fmt(J().inventory.adjCost[a.id] || 0))}${td(esc(a.notes || ''))}${actions(btn('حذف', 'delAdjustment', a.id, 'danger'))}</tr>`);
-    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
+    const dec = [...s.decants].sort((a, b) => (a.date < b.date ? 1 : -1)).map((d) => {
+      const c = J().inventory.decantCost[d.id] || { total: 0, costPerMl: 0 };
+      return `<tr>${td(fmtDate(d.date))}${td(`${d.kind === 'unbox' ? UI.pill('فك بوكس', 'info') + ' ' : ''}${esc(productLabel(productById(d.sourceProductId)))}`)}${tdn(fmt(d.sourceQty))}${td(d.outputs.map((o) => `${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`).join('<br>'))}${tdn(fmt(d.materialsCost))}${tdn(fmt(c.total))}${tdn(d.kind === 'unbox' ? '—' : fmt(c.costPerMl))}${actions(btn('التفاصيل', 'viewDecant', d.id), btn('حذف', 'delDecant', d.id, 'danger'))}</tr>`;
+    });
+    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newDecant">تقسيم عبوة (ديكانت)</button><button class="btn" data-action="unbox">فك بوكس</button><button class="btn" data-action="barcodeLabels">طباعة باركود</button><button class="btn" data-action="stockCount">جرد بالباركود</button><button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
       <section class="kpis kpis-3">${kpi('قيمة المخزون بالتكلفة', money0(totals.value))}${kpi('قيمته بسعر البيع', money0(totals.retail))}${kpi('ربح متوقع في المخزون', money0(totals.retail - totals.value), totals.retail ? `هامش ${pct((totals.retail - totals.value) / totals.retail)}` : '')}</section>
       ${table(['الكود', 'المنتج', 'الحجم', 'الفئة', '#سعر البيع', '#الرصيد', '#محجوز', '#متاح', '#متوسط التكلفة', '#قيمة المخزون', '#الهامش', 'الحالة', ''], rows, { empty: 'لا توجد منتجات بعد' })}
       <h2 class="section-title">تسويات المخزون (افتتاحي، تالف، تسترات، هدايا، فروق جرد)</h2>
-      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { empty: 'لا توجد تسويات' })}`;
+      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { empty: 'لا توجد تسويات' })}
+      <h2 class="section-title">تقسيم العبوات (ديكانت) وفك البوكسات</h2>
+      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { empty: 'لم تقسم أي عبوة بعد' })}`;
   }
 
   function productForm(p) {
@@ -425,13 +606,19 @@
         ${UI.field('الماركة', UI.input('brand', p.brand, 'placeholder="لطافة، أرماف، الرصاصي…"'))}
         ${UI.field('اسم العطر', UI.input('name', p.name, 'required'), { req: true })}
         ${UI.field('الحجم (مل)', UI.input('sizeMl', p.sizeMl, 'type="number" min="0"'))}
+        ${UI.field('وزن الشحن (جرام)', UI.input('weightG', p.weightG || '', 'type="number" min="0" step="1"'), { hint: p.boxItems && p.boxItems.length ? `بوكس: لو فاضي يتحسب بمجموع قطعه (${fmt(Acc.unitWeight({ ...p, weightG: 0, sizeMl: 0 }, S().products))})` : 'لتوزيع مصاريف الشحن. لو فاضي يتحسب بالمللي' })}
         ${UI.field('الفئة', UI.select('gender', GENDERS, p.gender))}
-        ${UI.field('كود المنتج (SKU)', UI.input('sku', p.sku))}
+        ${UI.field('كود المنتج (SKU)', UI.input('sku', p.sku, 'dir="ltr"'))}
+        ${UI.field('الباركود', UI.input('barcode', p.barcode || '', 'dir="ltr" autocomplete="off"'), { hint: 'امسحه بالقارئ هنا، أو سيبه فاضي ويتعمل تلقائي عند الطباعة' })}
         ${UI.field('سعر البيع (ج.م)', UI.input('price', p.price, 'type="number" min="0" step="0.01" required'), { req: true })}
         ${UI.field('حد إعادة الطلب', UI.input('minStock', p.minStock, 'type="number" min="0"'), { hint: 'ينبهك عندما يقل المتاح عن هذا الرقم' })}
       </div>`,
       onSubmit(f, fd) {
-        DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), gender: fd.get('gender'), sku: fd.get('sku').trim(), price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
+        const barcode = fd.get('barcode').trim();
+        if (barcode && !OPS.validBarcode(barcode)) { UI.toast('الباركود لازم يكون حروف وأرقام إنجليزي بس', 'bad'); return false; }
+        const dup = barcode && S().products.find((x) => x.id !== p.id && (x.barcode || '').toUpperCase() === barcode.toUpperCase());
+        if (dup) { UI.toast(`الباركود ده مستخدم لـ ${productLabel(dup)}`, 'bad'); return false; }
+        DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), weightG: num(fd.get('weightG')), gender: fd.get('gender'), sku: fd.get('sku').trim(), barcode, price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
         UI.toast('تم حفظ المنتج'); render();
       } });
   }
@@ -453,19 +640,23 @@
         if (!qty) { UI.toast('أدخل الكمية', 'bad'); return false; }
         if (['damage', 'tester', 'gift', 'promo'].includes(reason) && qty > 0) qty = -qty;
         if (reason === 'opening' && (qty < 0 || fd.get('unitCost') === '')) { UI.toast('المخزون الافتتاحي يحتاج كمية موجبة وتكلفة وحدة', 'bad'); return false; }
+        if (!dateOk(fd.get('date'))) return false;
+        const out = qty < 0 && RULES.checkStockOut(J(), fd.get('productId'), -qty);
+        if (out) return fail(stockMsg([out]));
         DB.upsert('adjustments', { id: uid(), date: fd.get('date'), productId: fd.get('productId'), qty, unitCost: qty > 0 && fd.get('unitCost') !== '' ? num(fd.get('unitCost')) : null, reason, notes: fd.get('notes') });
         UI.toast('تم تسجيل التسوية'); render();
       } });
   }
 
   function productMoves(p) {
-    const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم' };
+    const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم', decantOut: 'تفريغ / فك', decantIn: 'وارد من تقسيم / فك' };
     const rows = J().inventory.movements.filter((m) => m.productId === p.id).map((m) => {
       let ref = '';
       if (m.src.type === 'shipment') ref = 'شحنة ' + ((DB.find('shipments', m.src.id) || {}).ref || '');
-      else if (m.src.type === 'sale') ref = 'فاتورة ' + invoiceNo(DB.find('sales', m.src.id) || {});
+      else if (m.src.type === 'sale') { const x = DB.find('sales', m.src.id) || {}; ref = `${isPromo(x) ? 'فاتورة دعاية' : 'فاتورة'} ${invoiceNo(x)}`; }
+      else if (m.src.type === 'decant') { const d = DB.find('decants', m.src.id) || {}; ref = `${d.kind === 'unbox' ? 'فك بوكس' : 'تقسيم عبوة'} ${productLabel(productById(d.sourceProductId))}`; }
       else ref = Acc.ADJ_REASONS[(DB.find('adjustments', m.src.id) || {}).reason] || 'تسوية';
-      const sign = m.kind === 'in' || m.kind === 'return' ? 1 : -1;
+      const sign = m.kind === 'in' || m.kind === 'return' || m.kind === 'decantIn' ? 1 : -1;
       return `<tr>${td(fmtDate(m.date))}${td(labels[m.kind])}${td(esc(ref))}${tdn(fmt(sign * m.qty))}${tdn(fmt(m.qty ? m.cost / m.qty : 0))}${tdn(fmt(m.balanceQty))}${tdn(fmt(m.balanceValue))}${tdn(fmt(m.balanceQty ? m.balanceValue / m.balanceQty : 0))}</tr>`;
     });
     UI.modal({ title: `كارت صنف — ${esc(productLabel(p))}`, wide: true, tools: { title: `كارت صنف — ${productLabel(p)}`, file: `stock-card-${p.sku || p.id}` }, body: table(['التاريخ', 'الحركة', 'المستند', '#الكمية', '#تكلفة الوحدة', '#الرصيد', '#القيمة', '#متوسط التكلفة'], rows, { empty: 'لا توجد حركة على هذا الصنف' }) });
@@ -531,7 +722,13 @@
         f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) f.rate.value = sp.currency === 'EGP' ? 1 : S().settings.rates[sp.currency] || f.rate.value; upd(); });
         f.addEventListener('input', upd); upd();
       },
-      onSubmit(f, fd) { DB.upsert('supplierPayments', { ...p, date: fd.get('date'), supplierId: fd.get('supplierId'), amount: num(fd.get('amount')), rate: num(fd.get('rate')), accountId: fd.get('accountId'), fee: num(fd.get('fee')), notes: fd.get('notes') }); UI.toast('تم تسجيل الدفعة'); render(); } });
+      onSubmit(f, fd) {
+        const obj = { ...p, date: fd.get('date'), supplierId: fd.get('supplierId'), amount: num(fd.get('amount')), rate: num(fd.get('rate')), accountId: fd.get('accountId'), fee: num(fd.get('fee')), notes: fd.get('notes') };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'supplierPayments', obj))) return false;
+        DB.upsert('supplierPayments', obj); UI.toast('تم تسجيل الدفعة'); render();
+      } });
   }
 
   function supplierStatement(x) {
@@ -553,7 +750,7 @@
     const stats = {};
     s.sales.forEach((x) => {
       const st = (stats[x.customerId] = stats[x.customerId] || { orders: 0, total: 0, profit: 0, returns: 0, last: '' });
-      if (!Acc.BOOKED.has(x.status)) return;
+      if (!Acc.BOOKED.has(x.status) || isPromo(x)) return;
       const p = Acc.saleProfit(x, j);
       st.orders++; if (x.status === 'returned') st.returns++; else st.total += p.total;
       st.profit += p.profit; if (x.date > st.last) st.last = x.date;
@@ -586,7 +783,7 @@
     const docs = [
       ...s.transfers.map((t) => ({ date: t.date, kind: 'تحويل', desc: `${nameOf('accounts', t.fromId)} ← ${nameOf('accounts', t.toId)}`, amount: t.amount, extra: t.fee ? `عمولة ${fmt(t.fee)}` : '', list: 'transfers', id: t.id })),
       ...s.settlements.map((t) => ({ date: t.date, kind: t.amount >= 0 ? 'تحصيل شحن' : 'سداد لشركة شحن', desc: `${nameOf('couriers', t.courierId)} → ${nameOf('accounts', t.accountId)}`, amount: t.amount, extra: t.notes || '', list: 'settlements', id: t.id })),
-      ...s.equity.map((t) => ({ date: t.date, kind: t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', desc: nameOf('accounts', t.accountId), amount: t.amount, extra: t.notes || '', list: 'equity', id: t.id })),
+      ...s.equity.map((t) => ({ date: t.date, kind: t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', desc: `${nameOf('accounts', t.accountId)}${t.partnerId ? ' — ' + nameOf('partners', t.partnerId) : ''}`, amount: t.amount, extra: t.notes || '', list: 'equity', id: t.id })),
     ].filter((d) => inPeriod(d.date)).sort((a, b) => (a.date < b.date ? 1 : -1));
     return `${header('الخزينة والبنوك', 'أرصدة الخزائن والمحافظ، التحصيل من شركات الشحن، التحويلات، ورأس المال.', `${periodBar()}<button class="btn" data-action="newEquity">رأس مال / مسحوبات</button><button class="btn" data-action="newTransfer">تحويل بين الحسابات</button><button class="btn btn-primary" data-action="newSettlement">تحصيل من شركة شحن</button>`)}
       <section class="acc-cards">
@@ -607,7 +804,13 @@
     t = t || { id: uid(), date: today(), fromId: (s.accounts[0] || {}).id, toId: (s.accounts[1] || {}).id, amount: '', fee: 0, notes: '' };
     UI.modal({ title: 'تحويل بين الحسابات',
       body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('من', UI.select('fromId', accountOptions(), t.fromId))}${UI.field('إلى', UI.select('toId', accountOptions(), t.toId))}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('عمولة التحويل', UI.input('fee', t.fee, 'type="number" min="0" step="0.01"'))}${UI.field('ملاحظات', UI.input('notes', t.notes))}</div>`,
-      onSubmit(f, fd) { if (fd.get('fromId') === fd.get('toId')) { UI.toast('اختر حسابين مختلفين', 'bad'); return false; } DB.upsert('transfers', { ...t, date: fd.get('date'), fromId: fd.get('fromId'), toId: fd.get('toId'), amount: num(fd.get('amount')), fee: num(fd.get('fee')), notes: fd.get('notes') }); UI.toast(isNew ? 'تم التحويل' : 'تم الحفظ'); render(); } });
+      onSubmit(f, fd) {
+        if (fd.get('fromId') === fd.get('toId')) return fail('اختر حسابين مختلفين');
+        const obj = { ...t, date: fd.get('date'), fromId: fd.get('fromId'), toId: fd.get('toId'), amount: num(fd.get('amount')), fee: num(fd.get('fee')), notes: fd.get('notes') };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'transfers', obj))) return false;
+        DB.upsert('transfers', obj); UI.toast(isNew ? 'تم التحويل' : 'تم الحفظ'); render();
+      } });
   }
   function settlementForm(t) {
     const s = S(); const isNew = !t;
@@ -616,14 +819,25 @@
     t = t || { id: uid(), date: today(), courierId: s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, amount: '', notes: '' };
     UI.modal({ title: 'تحصيل / سداد مع شركة شحن',
       body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('شركة الشحن', UI.select('courierId', s.couriers.map((c) => ({ v: c.id, l: `${c.name} (الرصيد ${fmt(bal[c.id] || 0)})` })), t.courierId))}${UI.field('إلى حساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('المبلغ المستلم', UI.input('amount', t.amount, 'type="number" step="0.01" required'), { req: true, hint: 'صافي التحويل بعد خصم مصاريف الشحن. رقم سالب لو أنت اللي دفعت لهم' })}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}</div>`,
-      onSubmit(f, fd) { DB.upsert('settlements', { ...t, date: fd.get('date'), courierId: fd.get('courierId'), accountId: fd.get('accountId'), amount: num(fd.get('amount')), notes: fd.get('notes') }); UI.toast(isNew ? 'تم تسجيل التحصيل' : 'تم الحفظ'); render(); } });
+      onSubmit(f, fd) {
+        const obj = { ...t, date: fd.get('date'), courierId: fd.get('courierId'), accountId: fd.get('accountId'), amount: num(fd.get('amount')), notes: fd.get('notes') };
+        if (!obj.amount) return fail('أدخل المبلغ');
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'settlements', obj))) return false;
+        DB.upsert('settlements', obj); UI.toast(isNew ? 'تم تسجيل التحصيل' : 'تم الحفظ'); render();
+      } });
   }
   function equityForm(t) {
     const s = S(); const isNew = !t;
-    t = t || { id: uid(), date: today(), type: 'capital', amount: '', accountId: (s.accounts[0] || {}).id, notes: '' };
+    t = t || { id: uid(), date: today(), type: 'capital', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', partnerId: '' };
+    const partnerField = s.partners.length ? UI.field('الشريك', UI.select('partnerId', [{ v: '', l: 'بدون شريك (المالك)' }, ...s.partners.map((p) => ({ v: p.id, l: p.name }))], t.partnerId || ''), { hint: 'مسحوبات الشريك تتخصم من حسابه الجاري' }) : '';
     UI.modal({ title: 'رأس مال / مسحوبات',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('النوع', UI.select('type', { capital: 'إضافة رأس مال', drawing: 'مسحوبات شخصية' }, t.type))}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('الحساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}</div>`,
-      onSubmit(f, fd) { DB.upsert('equity', { ...t, date: fd.get('date'), type: fd.get('type'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), notes: fd.get('notes') }); UI.toast(isNew ? 'تم التسجيل' : 'تم الحفظ'); render(); } });
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('النوع', UI.select('type', { capital: 'إضافة رأس مال', drawing: 'مسحوبات' }, t.type))}${partnerField}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('الحساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}</div>`,
+      onSubmit(f, fd) {
+        const obj = { ...t, date: fd.get('date'), type: fd.get('type'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), partnerId: fd.get('partnerId') || '', notes: fd.get('notes') };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'equity', obj))) return false;
+        DB.upsert('equity', obj); UI.toast(isNew ? 'تم التسجيل' : 'تم الحفظ'); render();
+      } });
   }
 
   // =====================================================================
@@ -642,14 +856,20 @@
           ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
-      ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(esc(e.notes || ''))}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
+      ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
   }
   function expenseForm(e) {
     const s = S(); const isNew = !e;
-    e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '' };
+    e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', campaignId: '' };
     UI.modal({ title: isNew ? 'مصروف جديد' : 'تعديل المصروف',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', accountOptions(), e.accountId))}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
-      onSubmit(f, fd) { DB.upsert('expenses', { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), notes: fd.get('notes') }); UI.toast('تم حفظ المصروف'); render(); } });
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', accountOptions(), e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
+      onOpen(f) { const t = () => { f.querySelector('.camp-field').hidden = f.category.value !== '5300'; }; f.category.addEventListener('change', t); t(); },
+      onSubmit(f, fd) {
+        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'expenses', obj))) return false;
+        DB.upsert('expenses', obj); UI.toast('تم حفظ المصروف'); render();
+      } });
   }
 
   // =====================================================================
@@ -692,7 +912,7 @@
       const entries = j.entries.filter((e) => inPeriod(e.date)).slice(-400).reverse();
       return `<h2>دفتر اليومية <small class="muted">${entries.length} قيد${entries.length === 400 ? ' (آخر ٤٠٠)' : ''}</small></h2>
         <div class="journal">${entries.map((e) => `<div class="je"><div class="je-head"><span class="mono">#${e.no}</span><span>${fmtDate(e.date)}</span><b>${esc(e.desc)}</b></div>
-          <div class="table-wrap"><table class="je-lines"><tbody>${e.lines.map((l) => `<tr><td class="${l.cr ? 'cr-acc' : ''}">${l.cr ? 'إلى ' : 'من '}${esc(Acc.accountName(l.acc, s))}${l.party ? ` <small class="muted">(${esc(nameOf(l.party.type === 'supplier' ? 'suppliers' : 'couriers', l.party.id))})</small>` : ''}</td>${tdn(l.dr ? fmt(l.dr) : '')}${tdn(l.cr ? fmt(l.cr) : '')}</tr>`).join('')}</tbody></table></div></div>`).join('') || UI.empty('لا توجد قيود في هذه الفترة')}</div>`;
+          <div class="table-wrap"><table class="je-lines"><tbody>${e.lines.map((l) => `<tr><td class="${l.cr ? 'cr-acc' : ''}">${l.cr ? 'إلى ' : 'من '}${esc(Acc.accountName(l.acc, s))}${l.party ? ` <small class="muted">(${esc(partyName(l.party))})</small>` : ''}</td>${tdn(l.dr ? fmt(l.dr) : '')}${tdn(l.cr ? fmt(l.cr) : '')}</tr>`).join('')}</tbody></table></div></div>`).join('') || UI.empty('لا توجد قيود في هذه الفترة')}</div>`;
     }
     if (report === 'ledger') {
       const opts = [...Acc.COA.filter((a) => a.code !== '1100').map((a) => ({ v: a.code, l: `${a.code} — ${a.name}` })), ...s.accounts.map((a) => ({ v: Acc.cashCode(a.id), l: `1100 — ${a.name}` }))];
@@ -702,7 +922,7 @@
     }
     if (report === 'productsPerf') {
       const rows = Acc.productPerformance(s, j, period.from, period.to);
-      return `<h2>ربحية المنتجات</h2>${table(['المنتج', '#المباع', '#المرتجع', '#صافي الإيراد', '#التكلفة', '#مجمل الربح', '#الهامش'], rows.map((r) => `<tr>${td(esc(productLabel(productById(r.productId))))}${tdn(fmt(r.qty))}${tdn(r.returnedQty ? fmt(r.returnedQty) : '—')}${tdn(fmt(r.revenue))}${tdn(fmt(r.cogs))}${tdn(fmt(r.profit))}${tdn(pct(r.margin))}</tr>`), { empty: 'لا مبيعات في هذه الفترة' })}
+      return `<h2>ربحية المنتجات</h2>${table(['المنتج', '#المباع', '#المرتجع', '#دعاية مجانية', '#صافي الإيراد', '#التكلفة', '#مجمل الربح', '#الهامش'], rows.map((r) => `<tr>${td(esc(productLabel(productById(r.productId))))}${tdn(fmt(r.qty))}${tdn(r.returnedQty ? fmt(r.returnedQty) : '—')}${tdn(r.promoQty ? `${fmt(r.promoQty)} <small class="muted">(${fmt(r.promoCost)})</small>` : '—')}${tdn(fmt(r.revenue))}${tdn(fmt(r.cogs))}${tdn(fmt(r.profit))}${tdn(pct(r.margin))}</tr>`), { empty: 'لا مبيعات في هذه الفترة' })}
         <p class="muted">الإيراد هنا بعد توزيع الخصم على الأصناف، ولا يشمل إيراد الشحن.</p>`;
     }
     const rows = Acc.channelPerformance(s, j, period.from, period.to);
@@ -732,6 +952,18 @@
           ${UI.field('الدرهم الإماراتي AED', UI.input('rate_AED', st.rates.AED, 'type="number" step="0.0001" min="0"'))}
           ${UI.field('الدولار الأمريكي USD', UI.input('rate_USD', st.rates.USD, 'type="number" step="0.0001" min="0"'))}
         </div>
+        <h2 class="section-title">التنبيهات (بعد كام يوم ينبهك)</h2>
+        <div class="form-grid">
+          ${UI.field('طلب قيد التجهيز', UI.input('al_pendingDays', st.alerts.pendingDays, 'type="number" min="1"'))}
+          ${UI.field('طلب مع شركة الشحن ولسه ما اتسلمش', UI.input('al_shippedDays', st.alerts.shippedDays, 'type="number" min="1"'))}
+          ${UI.field('طلب اتسلم وفلوسه ما اتسوتش', UI.input('al_settleDays', st.alerts.settleDays, 'type="number" min="1"'))}
+          ${UI.field('قبل ميعاد سداد المورد', UI.input('al_dueDays', st.alerts.dueDays, 'type="number" min="0"'))}
+          ${UI.field('منتج ما اتباعش (ركود)', UI.input('al_stagnantDays', st.alerts.stagnantDays, 'type="number" min="7"'))}
+        </div>
+        <h2 class="section-title">واتساب</h2>
+        <div class="form-grid">
+          ${UI.field('سطر في آخر رسالة الفاتورة', UI.input('waFooter', st.waFooter || ''), { cls: 'span-2', hint: 'مثال: شكرًا لطلبك — تابعنا على إنستجرام' })}
+        </div>
         <button class="btn btn-primary" type="submit">حفظ الإعدادات</button>
       </form>
       <section class="grid-2">
@@ -750,6 +982,9 @@
           <button class="btn" data-action="importTemplate">تنزيل نموذج فاضي</button>
           ${lastImport() ? `<button class="btn btn-danger" data-action="undoImport">تراجع عن آخر استيراد (${esc(lastImport().label)})</button>` : ''}
         </div>
+        <h2 class="section-title">فحص سلامة البيانات</h2>
+        <p class="muted">بيراجع كل بياناتك على قواعد النظام (الرصيد، تكرار الأرقام، التواريخ، الخزائن، توازن الدفاتر) ويطلعلك أي مشكلة. افحص بعد أي استيراد أو استرجاع نسخة.</p>
+        <div class="btn-row"><a class="btn" href="#health">افتح فحص البيانات</a></div>
         <h2 class="section-title">النسخ الاحتياطي</h2>
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
@@ -779,8 +1014,494 @@
     try {
       const data = JSON.parse(text);
       if (!data || !Array.isArray(data.sales) || !data.settings) throw new Error('bad');
-      DB.replace(data); UI.toast('تم استيراد النسخة الاحتياطية'); render();
+      DB.replace(data); UI.toast('تم استيراد النسخة الاحتياطية — افتح «فحص سلامة البيانات» للتأكد'); render();
     } catch (e) { UI.toast('الملف ليس نسخة احتياطية صالحة من Florume', 'bad'); }
+  }
+
+  // =====================================================================
+  // التنبيهات
+  // =====================================================================
+  const ALERT_TYPES = { pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
+  const alertList = () => OPS.alerts(S(), J(), today(), S().settings.alerts);
+  const alertItems = (list) => `<ul class="alert-list">${list.map((a) => `<li class="al-${a.level}"><i aria-hidden="true"></i><div><b>${esc(a.title)}</b><small class="muted">${esc(a.detail)}</small></div>${a.action ? `<button type="button" class="link-btn" data-action="${a.action}" data-id="${esc(a.id || '')}">عرض</button>` : ''}</li>`).join('')}</ul>`;
+  let alertFilter = '';
+  function alertsPage() {
+    const list = alertList();
+    const counts = {};
+    list.forEach((a) => (counts[a.type] = (counts[a.type] || 0) + 1));
+    const shown = list.filter((a) => !alertFilter || a.type === alertFilter);
+    const c = S().settings.alerts;
+    return `${header('التنبيهات', `بتتحدث تلقائيًا كل ما تفتح البرنامج. الحدود: تجهيز ${c.pendingDays} يوم · مع الشحن ${c.shippedDays} يوم · تحصيل ${c.settleDays} يوم · سداد قبلها ${c.dueDays} أيام · ركود ${c.stagnantDays} يوم (غيّرها من الإعدادات).`)}
+      <nav class="tabs" role="tablist"><button role="tab" class="tab ${!alertFilter ? 'active' : ''}" aria-selected="${!alertFilter}" data-action="pickAlert" data-id="">الكل (${list.length})</button>${Object.entries(ALERT_TYPES).filter(([k]) => counts[k]).map(([k, l]) => `<button role="tab" class="tab ${alertFilter === k ? 'active' : ''}" aria-selected="${alertFilter === k}" data-action="pickAlert" data-id="${k}">${l} (${counts[k]})</button>`).join('')}</nav>
+      <section class="panel">${shown.length ? alertItems(shown) : UI.empty('مفيش تنبيهات — كل حاجة تمام 👌')}</section>`;
+  }
+
+  // =====================================================================
+  // فحص سلامة البيانات
+  // =====================================================================
+  let lastAudit = null;
+  function healthPage() {
+    const r = RULES.audit(S(), J());
+    lastAudit = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const bad = r.checks.filter((c) => c.issues.length);
+    const good = r.checks.filter((c) => !c.issues.length);
+    const rows = bad.flatMap((c) => c.issues.map((i) => `<tr class="${i.level === 'error' ? 'row-bad' : ''}">${td(esc(c.label))}${td(i.level === 'error' ? UI.pill('خطأ', 'bad') : UI.pill('ملاحظة', 'warn'))}${td(esc(i.text))}${actions(i.action ? `<button type="button" class="link-btn" data-action="${i.action}" data-id="${esc(i.id || '')}">عرض</button>` : '')}</tr>`));
+    return `${header('فحص سلامة البيانات', 'بيراجع كل البيانات المسجلة على قواعد النظام، ويطلعلك أي حاجة محتاجة تتصلح. الفحص مش بيغيّر أي حاجة في بياناتك.', '<button class="btn btn-primary" data-action="runAudit">إعادة الفحص</button>')}
+      <section class="kpis kpis-3">
+        ${kpi('فحوصات سليمة', `${r.passed} من ${r.checks.length}`, `آخر فحص ${lastAudit}`, r.passed === r.checks.length ? 'good' : '')}
+        ${kpi('أخطاء لازم تتصلح', fmt(r.errors), r.errors ? 'اضغط «عرض» جنب كل خطأ' : 'مفيش أخطاء', r.errors ? 'bad' : 'good')}
+        ${kpi('ملاحظات', fmt(r.notes), 'بيانات ناقصة مش بتأثر على الحسابات')}
+      </section>
+      ${rows.length ? table(['الفحص', 'النوع', 'المشكلة', ''], rows) : `<section class="panel">${UI.empty('بياناتك سليمة 100٪ 👌')}</section>`}
+      <section class="panel"><h2 class="section-title">فحوصات سليمة</h2>
+        ${good.length ? `<ul class="check-list">${good.map((c) => `<li>✔ ${esc(c.label)}</li>`).join('')}</ul>` : UI.empty('كل الفحوصات فيها ملاحظات')}
+      </section>
+      <p class="muted">افحص بعد أي استيراد من Excel أو استرجاع نسخة احتياطية، وآخر كل شهر قبل مراجعة التقارير.</p>`;
+  }
+
+  // =====================================================================
+  // الحملات الإعلانية
+  // =====================================================================
+  function campaignsPage() {
+    const s = S(), j = J();
+    const rows = Acc.campaignPerformance(s, j, period.from, period.to);
+    const tot = rows.reduce((t, r) => ({ spend: t.spend + r.spend, revenue: t.revenue + r.revenue, gp: t.gp + r.grossProfit, kept: t.kept + r.orders - r.returned, orders: t.orders + r.orders }), { spend: 0, revenue: 0, gp: 0, kept: 0, orders: 0 });
+    const unSpend = s.expenses.filter((e) => e.category === '5300' && !e.campaignId && inPeriod(e.date)).reduce((a, e) => a + num(e.amount), 0);
+    const unPromo = s.sales.filter((x) => isPromo(x) && !x.campaignId && Acc.BOOKED.has(x.status) && inPeriod(x.date)).reduce((a, x) => a + (Acc.saleProfit(x, j).promoCost || 0), 0);
+    const unOrders = s.sales.filter((x) => !isPromo(x) && !x.campaignId && Acc.BOOKED.has(x.status) && inPeriod(x.date)).length;
+    const roasCls = (v) => (v == null ? '' : v >= 3 ? 'good-text' : v < 1.5 ? 'bad-text' : 'warn-text');
+    const body = rows.map((r) => {
+      const c = DB.find('campaigns', r.id) || {};
+      const used = r.budget ? r.spend / r.budget : null;
+      return `<tr>${td(`<b>${esc(r.name)}</b>${c.startDate ? `<br><small class="muted">${fmtDate(c.startDate)} — ${fmtDate(c.endDate)}</small>` : ''}`)}${td(CHANNELS[r.platform] || '—')}
+        ${tdn(r.budget ? fmt(r.budget) : '—')}${tdn(`${fmt(r.spend)}${used != null ? `<br><small class="${used > 1 ? 'bad-text' : 'muted'}">${pct(used)} من الميزانية</small>` : ''}${r.promoCost ? `<br><small class="muted">منها دعاية ${fmt(r.promoCost)}</small>` : ''}`)}
+        ${tdn(`${r.orders}${r.pending ? ` <small class="muted">+${r.pending} قيد التجهيز</small>` : ''}`)}${tdn(r.returned ? `<span class="bad-text">${r.returned}</span> <small class="muted">(${pct(r.returnRate)})</small>` : '0')}
+        ${tdn(fmt(r.revenue))}${tdn(fmt(r.grossProfit))}${tdn(`<b class="${r.netProfit < 0 ? 'bad-text' : 'good-text'}">${fmt(r.netProfit)}</b>`)}
+        ${tdn(r.cpa == null ? '—' : fmt(r.cpa, 0))}${tdn(r.roas == null ? '—' : `<b class="${roasCls(r.roas)}">${fmt(r.roas, 2)}x</b>`)}
+        ${actions(btn('تعديل', 'editCampaign', r.id), btn('حذف', 'delCampaign', r.id, 'danger'))}</tr>`;
+    });
+    const roas = tot.spend ? tot.revenue / tot.spend : null;
+    return `${header('الحملات الإعلانية', 'اربط الطلبات ومصروفات الإعلانات وفواتير الدعاية بالحملة، وشوف تكلفة الطلب الواحد (CPA) والعائد على الإعلان (ROAS) وصافي ربح كل حملة.', `${periodBar()}<button class="btn btn-primary" data-action="newCampaign">+ حملة جديدة</button>`)}
+      <section class="kpis">
+        ${kpi('إنفاق الحملات', money0(tot.spend), 'إعلانات + قطع دعاية')}
+        ${kpi('مبيعات الحملات', money0(tot.revenue), `${tot.orders} طلب`)}
+        ${kpi('العائد على الإعلان ROAS', roas == null ? '—' : `${fmt(roas, 2)}x`, 'كل جنيه إعلان جاب كام مبيعات', roas != null && roas < 1.5 ? 'bad' : '')}
+        ${kpi('تكلفة الطلب CPA', tot.kept ? money0(tot.spend / tot.kept) : '—', 'بعد استبعاد المرتجع')}
+        ${kpi('صافي ربح الحملات', money0(tot.gp - tot.spend), 'بعد البضاعة والشحن والإعلان', tot.gp - tot.spend < 0 ? 'bad' : 'good')}
+      </section>
+      ${table(['الحملة', 'المنصة', '#الميزانية', '#الإنفاق', '#الطلبات', '#المرتجع', '#المبيعات', '#الربح قبل الإعلان', '#صافي الربح', '#CPA', '#ROAS', ''], body, { empty: 'لا توجد حملات بعد — أضف حملة واربط بيها الطلبات ومصروفات الإعلانات' })}
+      <p class="muted">غير مربوط بحملة في الفترة: ${fmt(unSpend)} ج.م مصروفات إعلانات${unPromo ? ` + ${fmt(unPromo)} ج.م قطع دعاية` : ''} · ${unOrders} طلب. الربح قبل الإعلان = قيمة الطلب − تكلفة البضاعة − مصاريف الشحن والمرتجع.</p>`;
+  }
+  function campaignForm(c) {
+    const isNew = !c;
+    c = c || { id: uid(), name: '', platform: 'facebook', startDate: today(), endDate: '', budget: '', notes: '' };
+    UI.modal({ title: isNew ? 'حملة جديدة' : 'تعديل الحملة',
+      body: `<div class="form-grid">${UI.field('اسم الحملة', UI.input('name', c.name, 'required placeholder="عروض رمضان، إطلاق عطر…"'), { req: true })}${UI.field('المنصة', UI.select('platform', CHANNELS, c.platform))}${UI.field('من', UI.input('startDate', c.startDate, 'type="date"'))}${UI.field('إلى', UI.input('endDate', c.endDate, 'type="date"'))}${UI.field('الميزانية (ج.م)', UI.input('budget', c.budget, 'type="number" min="0" step="0.01"'))}${UI.field('ملاحظات', UI.input('notes', c.notes))}</div>`,
+      onSubmit(f, fd) {
+        if (fd.get('startDate') && fd.get('endDate') && fd.get('endDate') < fd.get('startDate')) return fail('نهاية الحملة قبل بدايتها');
+        DB.upsert('campaigns', { ...c, name: fd.get('name').trim(), platform: fd.get('platform'), startDate: fd.get('startDate'), endDate: fd.get('endDate'), budget: num(fd.get('budget')), notes: fd.get('notes') }); UI.toast('تم حفظ الحملة'); render(); } });
+  }
+
+  // =====================================================================
+  // تسوية كشف حساب شركة الشحن
+  // =====================================================================
+  let reconCourier = null;
+  function reconcilePage() {
+    const s = S(), j = J();
+    if (!reconCourier || !s.couriers.some((c) => c.id === reconCourier)) reconCourier = (s.couriers[0] || {}).id;
+    const un = OPS.unsettledByCourier(s, today());
+    const bal = Acc.courierBalances(s, j);
+    const cards = s.couriers.map((c) => {
+      const u = un[c.id] || { count: 0, net: 0, days: 0 };
+      return `<button class="acc-card ${c.id === reconCourier ? 'active' : ''}" data-action="pickCourier" data-id="${c.id}"><span>${esc(c.name)}</span><b>${u.count} طلب لسه ما اتسوّاش</b><strong>${money(u.net)}</strong><small class="${u.days >= s.settings.alerts.settleDays ? 'bad-text' : 'muted'}">${u.count ? `أقدم طلب من ${u.days} يوم` : 'كله متسوّي'} · الرصيد الدفتري ${fmt(bal[c.id] || 0)}</small></button>`;
+    }).join('');
+    const pend = (un[reconCourier] || { sales: [] }).sales.map((id) => DB.find('sales', id)).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const hist = [...s.reconciliations].sort((a, b) => (a.date < b.date ? 1 : -1)).map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(nameOf('couriers', r.courierId)))}${td(esc(r.fileName || ''))}${tdn(r.lines.length)}${tdn(fmt(r.net))}${td(r.settlementId && DB.find('settlements', r.settlementId) ? UI.pill('تم تسجيل التحصيل', 'good') : UI.pill('بدون تحصيل', 'mute'))}${actions(btn('التفاصيل', 'viewReconciliation', r.id), btn('حذف', 'delReconciliation', r.id, 'danger'))}</tr>`);
+    return `${header('تسوية شركات الشحن', 'ارفع كشف الحساب اللي بتبعته شركة الشحن (Excel أو CSV)، والنظام يطابقه مع طلباتك برقم البوليصة أو رقم الفاتورة ويطلعلك الفروق.', '<button class="btn" data-action="statementTemplate">نموذج كشف</button><button class="btn btn-primary" data-action="uploadStatement">رفع كشف حساب</button>')}
+      <section class="acc-cards">${cards || UI.empty('أضف شركة شحن من الإعدادات')}</section>
+      <h2 class="section-title">طلبات اتسلمت مع ${esc(nameOf('couriers', reconCourier))} ولسه ما دخلتش في أي كشف</h2>
+      ${table(['الفاتورة', 'التاريخ', 'البوليصة', 'العميل', 'الحالة', '#المحصل المتوقع', '#مصاريف الشحن', '#الصافي المتوقع', '#من كام يوم'], pend.map((x) => { const e = OPS.expectedFor(x); const age = OPS.daysBetween(x.date, today()); return `<tr>${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>`)}${td(fmtDate(x.date))}${td(esc(x.trackingNo || '—'), 'mono')}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}${tdn(`<span class="${age >= S().settings.alerts.settleDays ? 'bad-text' : ''}">${age}</span>`)}</tr>`; }), { empty: 'كل الطلبات المسلّمة اتسوّت 👌' })}
+      <h2 class="section-title">الكشوف اللي اتسوّت</h2>
+      ${table(['التاريخ', 'شركة الشحن', 'الملف', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { empty: 'لم ترفع أي كشف بعد' })}`;
+  }
+  function pickStatementFile() {
+    if (!S().couriers.length) { UI.toast('أضف شركة شحن من الإعدادات', 'bad'); return; }
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.xlsx,.csv,.txt'; input.hidden = true;
+    input.addEventListener('change', async () => {
+      const file = input.files[0]; input.remove();
+      if (!file) return;
+      try {
+        const parsed = OPS.parseStatement(await IMP.readWorkbook(file));
+        if (!parsed || !parsed.rows.length) { UI.toast('مش لاقي عمود «رقم البوليصة» أو «رقم الطلب» ومعاه «المبلغ المحصل» أو «مصاريف الشحن» في الملف', 'bad'); return; }
+        reconcilePreview(file.name, parsed);
+      } catch (err) { UI.toast(err.message || 'تعذرت قراءة الملف', 'bad'); }
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+  function reconcilePreview(fileName, parsed) {
+    const s = S();
+    const opts = { courierId: reconCourier || s.couriers[0].id, updateFees: true, updateStatus: true, settle: true, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), amount: null };
+    let res;
+    const run = () => { res = OPS.reconcile(S(), opts.courierId, parsed.rows, S().settings.invoicePrefix); if (opts.amount == null) opts.amount = res.totals.statementNet; };
+    run();
+    const saleCell = (id) => { const x = DB.find('sales', id); return x ? `<button type="button" class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>` : '—'; };
+    const view = () => {
+      const t = res.totals;
+      const bad = res.matched.filter((m) => m.issues.length), ok = res.matched.filter((m) => !m.issues.length);
+      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(esc(m.ref), 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td(m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good'))}</tr>`;
+      const head = ['البوليصة / الرقم', 'الفاتورة', 'الحالة في الكشف', '#المحصل', '#المتوقع', '#مصاريف الكشف', '#مصاريفنا', 'الملاحظة'];
+      return `
+        <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} سطر</p>
+        <div class="form-grid">${UI.field('شركة الشحن', UI.select('rcCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-rc="courierId"'))}</div>
+        <div class="summary">
+          <div><span>إجمالي المحصل في الكشف</span><b>${fmt(t.statementCod)}</b></div>
+          <div><span>مصاريف الشحن في الكشف</span><b>${fmt(t.statementFee)}</b></div>
+          <div class="strong"><span>صافي الكشف (المفروض يتحول لك)</span><b>${fmt(t.statementNet)} ج.م</b></div>
+          <div><span>الصافي المتوقع حسب طلباتك</span><b>${fmt(t.expectedNet)}</b></div>
+          <div class="${t.codDiff < -0.5 ? 'bad-text' : ''}"><span>فرق التحصيل</span><b>${fmt(t.codDiff)}</b></div>
+          <div class="${t.feeDiff > 0.5 ? 'bad-text' : ''}"><span>فرق المصاريف</span><b>${fmt(t.feeDiff)}</b></div>
+        </div>
+        ${bad.length ? `<h3 class="sub-title bad-text">طلبات فيها فروق (${bad.length})</h3>${table(head, bad.map(mrow))}` : '<p class="good-text"><b>كل الطلبات اللي في الكشف مطابقة ✔</b></p>'}
+        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}</tr>`))}<p class="muted">سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
+        ${res.missing.length ? `<h3 class="sub-title warn-text">طلبات اتسلمت ومش موجودة في الكشف (${res.missing.length}) — صافي ${fmt(t.missingNet)} ج.م</h3>${table(['الفاتورة', 'التاريخ', 'الحالة', '#الصافي المتوقع'], res.missing.map((m) => { const x = DB.find('sales', m.saleId); return `<tr>${td(saleCell(m.saleId))}${td(fmtDate(m.date))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(m.expected.net))}</tr>`; }))}` : ''}
+        ${ok.length ? `<details class="imp-box"><summary>${ok.length} طلب مطابق (اضغط للتفاصيل)</summary>${table(head, ok.map(mrow))}</details>` : ''}
+        ${res.duplicates.length ? `<div class="imp-box warn"><b>${res.duplicates.length} سطر مكرر في الكشف لنفس الطلب — اتحسب مرة واحدة.</b></div>` : ''}
+        <h3 class="sub-title">عند الحفظ</h3>
+        <label class="check"><input type="checkbox" data-rc="updateFees" ${opts.updateFees ? 'checked' : ''}> عدّل مصاريف الشحن والمرتجع في الطلبات حسب الكشف</label>
+        <label class="check"><input type="checkbox" data-rc="updateStatus" ${opts.updateStatus ? 'checked' : ''}> عدّل حالة الطلبات (تم التسليم / مرتجع) حسب الكشف</label>
+        <label class="check"><input type="checkbox" data-rc="settle" ${opts.settle ? 'checked' : ''}> سجّل التحصيل في الخزينة</label>
+        <div class="form-grid" ${opts.settle ? '' : 'hidden'}>
+          ${UI.field('المبلغ اللي وصلك فعلًا', UI.input('rcAmount', opts.amount, 'type="number" step="0.01" data-rc="amount"'), { hint: 'صافي التحويل من شركة الشحن' })}
+          ${UI.field('إلى حساب', UI.select('rcAccount', accountOptions(), opts.accountId, 'data-rc="accountId"'))}
+          ${UI.field('تاريخ التحويل', UI.input('rcDate', opts.date, 'type="date" data-rc="date"'))}
+        </div>`;
+    };
+    UI.modal({ title: 'مطابقة كشف شركة الشحن', wide: true, submit: 'حفظ التسوية', body: `<div id="rc-view">${view()}</div>`,
+      onOpen(f) {
+        const box = f.querySelector('#rc-view');
+        box.addEventListener('change', (e) => {
+          const k = e.target.dataset.rc;
+          if (!k) return;
+          opts[k] = e.target.type === 'checkbox' ? e.target.checked : k === 'amount' ? num(e.target.value) : e.target.value;
+          if (k === 'courierId') { opts.amount = null; run(); }
+          if (k !== 'amount' && k !== 'date' && k !== 'accountId') box.innerHTML = view();
+        });
+      },
+      onSubmit() {
+        const fresh = res.matched.filter((m) => !m.alreadyReconciled);
+        if (!fresh.length && !opts.settle) { UI.toast('مفيش طلبات جديدة في الكشف', 'bad'); return false; }
+        if (!dateOk(opts.date || today(), 'تاريخ التسوية')) return false;
+        let changed = 0;
+        fresh.forEach((m) => {
+          const sale = DB.find('sales', m.saleId);
+          const upd = { ...sale };
+          if (opts.updateStatus && m.statementStatus && m.statementStatus !== sale.status && sale.status !== 'cancelled') {
+            upd.status = m.statementStatus;
+            if (m.statementStatus === 'returned' && !upd.returnDate) upd.returnDate = m.date || today();
+          }
+          if (opts.updateFees && Math.abs(m.feeDiff) > 0.5) {
+            if (upd.status === 'returned') { const base = Math.min(num(upd.courierFee), m.fee); upd.courierFee = base; upd.returnFee = Acc.round2(m.fee - base); }
+            else upd.courierFee = m.fee;
+          }
+          if (JSON.stringify(upd) !== JSON.stringify(sale)) { Object.assign(sale, upd); changed++; }
+        });
+        const rec = { id: uid(), date: opts.date || today(), courierId: opts.courierId, fileName, net: res.totals.statementNet,
+          lines: fresh.map((m) => ({ saleId: m.saleId, ref: m.ref, cod: m.cod, fee: m.fee, status: m.status })), unmatched: res.unmatched.map((r) => ({ ref: r.ref, cod: r.cod, fee: r.fee, status: r.status })) };
+        if (opts.settle && num(opts.amount)) {
+          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), notes: `تسوية كشف ${fileName}` };
+          S().settlements.push(st); rec.settlementId = st.id;
+        }
+        S().reconciliations.push(rec);
+        DB.save();
+        reconCourier = opts.courierId;
+        UI.toast(`تمت تسوية ${fresh.length} طلب${changed ? ` وتعديل ${changed}` : ''}${rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
+        render();
+      } });
+  }
+  function viewReconciliation(r) {
+    UI.modal({ title: `كشف ${esc(nameOf('couriers', r.courierId))} — ${fmtDate(r.date)}`, wide: true, tools: { title: `تسوية ${nameOf('couriers', r.courierId)}`, subtitle: `${r.fileName || ''} — ${fmtDate(r.date)}`, file: 'courier-reconciliation' },
+      body: `${table(['الفاتورة', 'البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف', '#الصافي'], r.lines.map((l) => { const x = DB.find('sales', l.saleId) || {}; return `<tr>${td(esc(invoiceNo(x)))}${td(esc(l.ref || x.trackingNo || ''), 'mono')}${td(esc(l.status || ''))}${tdn(l.cod != null ? fmt(l.cod) : '—')}${tdn(l.fee != null ? fmt(l.fee) : '—')}${tdn(l.cod != null ? fmt(num(l.cod) - num(l.fee)) : '—')}</tr>`; }), { foot: `<tr><td colspan="5">صافي الكشف</td>${tdn(fmt(r.net))}</tr>` })}
+        ${(r.unmatched || []).length ? `<h3 class="sub-title">سطور ما اتطابقتش</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], r.unmatched.map((u) => `<tr>${td(esc(u.ref), 'mono')}${td(esc(u.status || ''))}${tdn(fmt(u.cod))}${tdn(fmt(u.fee))}</tr>`))}` : ''}` });
+  }
+
+  // =====================================================================
+  // الشركاء وتوزيع الأرباح
+  // =====================================================================
+  function partnersPage() {
+    const s = S(), j = J();
+    const acc = Acc.partnerAccounts(s, j);
+    const shares = s.partners.reduce((a, p) => a + num(p.share), 0);
+    const rows = acc.map((r) => `<tr>${td(`<b>${esc(r.name)}</b>`)}${tdn(pct(r.share / 100))}${tdn(fmt(r.capital))}${tdn(fmt(r.distributed))}${tdn(fmt(r.drawn))}${tdn(`<b class="${r.balance < 0 ? 'bad-text' : ''}">${fmt(r.balance)}</b>`)}${actions(btn('مسحوبات', 'partnerDrawing', r.id), btn('كشف حساب', 'partnerStatement', r.id), btn('تعديل', 'editPartner', r.id), btn('حذف', 'delPartner', r.id, 'danger'))}</tr>`);
+    const dist = [...s.distributions].sort((a, b) => (a.date < b.date ? 1 : -1)).map((d) => `<tr>${td(fmtDate(d.date))}${td(`${fmtDate(d.from)} — ${fmtDate(d.to)}`)}${tdn(d.profit != null ? fmt(d.profit) : '—')}${tdn(d.retainPct ? pct(d.retainPct / 100) : '—')}${td(d.allocations.map((a) => `${esc(nameOf('partners', a.partnerId))}: ${fmt(a.amount)}`).join('<br>'))}${tdn(`<b>${fmt(d.allocations.reduce((x, a) => x + num(a.amount), 0))}</b>`)}${actions(btn('حذف', 'delDistribution', d.id, 'danger'))}</tr>`);
+    return `${header('الشركاء وتوزيع الأرباح', 'نسبة كل شريك، رأس ماله، وحسابه الجاري: نصيبه من الأرباح الموزعة ناقص مسحوباته.', '<button class="btn" data-action="newPartner">+ شريك</button><button class="btn btn-primary" data-action="newDistribution">توزيع أرباح</button>')}
+      ${s.partners.length && Math.abs(shares - 100) > 0.01 ? `<div class="imp-box warn"><b>مجموع نسب الشركاء ${fmt(shares)}٪ مش 100٪</b> — التوزيع هيتم بنسبة كل شريك من المجموع.</div>` : ''}
+      ${table(['الشريك', '#النسبة', '#رأس المال', '#أرباح موزعة', '#مسحوبات', '#رصيد الجاري', ''], rows, { empty: 'أضف الشركاء ونسبة كل واحد', foot: rows.length ? `<tr><td>الإجمالي</td>${tdn(pct(shares / 100))}${tdn(fmt(acc.reduce((a, r) => a + r.capital, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.distributed, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.drawn, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.balance, 0)))}<td></td></tr>` : '' })}
+      <p class="muted">رصيد الجاري الموجب = أرباح مستحقة للشريك لسه ما سحبهاش. رأس المال بيتسجل من الخزينة ← «رأس مال / مسحوبات» مع اختيار الشريك.</p>
+      <h2 class="section-title">توزيعات الأرباح</h2>
+      ${table(['تاريخ التوزيع', 'الفترة', '#صافي ربح الفترة', '#محتجز', 'نصيب الشركاء', '#الإجمالي', ''], dist, { empty: 'لم توزع أرباح بعد' })}`;
+  }
+  function partnerForm(p) {
+    const isNew = !p;
+    const left = 100 - S().partners.filter((x) => !p || x.id !== p.id).reduce((a, x) => a + num(x.share), 0);
+    p = p || { id: uid(), name: '', share: Math.max(0, left), notes: '' };
+    UI.modal({ title: isNew ? 'شريك جديد' : 'تعديل الشريك',
+      body: `<div class="form-grid">${UI.field('اسم الشريك', UI.input('name', p.name, 'required'), { req: true })}${UI.field('نسبته من الأرباح ٪', UI.input('share', p.share, 'type="number" min="0" max="100" step="0.01" required'), { req: true, hint: `المتبقي من 100٪: ${fmt(left)}٪` })}${UI.field('ملاحظات', UI.input('notes', p.notes), { cls: 'span-2' })}</div>`,
+      onSubmit(f, fd) {
+        const obj = { ...p, name: fd.get('name').trim(), share: num(fd.get('share')), notes: fd.get('notes') };
+        if (!(obj.share > 0)) return fail('نسبة الشريك لازم تكون أكبر من صفر');
+        const total = RULES.sharesTotal(S().partners, obj);
+        if (total > 100.001) return fail(`مجموع نسب الشركاء هيبقى ${fmt(total)}٪ — لازم ما يزيدش عن 100٪. قلّل نسبة شريك تاني الأول`);
+        DB.upsert('partners', obj); UI.toast(total < 99.999 ? `تم الحفظ — المجموع ${fmt(total)}٪، كمّل للـ 100٪ قبل توزيع الأرباح` : 'تم حفظ الشريك'); render();
+      } });
+  }
+  function distributionForm() {
+    const s = S();
+    if (!s.partners.length) { UI.toast('أضف الشركاء الأول', 'bad'); return; }
+    const pm = presetRange('lastMonth');
+    const last = [...s.distributions].sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+    const st = { from: pm.from, to: pm.to, retain: last ? num(last.retainPct) : 0 };
+    let plan;
+    const view = () => {
+      plan = Acc.distributionPlan(S(), J(), st.from, st.to, st.retain);
+      return `<div class="summary">
+          <div><span>صافي ربح الفترة</span><b class="${plan.netProfit < 0 ? 'bad-text' : ''}">${fmt(plan.netProfit)}</b></div>
+          <div><span>محتجز في النشاط</span><b>${fmt(plan.retained)}</b></div>
+          ${plan.already ? `<div><span>اتوزع قبل كده من نفس الفترة</span><b>${fmt(plan.already)}</b></div>` : ''}
+          <div class="strong"><span>المتاح للتوزيع</span><b>${fmt(plan.distributable)} ج.م</b></div></div>
+        ${table(['الشريك', '#النسبة', '#نصيبه'], plan.allocations.map((a) => `<tr>${td(esc(nameOf('partners', a.partnerId)))}${tdn(pct(a.share / 100))}${tdn(`<b>${fmt(a.amount)}</b>`)}</tr>`))}
+        ${plan.netProfit <= 0 ? '<p class="bad-text">مفيش ربح في الفترة دي للتوزيع.</p>' : ''}
+        <p class="muted">التوزيع بيضيف نصيب كل شريك لحسابه الجاري، ولما يسحب فلوسه سجّلها «مسحوبات» باسمه.</p>`;
+    };
+    UI.modal({ title: 'توزيع أرباح على الشركاء', wide: true, submit: 'اعتماد التوزيع',
+      body: `<div class="form-grid">${UI.field('من', UI.input('from', st.from, 'type="date" required'), { req: true })}${UI.field('إلى', UI.input('to', st.to, 'type="date" required'), { req: true })}${UI.field('نسبة محتجزة في النشاط ٪', UI.input('retain', st.retain, 'type="number" min="0" max="100" step="1"'), { hint: 'جزء من الربح يفضل للتوسع وشراء بضاعة' })}${UI.field('تاريخ التوزيع', UI.input('date', st.to, 'type="date" required'), { req: true })}${UI.field('ملاحظات', UI.input('notes', ''), { cls: 'span-2' })}</div><div id="dist-view">${view()}</div>`,
+      onOpen(f) { f.addEventListener('change', (e) => { if (!['from', 'to', 'retain'].includes(e.target.name)) return; st.from = f.from.value; st.to = f.to.value; st.retain = num(f.retain.value); if (e.target.name === 'to') f.date.value = st.to; f.querySelector('#dist-view').innerHTML = view(); }); },
+      onSubmit(f, fd) {
+        const shares = RULES.sharesTotal(S().partners);
+        if (Math.abs(shares - 100) > 0.001) return fail(`مجموع نسب الشركاء ${fmt(shares)}٪ — لازم يبقى 100٪ بالظبط قبل التوزيع`);
+        if (st.to < st.from) return fail('نهاية الفترة قبل بدايتها');
+        if (!dateOk(fd.get('date'), 'تاريخ التوزيع')) return false;
+        if (plan.distributable <= 0) { UI.toast('مفيش مبلغ متاح للتوزيع', 'bad'); return false; }
+        DB.upsert('distributions', { id: uid(), date: fd.get('date'), from: st.from, to: st.to, retainPct: st.retain, profit: plan.netProfit, allocations: plan.allocations.map((a) => ({ partnerId: a.partnerId, amount: a.amount })), notes: fd.get('notes') });
+        UI.toast(`تم توزيع ${fmt(plan.distributable)} ج.م`); render();
+      } });
+  }
+  function partnerStatement(p) {
+    const rows = [];
+    let bal = 0;
+    J().entries.forEach((e) => e.lines.forEach((l) => {
+      if (!l.party || l.party.type !== 'partner' || l.party.id !== p.id || l.acc !== '3500') return;
+      bal += l.cr - l.dr;
+      rows.push(`<tr>${td(fmtDate(e.date))}${td(esc(e.desc))}${tdn(l.cr ? fmt(l.cr) : '')}${tdn(l.dr ? fmt(l.dr) : '')}${tdn(fmt(bal))}</tr>`);
+    }));
+    const cap = Acc.partnerAccounts(S(), J()).find((x) => x.id === p.id) || { capital: 0 };
+    UI.modal({ title: `الحساب الجاري — ${esc(p.name)}`, wide: true, tools: { title: `الحساب الجاري للشريك — ${p.name}`, subtitle: `النسبة ${fmt(p.share)}٪ · رأس المال ${fmt(cap.capital)}`, file: 'partner-statement' },
+      body: `<p class="muted">النسبة ${fmt(p.share)}٪ · رأس المال ${fmt(cap.capital)} ج.م</p>${table(['التاريخ', 'البيان', '#له (أرباح)', '#عليه (مسحوبات)', '#الرصيد'], rows, { empty: 'لا توجد حركة' })}` });
+  }
+
+  // =====================================================================
+  // تقسيم العبوات (ديكانت)
+  // =====================================================================
+  function decantForm() {
+    const s = S(), inv = J().inventory.products;
+    const sources = s.products.filter((p) => !p.decantOf && num(p.sizeMl) > 0);
+    if (!sources.length) { UI.toast('سجّل حجم العبوة (مل) في المنتج الأول', 'bad'); return; }
+    const first = sources.find((p) => (inv[p.id] || {}).qty > 0) || sources[0];
+    const outRow = (o = {}) => `<tr class="line"><td><input class="o-size" type="number" min="1" step="1" value="${o.size || ''}" aria-label="الحجم مل"></td><td><input class="o-qty" type="number" min="1" step="1" value="${o.qty || ''}" aria-label="عدد العبوات"></td><td><input class="o-price" type="number" min="0" step="0.01" value="${o.price ?? ''}" aria-label="سعر البيع"></td><td class="num o-ml">0</td><td class="num o-cost">0</td><td class="o-prod muted"></td><td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
+    const existing = (srcId, size) => S().products.find((p) => p.decantOf === srcId && num(p.sizeMl) === num(size));
+    UI.modal({ title: 'تقسيم عبوة إلى ديكانت', wide: true, submit: 'تسجيل التقسيم',
+      body: `<div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', today(), 'type="date" required'), { req: true })}
+          ${UI.field('العبوة الأصلية', UI.select('sourceProductId', sources.map((p) => ({ v: p.id, l: `${productLabel(p)} — متاح ${fmt((inv[p.id] || {}).available || 0)}` })), first.id))}
+          ${UI.field('عدد العبوات اللي هتتفتح', UI.input('sourceQty', 1, 'type="number" min="1" step="1" required'), { req: true })}
+          ${UI.field('تكلفة العبوات الفاضية والستيكرات', UI.input('materialsCost', 0, 'type="number" min="0" step="0.01"'))}
+          ${UI.field('دُفعت من', UI.select('accountId', accountOptions(), (s.accounts[0] || {}).id))}
+          ${UI.field('ملاحظات', UI.input('notes', ''))}
+        </div>
+        <p class="muted" id="src-info"></p>
+        <h3 class="sub-title">العبوات الناتجة</h3>
+        <div class="table-wrap"><table class="lines"><thead><tr><th>الحجم (مل)</th><th>العدد</th><th>سعر بيع العبوة</th><th class="num">مللي</th><th class="num">تكلفة العبوة</th><th>المنتج</th><th></th></tr></thead><tbody id="outs">${outRow({ size: 5 })}${outRow({ size: 10 })}</tbody></table></div>
+        <button type="button" class="btn btn-small" id="add-out">+ حجم تاني</button>
+        <div class="summary" id="dec-sum"></div>`,
+      onOpen(f) {
+        const outs = f.querySelector('#outs');
+        const recalc = () => {
+          const src = productById(f.sourceProductId.value), st = inv[src.id] || { avgCost: 0, available: 0 };
+          const q = num(f.sourceQty.value), srcMl = q * num(src.sizeMl), srcCost = q * st.avgCost, mat = num(f.materialsCost.value);
+          const rows = [...outs.querySelectorAll('.line')];
+          const ml = rows.reduce((a, r) => a + num(r.querySelector('.o-size').value) * num(r.querySelector('.o-qty').value), 0);
+          const perMl = ml ? (srcCost + mat) / ml : 0;
+          rows.forEach((r) => {
+            const size = num(r.querySelector('.o-size').value), n = num(r.querySelector('.o-qty').value);
+            r.querySelector('.o-ml').textContent = fmt(size * n);
+            r.querySelector('.o-cost').textContent = fmt(size * perMl);
+            const ex = size && existing(src.id, size);
+            r.querySelector('.o-prod').textContent = !size ? '' : ex ? productLabel(ex) : 'منتج جديد هيتعمل';
+            const pr = r.querySelector('.o-price');
+            if (ex && pr.value === '') pr.value = ex.price || '';
+            if (!ex && size && pr.value === '' && src.price && src.sizeMl) pr.placeholder = fmt(Math.ceil((src.price / src.sizeMl) * size * 1.6 / 5) * 5);
+          });
+          f.querySelector('#src-info').textContent = `متوسط تكلفة العبوة ${fmt(st.avgCost)} ج.م · ${fmt(src.sizeMl)} مل · تكلفة المللي قبل العبوات ${fmt(src.sizeMl ? st.avgCost / src.sizeMl : 0)} ج.م`;
+          f.querySelector('#dec-sum').innerHTML = `<div><span>مللي العبوة الأصلية</span><b>${fmt(srcMl)}</b></div><div class="${ml > srcMl ? 'bad-text' : ''}"><span>مللي الديكانت</span><b>${fmt(ml)}</b></div><div><span>فاقد / متبقي</span><b>${fmt(srcMl - ml)} مل</b></div><div><span>تكلفة العطر + العبوات</span><b>${fmt(srcCost + mat)}</b></div><div class="strong"><span>تكلفة المللي الفعلية</span><b>${fmt(perMl)} ج.م</b></div>`;
+        };
+        f.querySelector('#add-out').addEventListener('click', () => { outs.insertAdjacentHTML('beforeend', outRow({})); recalc(); });
+        outs.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && outs.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
+        f.addEventListener('input', recalc); f.addEventListener('change', recalc);
+        recalc();
+      },
+      onSubmit(f, fd) {
+        const src = productById(fd.get('sourceProductId'));
+        const q = num(fd.get('sourceQty'));
+        const rows = [...f.querySelectorAll('#outs .line')].map((r) => ({ size: num(r.querySelector('.o-size').value), qty: num(r.querySelector('.o-qty').value), price: r.querySelector('.o-price').value === '' ? num(r.querySelector('.o-price').placeholder.replace(/,/g, '')) : num(r.querySelector('.o-price').value) })).filter((r) => r.size > 0 && r.qty > 0);
+        if (!rows.length) { UI.toast('أضف حجم وعدد العبوات الناتجة', 'bad'); return false; }
+        const ml = rows.reduce((a, r) => a + r.size * r.qty, 0);
+        if (ml > q * num(src.sizeMl) + 0.01) { UI.toast(`مجموع الديكانت ${fmt(ml)} مل أكبر من العبوة الأصلية ${fmt(q * num(src.sizeMl))} مل`, 'bad'); return false; }
+        if (num(fd.get('materialsCost')) && !fd.get('accountId')) { UI.toast('اختر الحساب اللي اتدفعت منه العبوات', 'bad'); return false; }
+        if (!dateOk(fd.get('date'))) return false;
+        const out = RULES.checkStockOut(J(), src.id, q);
+        if (out) return fail(stockMsg([out]));
+        if (!cashOk(f, RULES.withDoc(S(), 'decants', { id: '__check', date: fd.get('date'), sourceProductId: src.id, sourceQty: q, outputs: [], materialsCost: num(fd.get('materialsCost')), accountId: fd.get('accountId') }))) return false;
+        const outputs = rows.map((r) => {
+          let p = existing(src.id, r.size);
+          if (!p) {
+            p = { id: uid(), sku: src.sku ? `${src.sku}-D${r.size}` : '', brand: src.brand, name: `${src.name} (ديكانت)`, sizeMl: r.size, gender: src.gender, price: r.price, minStock: S().settings.lowStock, decantOf: src.id };
+            S().products.push(p);
+          }
+          return { productId: p.id, qty: r.qty };
+        });
+        DB.upsert('decants', { id: uid(), date: fd.get('date'), sourceProductId: src.id, sourceQty: q, outputs, materialsCost: num(fd.get('materialsCost')), accountId: fd.get('accountId'), notes: fd.get('notes') });
+        UI.toast(`تم تقسيم ${q} عبوة إلى ${rows.reduce((a, r) => a + r.qty, 0)} ديكانت`); render();
+      } });
+  }
+  // فك بوكس: البوكس يخرج من المخزون وقطعه تدخل، وتكلفته تتوزع على القطع بنسبة سعر بيعها
+  function unboxForm() {
+    const s = S(), inv = J().inventory.products;
+    const stocked = s.products.filter((p) => (inv[p.id] || {}).available > 0);
+    if (!stocked.length) { UI.toast('مفيش منتجات في المخزون', 'bad'); return; }
+    const boxes = [...stocked.filter((p) => p.boxItems && p.boxItems.length), ...stocked.filter((p) => !(p.boxItems && p.boxItems.length))];
+    const pieceRow = (it = {}) => `<tr class="line"><td>${UI.select('u-product', productOptions(), it.productId || '', 'class="u-product" aria-label="القطعة"')}</td><td><input class="u-qty" type="number" min="1" step="1" value="${it.qty || 1}" aria-label="العدد في البوكس"></td><td class="num u-price">0</td><td class="num u-cost">0</td><td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
+    const rowsFor = (box) => (box.boxItems && box.boxItems.length ? box.boxItems : [{}, {}, {}]).map(pieceRow).join('');
+    UI.modal({ title: 'فك بوكس إلى قطع', wide: true, submit: 'فك البوكس',
+      body: `<p class="muted">استخدمها لما تحتاج تبيع قطع البوكس لوحدها. البوكس بيخرج من المخزون، وكل قطعة بتدخل بتكلفتها: تكلفة البوكس بتتوزع على القطع بنسبة سعر بيع كل قطعة.</p>
+        <div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', today(), 'type="date" required'), { req: true })}
+          ${UI.field('البوكس', UI.select('sourceProductId', boxes.map((p) => ({ v: p.id, l: `${productLabel(p)} — متاح ${fmt(inv[p.id].available)}` })), boxes[0].id))}
+          ${UI.field('عدد البوكسات', UI.input('sourceQty', 1, 'type="number" min="1" step="1" required'), { req: true })}
+          ${UI.field('ملاحظات', UI.input('notes', ''))}
+        </div>
+        <h3 class="sub-title">قطع البوكس الواحد</h3>
+        <div class="table-wrap"><table class="lines"><thead><tr><th>القطعة (منتج)</th><th>العدد في البوكس</th><th class="num">سعر البيع</th><th class="num">تكلفة القطعة</th><th></th></tr></thead><tbody id="pieces">${rowsFor(boxes[0])}</tbody></table></div>
+        <button type="button" class="btn btn-small" id="add-piece">+ قطعة</button>
+        <label class="check"><input type="checkbox" name="remember" checked> احفظ القطع دي للبوكس ده (عشان المرة الجاية، ووزن شحن البوكس يتحسب بمجموعها)</label>
+        <p class="muted">لو القطعة مش موجودة كمنتج، أضفها الأول من «+ منتج جديد» بسعر بيعها.</p>
+        <div class="summary" id="ub-sum"></div>`,
+      onOpen(f) {
+        const body = f.querySelector('#pieces');
+        const recalc = () => {
+          const box = productById(f.sourceProductId.value), st = inv[box.id] || { avgCost: 0 };
+          const rows = [...body.querySelectorAll('.line')].map((r) => ({ r, p: productById(r.querySelector('.u-product').value), q: num(r.querySelector('.u-qty').value) }));
+          const totPrice = rows.reduce((a, x) => a + (x.p ? num(x.p.price) * x.q : 0), 0);
+          const totQty = rows.reduce((a, x) => a + (x.p ? x.q : 0), 0);
+          rows.forEach((x) => {
+            x.r.querySelector('.u-price').textContent = x.p ? fmt(x.p.price) : '—';
+            const unit = !x.p ? 0 : totPrice > 0 ? (st.avgCost * num(x.p.price)) / totPrice : totQty ? st.avgCost / totQty : 0;
+            x.r.querySelector('.u-cost').textContent = fmt(unit);
+          });
+          f.querySelector('#ub-sum').innerHTML = `<div><span>تكلفة البوكس الواحد</span><b>${fmt(st.avgCost)}</b></div><div><span>قطع في البوكس</span><b>${fmt(totQty)}</b></div><div class="strong"><span>قطع هتدخل المخزون</span><b>${fmt(totQty * num(f.sourceQty.value))}</b></div><div><span>سعر بيع القطع مجمعة</span><b>${fmt(totPrice)}</b></div><div><span>سعر بيع البوكس</span><b>${fmt(box.price)}</b></div>`;
+        };
+        f.sourceProductId.addEventListener('change', () => { body.innerHTML = rowsFor(productById(f.sourceProductId.value)); recalc(); });
+        f.querySelector('#add-piece').addEventListener('click', () => { body.insertAdjacentHTML('beforeend', pieceRow()); recalc(); });
+        body.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && body.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
+        f.addEventListener('input', recalc); f.addEventListener('change', recalc);
+        recalc();
+      },
+      onSubmit(f, fd) {
+        const box = productById(fd.get('sourceProductId'));
+        const n = num(fd.get('sourceQty'));
+        const pieces = [...f.querySelectorAll('#pieces .line')].map((r) => ({ productId: r.querySelector('.u-product').value, qty: num(r.querySelector('.u-qty').value) })).filter((x) => x.productId && x.qty > 0);
+        if (!pieces.length) return fail('اختار قطع البوكس');
+        if (pieces.some((x) => x.productId === box.id)) return fail('القطعة مينفعش تبقى نفس البوكس');
+        const merged = RULES.mergeLines(pieces.map((x) => ({ ...x, price: 0 }))).items.map(({ productId, qty }) => ({ productId, qty }));
+        if (!dateOk(fd.get('date'))) return false;
+        const out = RULES.checkStockOut(J(), box.id, n);
+        if (out) return fail(stockMsg([out]));
+        if (fd.get('remember')) box.boxItems = merged;
+        DB.upsert('decants', { id: uid(), kind: 'unbox', date: fd.get('date'), sourceProductId: box.id, sourceQty: n, outputs: merged.map((x) => ({ productId: x.productId, qty: x.qty * n })), materialsCost: 0, accountId: '', notes: fd.get('notes') });
+        UI.toast(`تم فك ${n} بوكس إلى ${merged.reduce((a, x) => a + x.qty, 0) * n} قطعة`); render();
+      } });
+  }
+
+  function viewDecant(d) {
+    const c = J().inventory.decantCost[d.id] || { lines: [], sourceCost: 0, materials: 0, total: 0, costPerMl: 0 };
+    const ub = d.kind === 'unbox';
+    UI.modal({ title: `${ub ? 'فك' : 'تقسيم'} ${esc(productLabel(productById(d.sourceProductId)))}`, wide: true, tools: { title: `${ub ? 'فك بوكس' : 'تقسيم عبوة'} — ${productLabel(productById(d.sourceProductId))}`, subtitle: fmtDate(d.date), file: ub ? 'unbox' : 'decant' },
+      body: `<div class="summary">${ub ? `<div class="strong"><span>تكلفة ${fmt(d.sourceQty)} بوكس</span><b>${fmt(c.total)}</b></div><div><span>التوزيع</span><b>بنسبة سعر بيع القطع</b></div>` : `<div><span>تكلفة العطر (${fmt(d.sourceQty)} عبوة)</span><b>${fmt(c.sourceCost)}</b></div><div><span>العبوات الفاضية</span><b>${fmt(c.materials)}</b></div><div class="strong"><span>الإجمالي</span><b>${fmt(c.total)}</b></div><div><span>تكلفة المللي</span><b>${fmt(c.costPerMl)}</b></div>`}</div>
+        ${table(['المنتج', '#العدد', '#تكلفة العبوة', '#الإجمالي', '#سعر البيع', '#الهامش'], d.outputs.map((o, i) => { const p = productById(o.productId) || {}; const unit = o.qty ? (c.lines[i] || 0) / o.qty : 0; return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(o.qty))}${tdn(fmt(unit))}${tdn(fmt(c.lines[i] || 0))}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - unit) / p.price) : '—')}</tr>`; }))}
+        ${d.notes ? `<p class="muted">${esc(d.notes)}</p>` : ''}` });
+  }
+
+  // =====================================================================
+  // الباركود: طباعة الملصقات والجرد
+  // =====================================================================
+  function barcodeLabels() {
+    const s = S(), inv = J().inventory.products;
+    if (!s.products.length) { UI.toast('أضف منتجات الأول', 'bad'); return; }
+    UI.modal({ title: 'طباعة ملصقات باركود', wide: true, submit: 'طباعة',
+      body: `<p class="muted">حدد المنتجات وعدد الملصقات. المنتجات اللي ملهاش كود إنجليزي هيتعملها باركود تلقائي ويتحفظ فيها.</p>
+        <div class="btn-row"><label class="check"><input type="checkbox" name="showPrice" checked> اطبع السعر</label><button type="button" class="btn btn-small" id="lbl-stock">عدد = الرصيد</button><button type="button" class="btn btn-small" id="lbl-one">عدد = 1</button><button type="button" class="btn btn-small" id="lbl-none">إلغاء الكل</button></div>
+        ${table(['المنتج', 'الكود', '#الرصيد', 'عدد الملصقات'], s.products.map((p) => `<tr>${td(esc(productLabel(p)))}${td(esc(OPS.productCode(p) || 'تلقائي'), 'mono')}${tdn(fmt((inv[p.id] || {}).qty || 0))}<td><input class="lbl-n" type="number" min="0" max="500" step="1" value="0" data-pid="${p.id}" data-stock="${Math.max(0, Math.round((inv[p.id] || {}).qty || 0))}" aria-label="عدد الملصقات"></td></tr>`))}`,
+      onOpen(f) {
+        const set = (fn) => f.querySelectorAll('.lbl-n').forEach((i) => (i.value = fn(i)));
+        f.querySelector('#lbl-stock').addEventListener('click', () => set((i) => i.dataset.stock));
+        f.querySelector('#lbl-one').addEventListener('click', () => set(() => 1));
+        f.querySelector('#lbl-none').addEventListener('click', () => set(() => 0));
+      },
+      onSubmit(f, fd) {
+        const picks = [...f.querySelectorAll('.lbl-n')].map((i) => ({ p: productById(i.dataset.pid), n: Math.min(500, Math.max(0, Math.round(num(i.value)))) })).filter((x) => x.n > 0);
+        if (!picks.length) { UI.toast('حدد عدد الملصقات لمنتج واحد على الأقل', 'bad'); return false; }
+        let assigned = 0;
+        picks.forEach(({ p }) => { if (!OPS.productCode(p)) { p.barcode = OPS.autoBarcode(S().products); assigned++; } });
+        if (assigned) DB.save();
+        const showPrice = fd.get('showPrice');
+        const label = (p) => `<div class="label"><small>${esc(S().settings.businessName)}</small><b>${esc(productLabel(p))}</b>${OPS.barcodeSvg(OPS.productCode(p))}<span class="code">${esc(OPS.productCode(p))}</span>${showPrice && p.price ? `<b class="price">${fmt(p.price)} ج.م</b>` : ''}</div>`;
+        const css = '<style>.labels{display:grid;grid-template-columns:repeat(4,1fr);gap:3mm}.label{border:1px dashed #bbb;border-radius:2mm;padding:2mm;text-align:center;display:flex;flex-direction:column;align-items:center;gap:1px;page-break-inside:avoid;font-size:9px}.label b{font-size:10px;line-height:1.3}.label .barcode{width:100%;height:13mm}.label .code{font-family:Consolas,monospace;direction:ltr;font-size:9px;letter-spacing:1px}.label .price{font-size:12px}</style>';
+        FX.printDoc({ business: S().settings.businessName, title: 'ملصقات باركود', subtitle: `${picks.reduce((a, x) => a + x.n, 0)} ملصق`, html: `${css}<div class="labels">${picks.map(({ p, n }) => label(p).repeat(n)).join('')}</div>` });
+        if (assigned) { UI.toast(`اتعمل باركود تلقائي لـ ${assigned} منتج`); render(); }
+      } });
+  }
+  function stockCount() {
+    const s = S();
+    if (!s.products.length) { UI.toast('أضف منتجات الأول', 'bad'); return; }
+    const counts = new Map();
+    const view = (full) => {
+      const inv = J().inventory.products;
+      const list = full ? S().products.map((p) => p.id) : [...counts.keys()];
+      const rows = list.map((id) => { const p = productById(id); const sys = (inv[id] || {}).qty || 0; const c = counts.get(id) || 0; const d = c - sys; return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(sys))}<td><input class="cnt-n" type="number" min="0" step="1" value="${c}" data-pid="${id}" aria-label="العدد الفعلي"></td>${tdn(`<b class="${d < 0 ? 'bad-text' : d > 0 ? 'good-text' : ''}">${d > 0 ? '+' : ''}${fmt(d)}</b>`)}</tr>`; });
+      return table(['المنتج', '#رصيد النظام', 'العدد الفعلي', '#الفرق'], rows, { empty: 'ابدأ امسح المنتجات — كل مسحة بتزود قطعة' });
+    };
+    UI.modal({ title: 'جرد بالباركود', wide: true, submit: 'حفظ الفروق كتسويات',
+      body: `<div class="form-grid">${UI.field('تاريخ الجرد', UI.input('date', today(), 'type="date" required'), { req: true })}${UI.field('نوع الجرد', `<label class="check"><input type="checkbox" name="full" id="f-full"> جرد كامل: اللي ما اتمسحش رصيده صفر</label>`)}</div>
+        ${scanBox('امسح باركود كل قطعة (أو اكتب الكود ثم Enter)')}
+        <div id="cnt-view">${view(false)}</div>`,
+      onOpen(f) {
+        const box = f.querySelector('#cnt-view');
+        const redraw = () => (box.innerHTML = view(f.full.checked));
+        attachScanner(f, (code) => { const p = OPS.findByCode(S().products, code); if (!p) { UI.toast(`مفيش منتج بالكود «${code}»`, 'bad'); return; } counts.set(p.id, (counts.get(p.id) || 0) + 1); redraw(); UI.toast(`${productLabel(p)}: ${counts.get(p.id)}`); });
+        box.addEventListener('change', (e) => { if (e.target.classList.contains('cnt-n')) { counts.set(e.target.dataset.pid, Math.max(0, num(e.target.value))); redraw(); } });
+        f.full.addEventListener('change', redraw);
+      },
+      onSubmit(f, fd) {
+        const inv = J().inventory.products;
+        const ids = fd.get('full') ? S().products.map((p) => p.id) : [...counts.keys()];
+        const adjs = ids.map((id) => ({ id, d: Acc.round2((counts.get(id) || 0) - ((inv[id] || {}).qty || 0)) })).filter((x) => Math.abs(x.d) > 0.001);
+        if (!ids.length) { UI.toast('امسح منتج واحد على الأقل', 'bad'); return false; }
+        if (!dateOk(fd.get('date'), 'تاريخ الجرد')) return false;
+        if (!adjs.length) { UI.toast('الجرد مطابق — مفيش فروق 👌'); return; }
+        adjs.forEach((x) => S().adjustments.push({ id: uid(), date: fd.get('date'), productId: x.id, qty: x.d, unitCost: null, reason: 'count', notes: 'جرد بالباركود' }));
+        DB.save();
+        UI.toast(`تم تسجيل ${adjs.length} فرق جرد`); render();
+      } });
   }
 
   // =====================================================================
@@ -879,24 +1600,48 @@
         catch (e) { UI.toast('تعذر حفظ نسخة قبل الاستيراد — صدّر نسخة احتياطية أولًا', 'bad'); return false; }
         DB.replace(IMP.applyImport(base, plan));
         renderBrand();
-        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف`);
+        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف — افتح «فحص سلامة البيانات» للتأكد`);
         render();
       },
     });
   }
 
   const ACTIONS = {
-    newSale: () => saleForm(), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
-    delSale: (id) => del('sales', id, 'هذا الطلب'),
+    newSale: () => saleForm(), newPromo: () => saleForm(null, 'promo'), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
+    delSale: (id) => (RULES.isReconciled(S(), id) ? fail('الفاتورة داخلة في تسوية كشف شركة الشحن — احذف التسوية الأول') : del('sales', id, 'هذا الطلب')),
     newShipment: () => shipmentForm(), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
     delShipment: (id) => del('shipments', id, 'هذه الشحنة'),
     receiveShipment: (id) => {
       const sh = DB.find('shipments', id);
       UI.modal({ title: `استلام شحنة ${esc(sh.ref)}`, submit: 'تأكيد الاستلام', body: UI.field('تاريخ الاستلام', UI.input('receivedDate', today(), 'type="date" required'), { req: true, hint: 'تدخل الكميات المخزن بتكلفتها الواصلة في هذا التاريخ' }),
-        onSubmit(f, fd) { DB.upsert('shipments', { ...sh, status: 'received', receivedDate: fd.get('receivedDate') }); UI.toast('تم استلام الشحنة وإضافتها للمخزون'); render(); } });
+        onSubmit(f, fd) {
+          const obj = { ...sh, status: 'received', receivedDate: fd.get('receivedDate') };
+          const err = RULES.shipmentDateError(obj);
+          if (err) return fail(err);
+          DB.upsert('shipments', obj); UI.toast('تم استلام الشحنة وإضافتها للمخزون'); render();
+        } });
     },
     newProduct: () => productForm(), editProduct: (id) => productForm(DB.find('products', id)), productMoves: (id) => productMoves(DB.find('products', id)),
-    delProduct: (id) => del('products', id, 'هذا المنتج', () => used(id, [['sales', (x, i) => x.items.some((l) => l.productId === i)], ['shipments', (x, i) => x.items.some((l) => l.productId === i)], ['adjustments', (x, i) => x.productId === i]])),
+    delProduct: (id) => del('products', id, 'هذا المنتج', () => used(id, [['sales', (x, i) => x.items.some((l) => l.productId === i)], ['shipments', (x, i) => x.items.some((l) => l.productId === i)], ['adjustments', (x, i) => x.productId === i], ['decants', (x, i) => x.sourceProductId === i || x.outputs.some((o) => o.productId === i)]])),
+    newDecant: decantForm, unbox: unboxForm, viewDecant: (id) => viewDecant(DB.find('decants', id)),
+    delDecant: (id) => UI.confirm('هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.', () => { DB.remove('decants', id); UI.toast('تم الحذف'); render(); }),
+    barcodeLabels, stockCount,
+    newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
+    delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),
+    pickCourier: (id) => { reconCourier = id; render(); },
+    goReconcile: (id) => { if (id) reconCourier = id; location.hash = 'reconcile'; },
+    uploadStatement: pickStatementFile,
+    statementTemplate: () => FX.exportExcel('courier-statement-template.xlsx', [{ name: 'كشف الحساب', plain: true, header: ['رقم البوليصة', 'رقم الطلب', 'المبلغ المحصل', 'مصاريف الشحن', 'الحالة', 'التاريخ'], rows: [] }], { business: S().settings.businessName, subtitle: '' }),
+    viewReconciliation: (id) => viewReconciliation(DB.find('reconciliations', id)),
+    delReconciliation: (id) => UI.confirm('هل تريد حذف هذه التسوية؟ الطلبات هترجع «لسه ما اتسوتش». التحصيل المسجل في الخزينة مش هيتحذف — احذفه من شاشة الخزينة لو محتاج.', () => { DB.remove('reconciliations', id); UI.toast('تم الحذف'); render(); }),
+    newPartner: () => partnerForm(), editPartner: (id) => partnerForm(DB.find('partners', id)), partnerStatement: (id) => partnerStatement(DB.find('partners', id)),
+    delPartner: (id) => del('partners', id, 'هذا الشريك', () => used(id, [['equity', (x, i) => x.partnerId === i], ['distributions', (x, i) => x.allocations.some((a) => a.partnerId === i)]])),
+    partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
+    newDistribution: distributionForm, delDistribution: (id) => del('distributions', id, 'هذا التوزيع'),
+    pickAlert: (id) => { alertFilter = id; render(); },
+    runAudit: () => { render(); UI.toast('تم الفحص'); },
+    goto: (h) => { location.hash = h; },
+    goTreasury: (id) => { treasuryAcc = id; period = { preset: 'all', from: '', to: '' }; savePeriod(); location.hash = 'treasury'; render(); },
     newAdjustment: adjustmentForm, delAdjustment: (id) => del('adjustments', id, 'هذه التسوية'),
     newSupplier: () => supplierForm(), editSupplier: (id) => supplierForm(DB.find('suppliers', id)), supplierStatement: (id) => supplierStatement(DB.find('suppliers', id)),
     delSupplier: (id) => del('suppliers', id, 'هذا المورد', () => used(id, [['shipments', (x, i) => x.supplierId === i], ['supplierPayments', (x, i) => x.supplierId === i]])),
@@ -918,7 +1663,7 @@
       FX.exportExcel(`florume-${x.key === 'reports' ? report : x.key}-${today()}.xlsx`, sheets, { business: S().settings.businessName, subtitle: x.subtitle });
     },
     newAccount: () => accountForm(), editAccount: (id) => accountForm(DB.find('accounts', id)),
-    delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
+    delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)], ['decants', (x, i) => x.accountId === i]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
     newCourier: () => courierForm(), editCourier: (id) => courierForm(DB.find('couriers', id)),
     delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i]])),
     importExcel: pickImportFile,
@@ -948,11 +1693,16 @@
     periodTo: (el) => { period = { ...period, preset: 'custom', to: el.value }; savePeriod(); render(); },
     saleStatusFilter: (el) => { saleFilter.status = el.value; render(); },
     saleChannelFilter: (el) => { saleFilter.channel = el.value; render(); },
+    saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
     ledgerAcc: (el) => { ledgerAcc = el.value; render(); },
     saleStatus: (el) => {
       const sale = DB.find('sales', el.dataset.id);
       const upd = { ...sale, status: el.value };
-      if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today();
+      if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today() < sale.date ? sale.date : today();
+      if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية كشف شركة الشحن — الحالة مقفولة'); render(); return; }
+      const stock = RULES.checkSaleStock(S(), J(), upd, sale);
+      if (stock.errors.length) { fail(stockMsg(stock.errors, upd.status)); render(); return; }
+      upd.preorder = stock.preorder;
       DB.upsert('sales', upd);
       UI.toast(el.value === 'returned' ? 'تم تسجيل المرتجع — عدّل الطلب لإضافة مصاريف المرتجع' : `الحالة: ${STATUSES[el.value]}`);
       render();
@@ -982,6 +1732,11 @@
     customers: { title: 'العملاء', render: customers },
     treasury: { title: 'الخزينة والبنوك', render: treasury, period: true },
     expenses: { title: 'المصروفات', render: expenses, period: true },
+    campaigns: { title: 'الحملات الإعلانية', render: campaignsPage, period: true },
+    reconcile: { title: 'تسوية شركات الشحن', render: reconcilePage },
+    partners: { title: 'الشركاء وتوزيع الأرباح', render: partnersPage },
+    alerts: { title: 'التنبيهات', render: alertsPage },
+    health: { title: 'فحص سلامة البيانات', render: healthPage },
     reports: { title: 'التقارير', render: reports, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
@@ -994,12 +1749,13 @@
     const title = isReport ? REPORTS[report] : PAGES[key].title;
     let subtitle = PAGES[key].period ? periodText() : `في ${fmtDate(today())}`;
     if (isReport && (report === 'balance' || report === 'trial')) subtitle = `حتى ${fmtDate(period.to || today())}`;
-    if (key === 'sales' && (saleFilter.status || saleFilter.channel || saleFilter.q)) subtitle += ` · مفلتر: ${[STATUSES[saleFilter.status], CHANNELS[saleFilter.channel], saleFilter.q].filter(Boolean).join('، ')}`;
+    if (key === 'sales' && (saleFilter.status || saleFilter.channel || saleFilter.q || saleFilter.kind)) subtitle += ` · مفلتر: ${[{ sale: 'فواتير بيع', promo: 'فواتير دعاية' }[saleFilter.kind], STATUSES[saleFilter.status], CHANNELS[saleFilter.channel], saleFilter.q].filter(Boolean).join('، ')}`;
+    if (key === 'reconcile') subtitle += ` · ${nameOf('couriers', reconCourier)}`;
     if (key === 'treasury') subtitle += ` · حركة ${nameOf('accounts', treasuryAcc)}`;
     return { key, title, subtitle, root: isReport ? main().querySelector('.report') : main() };
   }
   function journalSheet() {
-    const rows = J().entries.filter((e) => inPeriod(e.date)).flatMap((e) => e.lines.map((l) => ({ cells: [e.no, fmtDate(e.date), e.desc, Acc.accountName(l.acc, S()), l.party ? nameOf(l.party.type === 'supplier' ? 'suppliers' : 'couriers', l.party.id) : '', l.dr || '', l.cr || ''] })));
+    const rows = J().entries.filter((e) => inPeriod(e.date)).flatMap((e) => e.lines.map((l) => ({ cells: [e.no, fmtDate(e.date), e.desc, Acc.accountName(l.acc, S()), l.party ? partyName(l.party) : '', l.dr || '', l.cr || ''] })));
     const tot = J().entries.filter((e) => inPeriod(e.date)).reduce((t, e) => { e.lines.forEach((l) => { t[0] += l.dr; t[1] += l.cr; }); return t; }, [0, 0]);
     rows.push({ cells: ['', '', 'الإجمالي', '', '', Acc.round2(tot[0]), Acc.round2(tot[1])], total: true });
     return { name: 'دفتر اليومية', header: ['رقم القيد', 'التاريخ', 'البيان', 'الحساب', 'الطرف', 'مدين', 'دائن'], rows };
@@ -1008,9 +1764,10 @@
     const rows = [];
     S().sales.filter((x) => inPeriod(x.date)).sort((a, b) => (a.date < b.date ? -1 : 1)).forEach((x) => {
       const c = DB.find('customers', x.customerId) || {};
-      x.items.forEach((it) => rows.push({ cells: [invoiceNo(x), fmtDate(x.date), c.name || '', c.phone || '', c.city || '', CHANNELS[x.channel] || '', STATUSES[x.status], productLabel(productById(it.productId)), it.qty, it.price, it.qty * it.price] }));
+      const costs = lineCosts(x);
+      x.items.forEach((it, i) => rows.push({ cells: [invoiceNo(x), isPromo(x) ? 'دعاية' : 'بيع', fmtDate(x.date), c.name || '', c.phone || '', c.city || '', CHANNELS[x.channel] || '', STATUSES[x.status], x.trackingNo || '', x.campaignId ? nameOf('campaigns', x.campaignId) : '', productLabel(productById(it.productId)), it.qty, it.price, it.qty * it.price, Acc.round2(costs[i])] }));
     });
-    return { name: 'تفاصيل الأصناف المباعة', header: ['الفاتورة', 'التاريخ', 'العميل', 'الموبايل', 'المدينة', 'القناة', 'الحالة', 'الصنف', 'الكمية', 'السعر', 'الإجمالي'], rows };
+    return { name: 'تفاصيل الأصناف المباعة', header: ['الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الموبايل', 'المدينة', 'القناة', 'الحالة', 'البوليصة', 'الحملة', 'الصنف', 'الكمية', 'السعر', 'الإجمالي', 'التكلفة'], rows };
   }
   function render() {
     const key = currentPage();
@@ -1019,14 +1776,24 @@
     const m = main();
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
+    const badge = document.getElementById('alert-badge');
+    if (badge) { let n = 0; try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ } badge.hidden = !n; badge.textContent = n; }
     const pa = m.querySelector('.page-head .page-actions');
     if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();
+      if (!UI.numbersOk(sf)) return;
       const fd = new FormData(sf); const st = S().settings;
+      const maxNo = RULES.maxInvoiceNo(S());
+      if (num(fd.get('nextInvoiceNo')) <= maxNo) { fail(`رقم الفاتورة التالية لازم يكون أكبر من آخر رقم مستخدم (${maxNo}) عشان الأرقام ما تتكررش`); return; }
+      const first = RULES.earliestDocDate(S());
+      if (!fd.get('startDate')) { fail('أدخل تاريخ بداية الحسابات'); return; }
+      if (first && fd.get('startDate') > first) { fail(`تاريخ بداية الحسابات لازم يكون في أو قبل أول مستند مسجل (${fmtDate(first)})`); return; }
       Object.assign(st, { businessName: fd.get('businessName').trim() || 'Florume', businessPhone: fd.get('businessPhone').trim(), startDate: fd.get('startDate'), invoicePrefix: fd.get('invoicePrefix'), nextInvoiceNo: num(fd.get('nextInvoiceNo')) || 1, lowStock: num(fd.get('lowStock')) });
       st.rates = { SAR: num(fd.get('rate_SAR')), AED: num(fd.get('rate_AED')), USD: num(fd.get('rate_USD')) };
+      st.alerts = Object.fromEntries(Object.keys(OPS.ALERT_DEFAULTS).map((k) => [k, String(fd.get('al_' + k)).trim() === '' ? OPS.ALERT_DEFAULTS[k] : Math.max(0, num(fd.get('al_' + k)))]));
+      st.waFooter = fd.get('waFooter').trim();
       DB.save(); UI.toast('تم حفظ الإعدادات'); renderBrand(); render();
     });
   }
