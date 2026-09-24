@@ -472,8 +472,9 @@
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
   }
   function costRow(c = {}) {
-    return `<tr class="cost"><td><input class="c-label" value="${esc(c.label || '')}" placeholder="شحن جوي، جمارك، تخليص…" aria-label="البند"></td>
+    return `<tr class="cost"><td><input class="c-label" value="${esc(c.label || '')}" placeholder="شحن وجمارك" aria-label="البند"></td>
       <td><input class="c-amount" type="number" min="0" step="0.01" value="${c.amount ?? ''}" aria-label="المبلغ بالجنيه"></td>
+      <td>${UI.select('c-basis', Acc.COST_BASES, c.basis || 'weight', 'class="c-basis" aria-label="يتوزع حسب"')}</td>
       <td>${UI.select('c-account', accountOptions(), c.accountId || (S().accounts[0] || {}).id, 'class="c-account" aria-label="دُفع من"')}</td>
       <td><input class="c-date" type="date" value="${c.date || ''}" aria-label="تاريخ الدفع"></td>
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
@@ -484,7 +485,7 @@
     if (!s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
     const isNew = !sh;
     const sup0 = s.suppliers[0];
-    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [], notes: '' };
+    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' };
     const body = `
       <div class="form-grid">
         ${UI.field('رقم / مرجع الشحنة', UI.input('ref', sh.ref, 'placeholder="مثال: SA-2610"'))}
@@ -500,17 +501,19 @@
       <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة <span class="cur-label"></span></th><th class="num">بالجنيه</th><th class="num">تكلفة الوحدة الواصلة</th><th></th></tr></thead>
         <tbody id="lines">${sh.items.map(shipLineRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
-      <h3 class="sub-title">مصاريف إضافية بالجنيه (شحن، جمارك، تخليص، عمولات)</h3>
-      <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
+      <h3 class="sub-title">مصاريف الشحن والجمارك بالجنيه</h3>
+      <p class="muted">لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
+      <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>يتوزع حسب</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
         <tbody id="costs">${sh.costs.map(costRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-cost">+ إضافة مصروف</button>
+      <div class="imp-box warn" id="weight-warn" hidden></div>
       ${UI.field('ملاحظات', `<textarea id="f-notes" name="notes" rows="2">${esc(sh.notes || '')}</textarea>`)}
       <div class="summary" id="ship-summary"></div>`;
     const read = (f) => ({
       ...sh, ref: f.ref.value.trim(), supplierId: f.supplierId.value, currency: f.currency.value, rate: num(f.rate.value), orderDate: f.orderDate.value, status: f.status.value,
       receivedDate: f.status.value === 'received' ? f.receivedDate.value : '', dueDate: f.dueDate.value, notes: f.notes.value,
       items: [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })).filter((l) => l.productId && l.qty > 0),
-      costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim(), amount: num(r.querySelector('.c-amount').value), accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
+      costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim() || 'شحن وجمارك', amount: num(r.querySelector('.c-amount').value), basis: r.querySelector('.c-basis').value, accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
     });
     UI.modal({
       title: isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
@@ -519,7 +522,11 @@
         const recalc = () => {
           const draft = read(f);
           const allRows = [...lines.querySelectorAll('.line')];
-          const c = Acc.shipmentCosting({ ...draft, items: allRows.map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })) });
+          const c = Acc.shipmentCosting({ ...draft, items: allRows.map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })) }, S().products);
+          const ww = f.querySelector('#weight-warn');
+          const byWeight = c.costs.some((x) => x.basis === 'weight');
+          ww.hidden = !(byWeight && c.missingWeight.filter(Boolean).length);
+          if (!ww.hidden) ww.innerHTML = `<b>${c.missingWeight.filter(Boolean).map((id) => esc(productLabel(productById(id)))).join('، ')}</b> ملوش وزن شحن ولا حجم بالمللي، فالمصاريف اتوزعت مؤقتًا بعدد القطع. سجّل الوزن أو الحجم في المنتج عشان التوزيع يبقى بالحجم.`;
           allRows.forEach((r, i) => { r.querySelector('.l-egp').textContent = fmt(c.lines[i].egp); r.querySelector('.l-landed').textContent = fmt(c.lines[i].landedUnit); });
           f.querySelector('.cur-label').textContent = `(${draft.currency})`;
           f.querySelector('.recv-field').hidden = draft.status !== 'received';
@@ -549,12 +556,15 @@
   }
 
   function landedView(sh) {
-    const c = Acc.shipmentCosting(sh);
+    const c = Acc.shipmentCosting(sh, S().products);
+    const costHeads = c.costs.map((x) => `#${x.label || 'مصاريف'} للقطعة`);
+    const basisNote = c.costs.map((x) => `«${esc(x.label || 'مصاريف')}» ${fmt(x.amount)} ج.م اتوزع حسب ${Acc.COST_BASES[x.applied]}${x.applied !== x.basis ? ` (بدل ${Acc.COST_BASES[x.basis]} لأن فيه صنف ملوش وزن ولا حجم)` : ''}`).join(' · ');
     UI.modal({ title: `تكلفة الوحدة — شحنة ${esc(sh.ref)}`, wide: true, tools: { title: `تكلفة الوحدة الواصلة — شحنة ${sh.ref || ''}`, subtitle: `${nameOf('suppliers', sh.supplierId)} · سعر الصرف ${sh.rate}`, file: `landed-${sh.ref || 'shipment'}` },
-      body: `${table(['المنتج', '#الكمية', `#سعر المورد (${sh.currency})`, '#بالجنيه', '#نصيبه من المصاريف', '#تكلفة الوحدة الواصلة', '#سعر البيع', '#الهامش المتوقع'], c.lines.map((l) => {
+      body: `${basisNote ? `<p class="muted">${basisNote}</p>` : ''}${table(['المنتج', '#الكمية', '#وزن/حجم القطعة', `#سعر المورد (${sh.currency})`, '#بالجنيه', ...costHeads, '#تكلفة الوحدة الواصلة', '#سعر البيع', '#الهامش المتوقع'], c.lines.map((l) => {
         const p = productById(l.productId) || {};
-        return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(l.qty))}${tdn(fmt(l.unitCost))}${tdn(fmt(l.egp))}${tdn(fmt(l.extras))}${tdn(`<b>${fmt(l.landedUnit)}</b>`)}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - l.landedUnit) / p.price) : '—')}</tr>`;
-      }), { foot: `<tr><td>الإجمالي</td>${tdn(fmt(c.totalQty))}${tdn(fmt(c.goodsForeign))}${tdn(fmt(c.goodsEGP))}${tdn(fmt(c.extras))}${tdn(fmt(c.landedTotal))}<td colspan="2"></td></tr>` })}` });
+        return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(l.qty))}${tdn(l.unitWeight ? fmt(l.unitWeight) : '—')}${tdn(fmt(l.unitCost))}${tdn(fmt(l.qty ? l.egp / l.qty : 0))}${l.parts.map((x) => tdn(fmt(l.qty ? x / l.qty : 0))).join('')}${tdn(`<b>${fmt(l.landedUnit)}</b>`)}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - l.landedUnit) / p.price) : '—')}</tr>`;
+      }), { foot: `<tr><td>الإجمالي</td>${tdn(fmt(c.totalQty))}${tdn(c.totalWeight ? fmt(c.totalWeight) : '')}${tdn(fmt(c.goodsForeign))}${tdn(fmt(c.goodsEGP))}${c.costs.map((x) => tdn(fmt(x.amount))).join('')}${tdn(fmt(c.landedTotal))}<td colspan="2"></td></tr>` })}
+        <p class="muted">أعمدة المصاريف والبضاعة بالجنيه للقطعة الواحدة، وصف الإجمالي بإجمالي الشحنة.</p>` });
   }
 
   // =====================================================================
@@ -577,15 +587,15 @@
     const adj = [...s.adjustments].sort((a, b) => (a.date < b.date ? 1 : -1)).map((a) => `<tr>${td(fmtDate(a.date))}${td(esc(productLabel(productById(a.productId))))}${td(Acc.ADJ_REASONS[a.reason] || a.reason)}${tdn(fmt(a.qty))}${tdn(fmt(J().inventory.adjCost[a.id] || 0))}${td(esc(a.notes || ''))}${actions(btn('حذف', 'delAdjustment', a.id, 'danger'))}</tr>`);
     const dec = [...s.decants].sort((a, b) => (a.date < b.date ? 1 : -1)).map((d) => {
       const c = J().inventory.decantCost[d.id] || { total: 0, costPerMl: 0 };
-      return `<tr>${td(fmtDate(d.date))}${td(esc(productLabel(productById(d.sourceProductId))))}${tdn(fmt(d.sourceQty))}${td(d.outputs.map((o) => `${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`).join('<br>'))}${tdn(fmt(d.materialsCost))}${tdn(fmt(c.total))}${tdn(fmt(c.costPerMl))}${actions(btn('التفاصيل', 'viewDecant', d.id), btn('حذف', 'delDecant', d.id, 'danger'))}</tr>`;
+      return `<tr>${td(fmtDate(d.date))}${td(`${d.kind === 'unbox' ? UI.pill('فك بوكس', 'info') + ' ' : ''}${esc(productLabel(productById(d.sourceProductId)))}`)}${tdn(fmt(d.sourceQty))}${td(d.outputs.map((o) => `${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`).join('<br>'))}${tdn(fmt(d.materialsCost))}${tdn(fmt(c.total))}${tdn(d.kind === 'unbox' ? '—' : fmt(c.costPerMl))}${actions(btn('التفاصيل', 'viewDecant', d.id), btn('حذف', 'delDecant', d.id, 'danger'))}</tr>`;
     });
-    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newDecant">تقسيم عبوة (ديكانت)</button><button class="btn" data-action="barcodeLabels">طباعة باركود</button><button class="btn" data-action="stockCount">جرد بالباركود</button><button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
+    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newDecant">تقسيم عبوة (ديكانت)</button><button class="btn" data-action="unbox">فك بوكس</button><button class="btn" data-action="barcodeLabels">طباعة باركود</button><button class="btn" data-action="stockCount">جرد بالباركود</button><button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
       <section class="kpis kpis-3">${kpi('قيمة المخزون بالتكلفة', money0(totals.value))}${kpi('قيمته بسعر البيع', money0(totals.retail))}${kpi('ربح متوقع في المخزون', money0(totals.retail - totals.value), totals.retail ? `هامش ${pct((totals.retail - totals.value) / totals.retail)}` : '')}</section>
       ${table(['الكود', 'المنتج', 'الحجم', 'الفئة', '#سعر البيع', '#الرصيد', '#محجوز', '#متاح', '#متوسط التكلفة', '#قيمة المخزون', '#الهامش', 'الحالة', ''], rows, { empty: 'لا توجد منتجات بعد' })}
       <h2 class="section-title">تسويات المخزون (افتتاحي، تالف، تسترات، هدايا، فروق جرد)</h2>
       ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { empty: 'لا توجد تسويات' })}
-      <h2 class="section-title">تقسيم العبوات (ديكانت)</h2>
-      ${table(['التاريخ', 'العبوة الأصلية', '#عدد العبوات', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { empty: 'لم تقسم أي عبوة بعد' })}`;
+      <h2 class="section-title">تقسيم العبوات (ديكانت) وفك البوكسات</h2>
+      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { empty: 'لم تقسم أي عبوة بعد' })}`;
   }
 
   function productForm(p) {
@@ -596,6 +606,7 @@
         ${UI.field('الماركة', UI.input('brand', p.brand, 'placeholder="لطافة، أرماف، الرصاصي…"'))}
         ${UI.field('اسم العطر', UI.input('name', p.name, 'required'), { req: true })}
         ${UI.field('الحجم (مل)', UI.input('sizeMl', p.sizeMl, 'type="number" min="0"'))}
+        ${UI.field('وزن الشحن (جرام)', UI.input('weightG', p.weightG || '', 'type="number" min="0" step="1"'), { hint: p.boxItems && p.boxItems.length ? `بوكس: لو فاضي يتحسب بمجموع قطعه (${fmt(Acc.unitWeight({ ...p, weightG: 0, sizeMl: 0 }, S().products))})` : 'لتوزيع مصاريف الشحن. لو فاضي يتحسب بالمللي' })}
         ${UI.field('الفئة', UI.select('gender', GENDERS, p.gender))}
         ${UI.field('كود المنتج (SKU)', UI.input('sku', p.sku, 'dir="ltr"'))}
         ${UI.field('الباركود', UI.input('barcode', p.barcode || '', 'dir="ltr" autocomplete="off"'), { hint: 'امسحه بالقارئ هنا، أو سيبه فاضي ويتعمل تلقائي عند الطباعة' })}
@@ -607,7 +618,7 @@
         if (barcode && !OPS.validBarcode(barcode)) { UI.toast('الباركود لازم يكون حروف وأرقام إنجليزي بس', 'bad'); return false; }
         const dup = barcode && S().products.find((x) => x.id !== p.id && (x.barcode || '').toUpperCase() === barcode.toUpperCase());
         if (dup) { UI.toast(`الباركود ده مستخدم لـ ${productLabel(dup)}`, 'bad'); return false; }
-        DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), gender: fd.get('gender'), sku: fd.get('sku').trim(), barcode, price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
+        DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), weightG: num(fd.get('weightG')), gender: fd.get('gender'), sku: fd.get('sku').trim(), barcode, price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
         UI.toast('تم حفظ المنتج'); render();
       } });
   }
@@ -638,12 +649,12 @@
   }
 
   function productMoves(p) {
-    const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم', decantOut: 'تفريغ للديكانت', decantIn: 'وارد من تقسيم' };
+    const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم', decantOut: 'تفريغ / فك', decantIn: 'وارد من تقسيم / فك' };
     const rows = J().inventory.movements.filter((m) => m.productId === p.id).map((m) => {
       let ref = '';
       if (m.src.type === 'shipment') ref = 'شحنة ' + ((DB.find('shipments', m.src.id) || {}).ref || '');
       else if (m.src.type === 'sale') { const x = DB.find('sales', m.src.id) || {}; ref = `${isPromo(x) ? 'فاتورة دعاية' : 'فاتورة'} ${invoiceNo(x)}`; }
-      else if (m.src.type === 'decant') ref = 'تقسيم عبوة ' + productLabel(productById((DB.find('decants', m.src.id) || {}).sourceProductId));
+      else if (m.src.type === 'decant') { const d = DB.find('decants', m.src.id) || {}; ref = `${d.kind === 'unbox' ? 'فك بوكس' : 'تقسيم عبوة'} ${productLabel(productById(d.sourceProductId))}`; }
       else ref = Acc.ADJ_REASONS[(DB.find('adjustments', m.src.id) || {}).reason] || 'تسوية';
       const sign = m.kind === 'in' || m.kind === 'return' || m.kind === 'decantIn' ? 1 : -1;
       return `<tr>${td(fmtDate(m.date))}${td(labels[m.kind])}${td(esc(ref))}${tdn(fmt(sign * m.qty))}${tdn(fmt(m.qty ? m.cost / m.qty : 0))}${tdn(fmt(m.balanceQty))}${tdn(fmt(m.balanceValue))}${tdn(fmt(m.balanceQty ? m.balanceValue / m.balanceQty : 0))}</tr>`;
@@ -1337,10 +1348,69 @@
         UI.toast(`تم تقسيم ${q} عبوة إلى ${rows.reduce((a, r) => a + r.qty, 0)} ديكانت`); render();
       } });
   }
+  // فك بوكس: البوكس يخرج من المخزون وقطعه تدخل، وتكلفته تتوزع على القطع بنسبة سعر بيعها
+  function unboxForm() {
+    const s = S(), inv = J().inventory.products;
+    const stocked = s.products.filter((p) => (inv[p.id] || {}).available > 0);
+    if (!stocked.length) { UI.toast('مفيش منتجات في المخزون', 'bad'); return; }
+    const boxes = [...stocked.filter((p) => p.boxItems && p.boxItems.length), ...stocked.filter((p) => !(p.boxItems && p.boxItems.length))];
+    const pieceRow = (it = {}) => `<tr class="line"><td>${UI.select('u-product', productOptions(), it.productId || '', 'class="u-product" aria-label="القطعة"')}</td><td><input class="u-qty" type="number" min="1" step="1" value="${it.qty || 1}" aria-label="العدد في البوكس"></td><td class="num u-price">0</td><td class="num u-cost">0</td><td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
+    const rowsFor = (box) => (box.boxItems && box.boxItems.length ? box.boxItems : [{}, {}, {}]).map(pieceRow).join('');
+    UI.modal({ title: 'فك بوكس إلى قطع', wide: true, submit: 'فك البوكس',
+      body: `<p class="muted">استخدمها لما تحتاج تبيع قطع البوكس لوحدها. البوكس بيخرج من المخزون، وكل قطعة بتدخل بتكلفتها: تكلفة البوكس بتتوزع على القطع بنسبة سعر بيع كل قطعة.</p>
+        <div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', today(), 'type="date" required'), { req: true })}
+          ${UI.field('البوكس', UI.select('sourceProductId', boxes.map((p) => ({ v: p.id, l: `${productLabel(p)} — متاح ${fmt(inv[p.id].available)}` })), boxes[0].id))}
+          ${UI.field('عدد البوكسات', UI.input('sourceQty', 1, 'type="number" min="1" step="1" required'), { req: true })}
+          ${UI.field('ملاحظات', UI.input('notes', ''))}
+        </div>
+        <h3 class="sub-title">قطع البوكس الواحد</h3>
+        <div class="table-wrap"><table class="lines"><thead><tr><th>القطعة (منتج)</th><th>العدد في البوكس</th><th class="num">سعر البيع</th><th class="num">تكلفة القطعة</th><th></th></tr></thead><tbody id="pieces">${rowsFor(boxes[0])}</tbody></table></div>
+        <button type="button" class="btn btn-small" id="add-piece">+ قطعة</button>
+        <label class="check"><input type="checkbox" name="remember" checked> احفظ القطع دي للبوكس ده (عشان المرة الجاية، ووزن شحن البوكس يتحسب بمجموعها)</label>
+        <p class="muted">لو القطعة مش موجودة كمنتج، أضفها الأول من «+ منتج جديد» بسعر بيعها.</p>
+        <div class="summary" id="ub-sum"></div>`,
+      onOpen(f) {
+        const body = f.querySelector('#pieces');
+        const recalc = () => {
+          const box = productById(f.sourceProductId.value), st = inv[box.id] || { avgCost: 0 };
+          const rows = [...body.querySelectorAll('.line')].map((r) => ({ r, p: productById(r.querySelector('.u-product').value), q: num(r.querySelector('.u-qty').value) }));
+          const totPrice = rows.reduce((a, x) => a + (x.p ? num(x.p.price) * x.q : 0), 0);
+          const totQty = rows.reduce((a, x) => a + (x.p ? x.q : 0), 0);
+          rows.forEach((x) => {
+            x.r.querySelector('.u-price').textContent = x.p ? fmt(x.p.price) : '—';
+            const unit = !x.p ? 0 : totPrice > 0 ? (st.avgCost * num(x.p.price)) / totPrice : totQty ? st.avgCost / totQty : 0;
+            x.r.querySelector('.u-cost').textContent = fmt(unit);
+          });
+          f.querySelector('#ub-sum').innerHTML = `<div><span>تكلفة البوكس الواحد</span><b>${fmt(st.avgCost)}</b></div><div><span>قطع في البوكس</span><b>${fmt(totQty)}</b></div><div class="strong"><span>قطع هتدخل المخزون</span><b>${fmt(totQty * num(f.sourceQty.value))}</b></div><div><span>سعر بيع القطع مجمعة</span><b>${fmt(totPrice)}</b></div><div><span>سعر بيع البوكس</span><b>${fmt(box.price)}</b></div>`;
+        };
+        f.sourceProductId.addEventListener('change', () => { body.innerHTML = rowsFor(productById(f.sourceProductId.value)); recalc(); });
+        f.querySelector('#add-piece').addEventListener('click', () => { body.insertAdjacentHTML('beforeend', pieceRow()); recalc(); });
+        body.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && body.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
+        f.addEventListener('input', recalc); f.addEventListener('change', recalc);
+        recalc();
+      },
+      onSubmit(f, fd) {
+        const box = productById(fd.get('sourceProductId'));
+        const n = num(fd.get('sourceQty'));
+        const pieces = [...f.querySelectorAll('#pieces .line')].map((r) => ({ productId: r.querySelector('.u-product').value, qty: num(r.querySelector('.u-qty').value) })).filter((x) => x.productId && x.qty > 0);
+        if (!pieces.length) return fail('اختار قطع البوكس');
+        if (pieces.some((x) => x.productId === box.id)) return fail('القطعة مينفعش تبقى نفس البوكس');
+        const merged = RULES.mergeLines(pieces.map((x) => ({ ...x, price: 0 }))).items.map(({ productId, qty }) => ({ productId, qty }));
+        if (!dateOk(fd.get('date'))) return false;
+        const out = RULES.checkStockOut(J(), box.id, n);
+        if (out) return fail(stockMsg([out]));
+        if (fd.get('remember')) box.boxItems = merged;
+        DB.upsert('decants', { id: uid(), kind: 'unbox', date: fd.get('date'), sourceProductId: box.id, sourceQty: n, outputs: merged.map((x) => ({ productId: x.productId, qty: x.qty * n })), materialsCost: 0, accountId: '', notes: fd.get('notes') });
+        UI.toast(`تم فك ${n} بوكس إلى ${merged.reduce((a, x) => a + x.qty, 0) * n} قطعة`); render();
+      } });
+  }
+
   function viewDecant(d) {
     const c = J().inventory.decantCost[d.id] || { lines: [], sourceCost: 0, materials: 0, total: 0, costPerMl: 0 };
-    UI.modal({ title: `تقسيم ${esc(productLabel(productById(d.sourceProductId)))}`, wide: true, tools: { title: `تقسيم عبوة — ${productLabel(productById(d.sourceProductId))}`, subtitle: fmtDate(d.date), file: 'decant' },
-      body: `<div class="summary"><div><span>تكلفة العطر (${fmt(d.sourceQty)} عبوة)</span><b>${fmt(c.sourceCost)}</b></div><div><span>العبوات الفاضية</span><b>${fmt(c.materials)}</b></div><div class="strong"><span>الإجمالي</span><b>${fmt(c.total)}</b></div><div><span>تكلفة المللي</span><b>${fmt(c.costPerMl)}</b></div></div>
+    const ub = d.kind === 'unbox';
+    UI.modal({ title: `${ub ? 'فك' : 'تقسيم'} ${esc(productLabel(productById(d.sourceProductId)))}`, wide: true, tools: { title: `${ub ? 'فك بوكس' : 'تقسيم عبوة'} — ${productLabel(productById(d.sourceProductId))}`, subtitle: fmtDate(d.date), file: ub ? 'unbox' : 'decant' },
+      body: `<div class="summary">${ub ? `<div class="strong"><span>تكلفة ${fmt(d.sourceQty)} بوكس</span><b>${fmt(c.total)}</b></div><div><span>التوزيع</span><b>بنسبة سعر بيع القطع</b></div>` : `<div><span>تكلفة العطر (${fmt(d.sourceQty)} عبوة)</span><b>${fmt(c.sourceCost)}</b></div><div><span>العبوات الفاضية</span><b>${fmt(c.materials)}</b></div><div class="strong"><span>الإجمالي</span><b>${fmt(c.total)}</b></div><div><span>تكلفة المللي</span><b>${fmt(c.costPerMl)}</b></div>`}</div>
         ${table(['المنتج', '#العدد', '#تكلفة العبوة', '#الإجمالي', '#سعر البيع', '#الهامش'], d.outputs.map((o, i) => { const p = productById(o.productId) || {}; const unit = o.qty ? (c.lines[i] || 0) / o.qty : 0; return `<tr>${td(esc(productLabel(p)))}${tdn(fmt(o.qty))}${tdn(fmt(unit))}${tdn(fmt(c.lines[i] || 0))}${tdn(fmt(p.price))}${tdn(p.price ? pct((p.price - unit) / p.price) : '—')}</tr>`; }))}
         ${d.notes ? `<p class="muted">${esc(d.notes)}</p>` : ''}` });
   }
@@ -1527,8 +1597,8 @@
     },
     newProduct: () => productForm(), editProduct: (id) => productForm(DB.find('products', id)), productMoves: (id) => productMoves(DB.find('products', id)),
     delProduct: (id) => del('products', id, 'هذا المنتج', () => used(id, [['sales', (x, i) => x.items.some((l) => l.productId === i)], ['shipments', (x, i) => x.items.some((l) => l.productId === i)], ['adjustments', (x, i) => x.productId === i], ['decants', (x, i) => x.sourceProductId === i || x.outputs.some((o) => o.productId === i)]])),
-    newDecant: decantForm, viewDecant: (id) => viewDecant(DB.find('decants', id)),
-    delDecant: (id) => UI.confirm('هل تريد حذف عملية التقسيم؟ العبوة الأصلية هترجع للمخزون والديكانت الناتج هيتشال — لو اتباع منه حاجة هيظهر رصيد غير كافٍ.', () => { DB.remove('decants', id); UI.toast('تم الحذف'); render(); }),
+    newDecant: decantForm, unbox: unboxForm, viewDecant: (id) => viewDecant(DB.find('decants', id)),
+    delDecant: (id) => UI.confirm('هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.', () => { DB.remove('decants', id); UI.toast('تم الحذف'); render(); }),
     barcodeLabels, stockCount,
     newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
     delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),

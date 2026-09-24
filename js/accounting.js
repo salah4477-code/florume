@@ -75,24 +75,50 @@
   }
 
   // ---------- تكلفة الشحنة الواصلة ----------
-  function shipmentCosting(shipment) {
+  // أساس توزيع كل بند مصاريف على الأصناف
+  const COST_BASES = { weight: 'الوزن / الحجم', value: 'القيمة', qty: 'عدد القطع' };
+  // وزن الشحن للقطعة: الوزن بالجرام، وإلا الحجم بالمللي، والبوكس = مجموع قطعه
+  function unitWeight(p, products, depth = 0) {
+    if (!p) return 0;
+    if (num(p.weightG) > 0) return num(p.weightG);
+    if (num(p.sizeMl) > 0) return num(p.sizeMl);
+    if (depth < 2 && p.boxItems && p.boxItems.length) {
+      return p.boxItems.reduce((a, b) => a + num(b.qty) * unitWeight((products || []).find((x) => x.id === b.productId), products, depth + 1), 0);
+    }
+    return 0;
+  }
+
+  function shipmentCosting(shipment, products) {
     const rate = num(shipment.rate) || 1;
     const lines = (shipment.items || []).map((it) => {
       const foreign = num(it.qty) * num(it.unitCost);
-      return { productId: it.productId, qty: num(it.qty), unitCost: num(it.unitCost), foreign, egp: foreign * rate };
+      const unitW = unitWeight((products || []).find((p) => p.id === it.productId), products);
+      return { productId: it.productId, qty: num(it.qty), unitCost: num(it.unitCost), foreign, egp: foreign * rate, unitWeight: unitW, weight: num(it.qty) * unitW, extras: 0, parts: [] };
     });
     const goodsForeign = round2(lines.reduce((s, l) => s + l.foreign, 0));
     const goodsEGP = round2(lines.reduce((s, l) => s + l.egp, 0));
-    const extras = round2((shipment.costs || []).reduce((s, c) => s + num(c.amount), 0));
-    const totalQty = lines.reduce((s, l) => s + l.qty, 0);
+    const totals = { value: lines.reduce((s, l) => s + l.egp, 0), weight: lines.reduce((s, l) => s + l.weight, 0), qty: lines.reduce((s, l) => s + l.qty, 0) };
+    // لو صنف ملوش وزن ولا حجم، التوزيع بالوزن مش عادل فنرجع لعدد القطع
+    const missingWeight = lines.filter((l) => l.productId && l.qty > 0 && !l.unitWeight).map((l) => l.productId);
+    const costs = (shipment.costs || []).map((c) => {
+      const basis = c.basis || 'value'; // الشحنات القديمة كانت بالقيمة
+      let applied = basis;
+      if (applied === 'weight' && (missingWeight.length || !(totals.weight > 0))) applied = 'qty';
+      if (applied === 'value' && !(totals.value > 0)) applied = 'qty';
+      const amount = num(c.amount);
+      lines.forEach((l) => {
+        const key = applied === 'value' ? l.egp : applied === 'weight' ? l.weight : l.qty;
+        const part = totals[applied] > 0 ? (amount * key) / totals[applied] : 0;
+        l.parts.push(part); l.extras += part;
+      });
+      return { label: c.label, amount, basis, applied };
+    });
+    const extras = round2(costs.reduce((s, c) => s + c.amount, 0));
     lines.forEach((l) => {
-      // توزيع المصاريف بنسبة القيمة، وإن كانت القيمة صفرًا فبنسبة الكمية
-      const share = goodsEGP > 0 ? l.egp / goodsEGP : totalQty > 0 ? l.qty / totalQty : 0;
-      l.extras = extras * share;
       l.landedTotal = l.egp + l.extras;
       l.landedUnit = l.qty > 0 ? l.landedTotal / l.qty : 0;
     });
-    return { rate, lines, goodsForeign, goodsEGP, extras, landedTotal: round2(goodsEGP + extras), totalQty };
+    return { rate, lines, costs, goodsForeign, goodsEGP, extras, landedTotal: round2(goodsEGP + extras), totalQty: totals.qty, totalWeight: totals.weight, missingWeight };
   }
 
   // ---------- إعادة تشغيل المخزون بالمتوسط المرجح ----------
@@ -102,7 +128,7 @@
     (state.shipments || []).forEach((sh) => {
       if (sh.status !== 'received') return;
       const date = sh.receivedDate || sh.orderDate;
-      shipmentCosting(sh).lines.forEach((l, i) =>
+      shipmentCosting(sh, state.products).lines.forEach((l, i) =>
         events.push({ kind: 'in', date, seq: seq++, productId: l.productId, qty: l.qty, cost: l.landedTotal, src: { type: 'shipment', id: sh.id, line: i } })
       );
     });
@@ -149,8 +175,11 @@
         const total = sourceCost + materials;
         const totalMl = outs.reduce((a, o) => a + num(o.qty) * sizeOf(o.productId), 0);
         const totalQty = outs.reduce((a, o) => a + num(o.qty), 0);
+        // فك البوكس: التكلفة تتوزع على القطع بنسبة سعر بيعها، والديكانت بنسبة المللي
+        const priceOf = (pid) => num(((state.products || []).find((p) => p.id === pid) || {}).price);
+        const totalPrice = ev.decant.kind === 'unbox' ? outs.reduce((a, o) => a + num(o.qty) * priceOf(o.productId), 0) : 0;
         const lines = outs.map((o) => {
-          const share = totalMl > 0 ? (num(o.qty) * sizeOf(o.productId)) / totalMl : totalQty > 0 ? num(o.qty) / totalQty : 0;
+          const share = totalPrice > 0 ? (num(o.qty) * priceOf(o.productId)) / totalPrice : totalMl > 0 ? (num(o.qty) * sizeOf(o.productId)) / totalMl : totalQty > 0 ? num(o.qty) / totalQty : 0;
           const c = total * share;
           const t = get(o.productId);
           t.qty += num(o.qty); t.value += c; t.lastCost = c / num(o.qty);
@@ -405,7 +434,7 @@
     (state.decants || []).forEach((d) => {
       const c = inv.decantCost[d.id];
       if (!c) return;
-      add(d.date, 'decant', { type: 'decant', id: d.id }, `تقسيم ${num(d.sourceQty)} عبوة ${productName(d.sourceProductId)} إلى ديكانت`, [
+      add(d.date, 'decant', { type: 'decant', id: d.id }, d.kind === 'unbox' ? `فك ${num(d.sourceQty)} بوكس ${productName(d.sourceProductId)} إلى قطع` : `تقسيم ${num(d.sourceQty)} عبوة ${productName(d.sourceProductId)} إلى ديكانت`, [
         { acc: '1300', dr: c.total, cr: 0 }, { acc: '1300', dr: 0, cr: c.sourceCost },
         ...(c.materials ? [{ acc: cashCode(d.accountId), dr: 0, cr: c.materials }] : []),
       ]);
@@ -666,7 +695,7 @@
 
   const api = {
     COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, round2, cashCode, accountName, isPromo,
-    saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
+    COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
     campaignPerformance, partnerAccounts, distributionPlan,

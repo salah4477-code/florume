@@ -188,22 +188,27 @@
     s.shipments.push({
       id: uid(), ref: 'SA-2606', supplierId: riyadh.id, currency: 'SAR', rate: 13.1, orderDate: '2026-06-03', status: 'received', receivedDate: '2026-06-12',
       items: [{ productId: byId(0), qty: 60, unitCost: 55 }, { productId: byId(1), qty: 48, unitCost: 45 }, { productId: byId(5), qty: 24, unitCost: 150 }, { productId: byId(7), qty: 48, unitCost: 40 }],
-      costs: [{ label: 'شحن جوي من الرياض', amount: 11500, accountId: bank.id }, { label: 'جمارك وتخليص', amount: 9800, accountId: bank.id }], notes: '',
+      costs: [{ label: 'شحن وجمارك', amount: 21300, basis: 'weight', accountId: bank.id }], notes: '',
     });
+    // بوكس هدايا من 3 قطع 30 مل — بيتباع كبوكس، والقطع متسجلة لو احتجت تفكه
+    const piece = (sku, name, price) => ({ id: uid(), sku, brand: 'أرماف', name, sizeMl: 30, gender: 'unisex', price, minStock: 0 });
+    const pieces = [piece('AR-GS-1', 'كلوب دي نوي 30مل (من البوكس)', 650), piece('AR-GS-2', 'أوديسي 30مل (من البوكس)', 550), piece('AR-GS-3', 'تاج 30مل (من البوكس)', 600)];
+    const giftBox = { id: uid(), sku: 'AR-GS3', brand: 'أرماف', name: 'بوكس هدايا 3×30 مل', sizeMl: '', gender: 'unisex', price: 1650, minStock: 3, boxItems: pieces.map((x) => ({ productId: x.id, qty: 1 })) };
+    s.products.push(giftBox, ...pieces);
     s.shipments.push({
       id: uid(), ref: 'AE-2607', supplierId: dubai.id, currency: 'AED', rate: 13.4, orderDate: '2026-07-02', status: 'received', receivedDate: '2026-07-10',
-      items: [{ productId: byId(2), qty: 36, unitCost: 85 }, { productId: byId(3), qty: 36, unitCost: 75 }, { productId: byId(4), qty: 24, unitCost: 95 }, { productId: byId(6), qty: 36, unitCost: 65 }],
-      costs: [{ label: 'شحن من دبي', amount: 9200, accountId: bank.id }, { label: 'جمارك وتخليص', amount: 8100, accountId: bank.id }], notes: '',
+      items: [{ productId: byId(2), qty: 36, unitCost: 85 }, { productId: byId(3), qty: 36, unitCost: 75 }, { productId: byId(4), qty: 24, unitCost: 95 }, { productId: byId(6), qty: 36, unitCost: 65 }, { productId: giftBox.id, qty: 10, unitCost: 70 }],
+      costs: [{ label: 'شحن وجمارك', amount: 18400, basis: 'weight', accountId: bank.id }], notes: '',
     });
     s.shipments.push({
       id: uid(), ref: 'SA-2609', supplierId: riyadh.id, currency: 'SAR', rate: 13.25, orderDate: '2026-09-15', status: 'transit',
       items: [{ productId: byId(0), qty: 24, unitCost: 55 }, { productId: byId(7), qty: 24, unitCost: 40 }],
-      costs: [{ label: 'شحن جوي من الرياض', amount: 3900, accountId: bank.id }], notes: 'متوقع الوصول آخر الشهر',
+      costs: [{ label: 'شحن وجمارك', amount: 3900, basis: 'weight', accountId: bank.id }], notes: 'متوقع الوصول آخر الشهر',
     });
     s.supplierPayments.push(
       { id: uid(), date: '2026-06-02', supplierId: riyadh.id, amount: 8000, rate: 13.1, accountId: bank.id, fee: 150, notes: 'دفعة مقدمة' },
       { id: uid(), date: '2026-07-05', supplierId: riyadh.id, amount: 2980, rate: 13.3, accountId: bank.id, fee: 100, notes: 'تسوية شحنة يونيو' },
-      { id: uid(), date: '2026-07-01', supplierId: dubai.id, amount: 10380, rate: 13.4, accountId: bank.id, fee: 150, notes: 'دفع كامل قبل الشحن' },
+      { id: uid(), date: '2026-07-01', supplierId: dubai.id, amount: 11080, rate: 13.4, accountId: bank.id, fee: 150, notes: 'دفع كامل قبل الشحن' },
       { id: uid(), date: '2026-09-14', supplierId: riyadh.id, amount: 1500, rate: 13.25, accountId: bank.id, fee: 100, notes: 'دفعة مقدمة شحنة سبتمبر' },
     );
     const P2 = (sku, brand, name, sizeMl, gender, price, decantOf) => ({ id: uid(), sku, brand, name, sizeMl, gender, price, minStock: 10, decantOf });
@@ -253,6 +258,8 @@
       id: uid(), no: s.settings.nextInvoiceNo++, date: '2026-08-12', customerId: s.customers[0].id, channel: 'tiktok', items: [{ productId: decant10.id, qty: 2, price: 450 }, { productId: decant5.id, qty: 1, price: 260 }],
       discount: 0, shippingCharged: 70, courierId: bosta.id, courierFee: 65, payment: 'cod', status: 'delivered', returnDate: '', returnFee: 0, notes: '', campaignId: campaigns[1].id,
     });
+    // فك بوكس واحد عشان عميلة عايزة قطعة واحدة منه
+    s.decants.push({ id: uid(), kind: 'unbox', date: '2026-08-25', sourceProductId: giftBox.id, sourceQty: 1, outputs: giftBox.boxItems.map((x) => ({ productId: x.productId, qty: x.qty })), materialsCost: 0, accountId: '', notes: 'عميلة طلبت كلوب دي نوي 30 مل بس' });
     // فواتير دعاية: قطع مجانية لمؤثرين
     const influencer = { id: uid(), name: 'مروة (بلوجر عطور)', city: 'القاهرة', phone: '01099887766', address: '' };
     s.customers.push(influencer);
