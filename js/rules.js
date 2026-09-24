@@ -146,7 +146,148 @@
     return Math.round(list.reduce((a, p) => a + num(p.share), 0) * 100) / 100;
   }
 
-  const api = { cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
+  // =====================================================================
+  // فحص سلامة البيانات: يراجع كل البيانات المسجلة على نفس القواعد ويرجع المشاكل بدون ما يغيّر حاجة
+  // =====================================================================
+  const dmy = (d) => (d ? String(d).split('-').reverse().join('/') : '—');
+  function audit(state, journal) {
+    const prefix = (state.settings || {}).invoicePrefix || '';
+    const inv = (x) => `${prefix}${x && x.no != null ? x.no : ''}`;
+    const products = state.products || [];
+    const pname = (id) => { const p = products.find((x) => x.id === id); return p ? `${p.brand ? p.brand + ' — ' : ''}${p.name}${p.sizeMl ? ' ' + p.sizeMl + 'مل' : ''}` : 'منتج محذوف'; };
+    const saleAct = (x) => ({ action: 'viewSale', id: x.id });
+    const checks = [];
+    const check = (id, label, fn) => { const issues = []; fn((text, level = 'error', act = {}) => issues.push({ text, level, ...act })); checks.push({ id, label, issues, ok: !issues.some((i) => i.level === 'error') }); };
+    const sales = state.sales || [];
+
+    check('books', 'توازن الدفاتر', (add) => {
+      const tb = Acc.trialBalance(state, journal);
+      if (!tb.balanced) add(`ميزان المراجعة مش متزن: المدين ${tb.totals.dr} والدائن ${tb.totals.cr}`);
+      const bs = Acc.balanceSheet(state, journal, '9999-12-31');
+      if (!bs.balanced) add(`الميزانية مش متزنة: الأصول ${bs.totalAssets} والخصوم وحقوق الملكية ${Acc.round2(bs.totalLiabilities + bs.totalEquity)}`);
+      const book = Acc.ledger(state, journal, '1300').closing;
+      const calc = Acc.round2(Object.values(journal.inventory.products).reduce((a, p) => a + p.value, 0));
+      if (Math.abs(book - calc) > 1) add(`قيمة المخزون في الدفاتر ${book} مختلفة عن قيمته المحسوبة من الأصناف ${calc}`);
+    });
+
+    // لكل منتج: أول مستند كسر الرصيد (السبب)، وعدد المستندات اللي بعده اتأثرت بيه
+    check('stock', 'البيع والصرف في حدود الرصيد', (add) => {
+      const byProduct = new Map();
+      journal.inventory.warnings.forEach((w) => {
+        const g = byProduct.get(w.productId) || { first: w, docs: new Set() };
+        g.docs.add(w.src.id);
+        byProduct.set(w.productId, g);
+      });
+      byProduct.forEach(({ first: w, docs }, productId) => {
+        const x = w.src.type === 'sale' ? sales.find((y) => y.id === w.src.id) : null;
+        const doc = x ? `${Acc.isPromo(x) ? 'فاتورة الدعاية' : 'الفاتورة'} ${inv(x)}` : w.src.type === 'decant' ? 'عملية تقسيم / فك بوكس' : `تسوية مخزون (${Acc.ADJ_REASONS[((state.adjustments || []).find((a) => a.id === w.src.id) || {}).reason] || ''})`;
+        const more = docs.size - 1;
+        add(`«${pname(productId)}»: ${doc} يوم ${dmy(w.date)} صرفت أكتر من الرصيد اللي كان موجود${more ? ` — ومن بعدها ${more} مستند كمان على نفس المنتج طالع بالسالب بسببها` : ''}. راجع كارت الصنف`, 'error', x ? saleAct(x) : { action: 'productMoves', id: productId });
+      });
+    });
+
+    check('invoiceNo', 'أرقام الفواتير مش متكررة', (add) => {
+      const by = {};
+      sales.forEach((x) => (by[x.no] = by[x.no] || []).push(x));
+      Object.entries(by).forEach(([no, list]) => { if (list.length > 1) add(`رقم ${prefix}${no} مستخدم في ${list.length} فواتير (${list.map((x) => dmy(x.date)).join('، ')})`, 'error', saleAct(list[1])); });
+      const max = maxInvoiceNo(state);
+      if (num((state.settings || {}).nextInvoiceNo) <= max) add(`«رقم الفاتورة التالية» في الإعدادات (${state.settings.nextInvoiceNo}) مش أكبر من آخر رقم مستخدم (${max})`, 'error', { action: 'goto', id: 'settings' });
+    });
+
+    check('tracking', 'أرقام البوالص مش متكررة', (add) => {
+      const by = {};
+      sales.forEach((x) => { const k = cleanRef(x.trackingNo); if (k) (by[k] = by[k] || []).push(x); });
+      Object.entries(by).forEach(([k, list]) => { if (list.length > 1) add(`البوليصة ${k} متسجلة على ${list.map(inv).join(' و')}`, 'error', saleAct(list[1])); });
+    });
+
+    check('lines', 'مفيش منتج متكرر في نفس الفاتورة', (add) => {
+      sales.forEach((x) => {
+        const seen = new Set();
+        (x.items || []).forEach((it) => { if (seen.has(it.productId)) add(`«${pname(it.productId)}» متكرر في أكتر من سطر في الفاتورة ${inv(x)}`, 'error', saleAct(x)); seen.add(it.productId); });
+      });
+    });
+
+    check('numbers', 'مفيش أرقام سالبة أو صفر في مكان غلط', (add) => {
+      sales.forEach((x) => {
+        if ((x.items || []).some((it) => num(it.qty) <= 0 || num(it.price) < 0)) add(`الفاتورة ${inv(x)} فيها كمية صفر أو سعر سالب`, 'error', saleAct(x));
+        ['discount', 'shippingCharged', 'courierFee', 'returnFee'].forEach((k) => { if (num(x[k]) < 0) add(`الفاتورة ${inv(x)} فيها قيمة سالبة (${{ discount: 'الخصم', shippingCharged: 'الشحن المحصل', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع' }[k]})`, 'error', saleAct(x)); });
+      });
+      (state.expenses || []).forEach((e) => { if (!(num(e.amount) > 0)) add(`مصروف يوم ${dmy(e.date)} مبلغه ${num(e.amount)}`, 'error', { action: 'editExpense', id: e.id }); });
+      (state.transfers || []).forEach((t) => { if (!(num(t.amount) > 0) || num(t.fee) < 0) add(`تحويل يوم ${dmy(t.date)} مبلغه أو عمولته غلط`, 'error', { action: 'editDoc', id: `transfers:${t.id}` }); });
+      (state.supplierPayments || []).forEach((p) => { if (!(num(p.amount) > 0) || !(num(p.rate) > 0) || num(p.fee) < 0) add(`دفعة مورد يوم ${dmy(p.date)} مبلغها أو سعر صرفها أو عمولتها غلط`, 'error', { action: 'editPayment', id: p.id }); });
+      (state.equity || []).forEach((e) => { if (!(num(e.amount) > 0)) add(`${e.type === 'drawing' ? 'مسحوبات' : 'رأس مال'} يوم ${dmy(e.date)} مبلغها ${num(e.amount)}`, 'error', { action: 'editDoc', id: `equity:${e.id}` }); });
+      (state.settlements || []).forEach((t) => { if (!num(t.amount)) add(`تحصيل من شركة شحن يوم ${dmy(t.date)} مبلغه صفر`, 'note', { action: 'editDoc', id: `settlements:${t.id}` }); });
+      (state.shipments || []).forEach((sh) => {
+        if (!(num(sh.rate) > 0)) add(`الشحنة ${sh.ref || ''} سعر صرفها صفر`, 'error', { action: 'editShipment', id: sh.id });
+        if ((sh.items || []).some((it) => num(it.qty) <= 0 || num(it.unitCost) < 0) || (sh.costs || []).some((c) => num(c.amount) < 0)) add(`الشحنة ${sh.ref || ''} فيها كمية أو سعر أو مصروف سالب`, 'error', { action: 'editShipment', id: sh.id });
+      });
+      products.forEach((p) => { if (num(p.price) < 0) add(`«${pname(p.id)}» سعر بيعه سالب`, 'error', { action: 'editProduct', id: p.id }); });
+    });
+
+    check('discount', 'الخصم مش أكبر من قيمة الفاتورة', (add) => {
+      sales.forEach((x) => { const e = discountError(x); if (e) add(`الفاتورة ${inv(x)} خصمها ${e.discount} وقيمة أصنافها ${Acc.round2(e.gross)}`, 'error', saleAct(x)); });
+    });
+
+    check('dates', 'التواريخ منطقية', (add) => {
+      const start = (state.settings || {}).startDate;
+      const first = earliestDocDate(state);
+      if (start && first && first < start) add(`فيه مستندات قبل تاريخ بداية الحسابات ${dmy(start)} (أقدمها ${dmy(first)}) — الأرصدة الافتتاحية متسجلة بعدها`, 'error', { action: 'goto', id: 'settings' });
+      sales.forEach((x) => { const e = saleDateError(x); if (e) add(`الفاتورة ${inv(x)}: ${e}`, 'error', saleAct(x)); });
+      (state.shipments || []).forEach((sh) => { const e = shipmentDateError(sh); if (e) add(`الشحنة ${sh.ref || ''}: ${e}`, 'error', { action: 'editShipment', id: sh.id }); });
+    });
+
+    // فترات كان فيها رصيد الحساب بالسالب
+    check('cash', 'الخزائن والبنوك ما نزلتش تحت الصفر', (add) => {
+      const accounts = state.accounts || [];
+      const days = {};
+      journal.entries.forEach((e) => e.lines.forEach((l) => {
+        const [base, id] = String(l.acc).split(':');
+        if (base !== '1100' || !id) return;
+        (days[id] = days[id] || {})[e.date] = (days[id][e.date] || 0) + l.dr - l.cr;
+      }));
+      accounts.forEach((a) => {
+        let bal = 0, from = null, low = 0, shown = 0;
+        const dates = Object.keys(days[a.id] || {}).sort();
+        const flush = (to) => { if (from && shown < 3) add(`«${a.name}» كان رصيده بالسالب من ${dmy(from)}${to ? ' لحد ' + dmy(to) : ' ولسه'} (أقل رصيد ${Acc.round2(low)})`, 'error', { action: 'goTreasury', id: a.id }); shown++; from = null; low = 0; };
+        dates.forEach((d) => {
+          bal += days[a.id][d];
+          if (bal < -EPS) { if (!from) from = d; low = Math.min(low, bal); } else if (from) flush(d);
+        });
+        if (from) flush(null);
+      });
+    });
+
+    check('partners', 'نسب الشركاء', (add) => {
+      if (!(state.partners || []).length) return;
+      const t = sharesTotal(state.partners);
+      if (Math.abs(t - 100) > 0.001) add(`مجموع نسب الشركاء ${t}٪ مش 100٪`, 'error', { action: 'goto', id: 'partners' });
+    });
+
+    check('links', 'المستندات مربوطة ببيانات موجودة', (add) => {
+      const has = (list, id) => (state[list] || []).some((x) => x.id === id);
+      sales.forEach((x) => {
+        if ((x.items || []).some((it) => !products.some((p) => p.id === it.productId))) add(`الفاتورة ${inv(x)} فيها منتج محذوف`, 'error', saleAct(x));
+        if (!Acc.isPromo(x) && x.payment === 'cod' && Acc.BOOKED.has(x.status) && !has('couriers', x.courierId)) add(`الفاتورة ${inv(x)} دفع عند الاستلام ومن غير شركة شحن — التحصيل مش هيتحسب على حد`, 'error', saleAct(x));
+        if (x.payment && x.payment !== 'cod' && !has('accounts', x.payment)) add(`الفاتورة ${inv(x)} مدفوعة على حساب محذوف`, 'error', saleAct(x));
+      });
+      (state.reconciliations || []).forEach((r) => { const miss = (r.lines || []).filter((l) => !sales.some((x) => x.id === l.saleId)).length; if (miss) add(`تسوية ${dmy(r.date)} فيها ${miss} فاتورة اتحذفت`, 'note', { action: 'goto', id: 'reconcile' }); });
+    });
+
+    check('notes', 'بيانات ناقصة (ملاحظات)', (add) => {
+      const shipped = new Set((state.shipments || []).flatMap((sh) => (sh.items || []).map((it) => it.productId)));
+      products.forEach((p) => { if (shipped.has(p.id) && !Acc.unitWeight(p, products)) add(`«${pname(p.id)}» ملوش وزن ولا حجم — توزيع الشحن بالحجم مش هيبقى دقيق`, 'note', { action: 'editProduct', id: p.id }); });
+      const noPhone = (state.customers || []).filter((c) => !String(c.phone || '').replace(/\D/g, ''));
+      if (noPhone.length) add(`${noPhone.length} عميل من غير رقم موبايل (مش هيوصلهم واتساب): ${noPhone.slice(0, 5).map((c) => c.name).join('، ')}${noPhone.length > 5 ? '…' : ''}`, 'note', { action: 'goto', id: 'customers' });
+      const noTrack = sales.filter((x) => !Acc.isPromo(x) && x.payment === 'cod' && Acc.BOOKED.has(x.status) && !cleanRef(x.trackingNo) && !isReconciled(state, x.id));
+      if (noTrack.length) add(`${noTrack.length} طلب عند الاستلام من غير رقم بوليصة ولسه ما اتسوّاش — المطابقة هتعتمد على رقم الفاتورة بس`, 'note', noTrack[0] ? saleAct(noTrack[0]) : {});
+    });
+
+    const errors = checks.reduce((a, c) => a + c.issues.filter((i) => i.level === 'error').length, 0);
+    const notes = checks.reduce((a, c) => a + c.issues.filter((i) => i.level === 'note').length, 0);
+    return { checks, errors, notes, passed: checks.filter((c) => c.ok).length };
+  }
+
+  const api = { audit, cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RULES = api;
 })(typeof window !== 'undefined' ? window : globalThis);

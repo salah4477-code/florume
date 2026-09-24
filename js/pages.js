@@ -982,6 +982,9 @@
           <button class="btn" data-action="importTemplate">تنزيل نموذج فاضي</button>
           ${lastImport() ? `<button class="btn btn-danger" data-action="undoImport">تراجع عن آخر استيراد (${esc(lastImport().label)})</button>` : ''}
         </div>
+        <h2 class="section-title">فحص سلامة البيانات</h2>
+        <p class="muted">بيراجع كل بياناتك على قواعد النظام (الرصيد، تكرار الأرقام، التواريخ، الخزائن، توازن الدفاتر) ويطلعلك أي مشكلة. افحص بعد أي استيراد أو استرجاع نسخة.</p>
+        <div class="btn-row"><a class="btn" href="#health">افتح فحص البيانات</a></div>
         <h2 class="section-title">النسخ الاحتياطي</h2>
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
@@ -1011,7 +1014,7 @@
     try {
       const data = JSON.parse(text);
       if (!data || !Array.isArray(data.sales) || !data.settings) throw new Error('bad');
-      DB.replace(data); UI.toast('تم استيراد النسخة الاحتياطية'); render();
+      DB.replace(data); UI.toast('تم استيراد النسخة الاحتياطية — افتح «فحص سلامة البيانات» للتأكد'); render();
     } catch (e) { UI.toast('الملف ليس نسخة احتياطية صالحة من Florume', 'bad'); }
   }
 
@@ -1031,6 +1034,29 @@
     return `${header('التنبيهات', `بتتحدث تلقائيًا كل ما تفتح البرنامج. الحدود: تجهيز ${c.pendingDays} يوم · مع الشحن ${c.shippedDays} يوم · تحصيل ${c.settleDays} يوم · سداد قبلها ${c.dueDays} أيام · ركود ${c.stagnantDays} يوم (غيّرها من الإعدادات).`)}
       <nav class="tabs" role="tablist"><button role="tab" class="tab ${!alertFilter ? 'active' : ''}" aria-selected="${!alertFilter}" data-action="pickAlert" data-id="">الكل (${list.length})</button>${Object.entries(ALERT_TYPES).filter(([k]) => counts[k]).map(([k, l]) => `<button role="tab" class="tab ${alertFilter === k ? 'active' : ''}" aria-selected="${alertFilter === k}" data-action="pickAlert" data-id="${k}">${l} (${counts[k]})</button>`).join('')}</nav>
       <section class="panel">${shown.length ? alertItems(shown) : UI.empty('مفيش تنبيهات — كل حاجة تمام 👌')}</section>`;
+  }
+
+  // =====================================================================
+  // فحص سلامة البيانات
+  // =====================================================================
+  let lastAudit = null;
+  function healthPage() {
+    const r = RULES.audit(S(), J());
+    lastAudit = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const bad = r.checks.filter((c) => c.issues.length);
+    const good = r.checks.filter((c) => !c.issues.length);
+    const rows = bad.flatMap((c) => c.issues.map((i) => `<tr class="${i.level === 'error' ? 'row-bad' : ''}">${td(esc(c.label))}${td(i.level === 'error' ? UI.pill('خطأ', 'bad') : UI.pill('ملاحظة', 'warn'))}${td(esc(i.text))}${actions(i.action ? `<button type="button" class="link-btn" data-action="${i.action}" data-id="${esc(i.id || '')}">عرض</button>` : '')}</tr>`));
+    return `${header('فحص سلامة البيانات', 'بيراجع كل البيانات المسجلة على قواعد النظام، ويطلعلك أي حاجة محتاجة تتصلح. الفحص مش بيغيّر أي حاجة في بياناتك.', '<button class="btn btn-primary" data-action="runAudit">إعادة الفحص</button>')}
+      <section class="kpis kpis-3">
+        ${kpi('فحوصات سليمة', `${r.passed} من ${r.checks.length}`, `آخر فحص ${lastAudit}`, r.passed === r.checks.length ? 'good' : '')}
+        ${kpi('أخطاء لازم تتصلح', fmt(r.errors), r.errors ? 'اضغط «عرض» جنب كل خطأ' : 'مفيش أخطاء', r.errors ? 'bad' : 'good')}
+        ${kpi('ملاحظات', fmt(r.notes), 'بيانات ناقصة مش بتأثر على الحسابات')}
+      </section>
+      ${rows.length ? table(['الفحص', 'النوع', 'المشكلة', ''], rows) : `<section class="panel">${UI.empty('بياناتك سليمة 100٪ 👌')}</section>`}
+      <section class="panel"><h2 class="section-title">فحوصات سليمة</h2>
+        ${good.length ? `<ul class="check-list">${good.map((c) => `<li>✔ ${esc(c.label)}</li>`).join('')}</ul>` : UI.empty('كل الفحوصات فيها ملاحظات')}
+      </section>
+      <p class="muted">افحص بعد أي استيراد من Excel أو استرجاع نسخة احتياطية، وآخر كل شهر قبل مراجعة التقارير.</p>`;
   }
 
   // =====================================================================
@@ -1574,7 +1600,7 @@
         catch (e) { UI.toast('تعذر حفظ نسخة قبل الاستيراد — صدّر نسخة احتياطية أولًا', 'bad'); return false; }
         DB.replace(IMP.applyImport(base, plan));
         renderBrand();
-        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف`);
+        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف — افتح «فحص سلامة البيانات» للتأكد`);
         render();
       },
     });
@@ -1613,6 +1639,9 @@
     partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
     newDistribution: distributionForm, delDistribution: (id) => del('distributions', id, 'هذا التوزيع'),
     pickAlert: (id) => { alertFilter = id; render(); },
+    runAudit: () => { render(); UI.toast('تم الفحص'); },
+    goto: (h) => { location.hash = h; },
+    goTreasury: (id) => { treasuryAcc = id; period = { preset: 'all', from: '', to: '' }; savePeriod(); location.hash = 'treasury'; render(); },
     newAdjustment: adjustmentForm, delAdjustment: (id) => del('adjustments', id, 'هذه التسوية'),
     newSupplier: () => supplierForm(), editSupplier: (id) => supplierForm(DB.find('suppliers', id)), supplierStatement: (id) => supplierStatement(DB.find('suppliers', id)),
     delSupplier: (id) => del('suppliers', id, 'هذا المورد', () => used(id, [['shipments', (x, i) => x.supplierId === i], ['supplierPayments', (x, i) => x.supplierId === i]])),
@@ -1707,6 +1736,7 @@
     reconcile: { title: 'تسوية شركات الشحن', render: reconcilePage },
     partners: { title: 'الشركاء وتوزيع الأرباح', render: partnersPage },
     alerts: { title: 'التنبيهات', render: alertsPage },
+    health: { title: 'فحص سلامة البيانات', render: healthPage },
     reports: { title: 'التقارير', render: reports, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
