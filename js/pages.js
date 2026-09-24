@@ -451,7 +451,7 @@
         let qty = num(fd.get('qty'));
         const reason = fd.get('reason');
         if (!qty) { UI.toast('أدخل الكمية', 'bad'); return false; }
-        if (['damage', 'tester', 'gift'].includes(reason) && qty > 0) qty = -qty;
+        if (['damage', 'tester', 'gift', 'promo'].includes(reason) && qty > 0) qty = -qty;
         if (reason === 'opening' && (qty < 0 || fd.get('unitCost') === '')) { UI.toast('المخزون الافتتاحي يحتاج كمية موجبة وتكلفة وحدة', 'bad'); return false; }
         DB.upsert('adjustments', { id: uid(), date: fd.get('date'), productId: fd.get('productId'), qty, unitCost: qty > 0 && fd.get('unitCost') !== '' ? num(fd.get('unitCost')) : null, reason, notes: fd.get('notes') });
         UI.toast('تم تسجيل التسوية'); render();
@@ -743,6 +743,13 @@
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
       <section class="panel">
+        <h2 class="section-title">استيراد من Excel</h2>
+        <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP. هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
+        <div class="btn-row">
+          <button class="btn btn-primary" data-action="importExcel">رفع ملف Excel</button>
+          <button class="btn" data-action="importTemplate">تنزيل نموذج فاضي</button>
+          ${lastImport() ? `<button class="btn btn-danger" data-action="undoImport">تراجع عن آخر استيراد (${esc(lastImport().label)})</button>` : ''}
+        </div>
         <h2 class="section-title">النسخ الاحتياطي</h2>
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
@@ -783,6 +790,101 @@
     if (guard && guard()) { UI.toast(`لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`, 'bad'); return; }
     UI.confirm(`هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
   };
+  // =====================================================================
+  // الاستيراد من Excel
+  // =====================================================================
+  const PREIMPORT_KEY = 'florume.preimport';
+  function lastImport() { try { return JSON.parse(localStorage.getItem(PREIMPORT_KEY) || 'null'); } catch (e) { return null; } }
+  function pickImportFile() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.xlsx,.csv,.txt'; input.hidden = true;
+    input.addEventListener('change', async () => {
+      const file = input.files[0]; input.remove();
+      if (!file) return;
+      try {
+        const sheets = await IMP.readWorkbook(file);
+        importPreview(file.name, sheets);
+      } catch (err) { UI.toast(err.message || 'تعذرت قراءة الملف', 'bad'); }
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+  function importPreview(fileName, sheets) {
+    const clearDemo = !!S().demo;
+    const emptyBase = F.emptyState();
+    const baseState = () => (opts.clearDemo ? emptyBase : S());
+    const opts = { clearDemo, ...IMP.defaultMappings(sheets, clearDemo ? emptyBase : S()) };
+    let base = baseState();
+    let plan = IMP.planImport(sheets, base, opts, uid);
+    const payOptions = (st) => [
+      ...st.couriers.map((c) => ({ v: `cod:${c.id}`, l: `عند الاستلام — ${c.name}` })),
+      ...st.accounts.map((a) => ({ v: a.id, l: `مدفوع مقدمًا — ${a.name}` })),
+    ];
+    const view = () => {
+      const t = plan.totals;
+      const newProducts = plan.products.filter((p) => p.isNew);
+      const productName = (id) => (plan.products.find((p) => p.id === id) || {}).name || (DB.find('products', id) || {}).name || '—';
+      const custName = (id) => (plan.customers.find((c) => c.id === id) || base.customers.find((c) => c.id === id) || {}).name || '—';
+      const payLabel = (sale) => (sale.payment === 'cod' ? `عند الاستلام — ${(base.couriers.find((c) => c.id === sale.courierId) || {}).name || ''}` : (base.accounts.find((a) => a.id === sale.payment) || {}).name || '—');
+      const nothing = !plan.sales.length && !plan.promos.length && !newProducts.length && !plan.expenses.length && !plan.opening.length;
+      return `
+        <p class="muted">الملف: <b>${esc(fileName)}</b></p>
+        <ul class="imp-sheets">
+          ${plan.found.map((f) => `<li>${UI.pill('تمت القراءة', 'good')} <b>${esc(f.name)}</b> — ${f.label} (${f.rows} سطر)</li>`).join('')}
+          ${plan.ignored.map((f) => `<li>${UI.pill('اتتخطت', 'mute')} <b>${esc(f.name)}</b> — ${esc(f.reason)}</li>`).join('')}
+        </ul>
+        <div class="form-grid">
+          ${UI.field('حالة الطلبات المستوردة', UI.select('impStatus', { delivered: 'تم التسليم', shipped: 'مع شركة الشحن' }, opts.status, 'data-imp="status"'))}
+          ${UI.field('تاريخ المخزون الافتتاحي', UI.input('impOpening', opts.openingDate, 'type="date" data-imp="openingDate"'), { hint: 'قبل أول عملية في الملف' })}
+          ${S().demo ? UI.field('البيانات التجريبية', `<label class="check"><input type="checkbox" id="f-impClear" data-imp="clearDemo" ${opts.clearDemo ? 'checked' : ''}> امسحها واستورد على نظام فاضي</label>`) : ''}
+        </div>
+        ${Object.keys(opts.salesPay).length || Object.keys(opts.expensePay).length ? `<h3 class="sub-title">طريقة الدفع في الملف ← في النظام</h3><div class="form-grid">${Object.keys(opts.salesPay).map((k, i) => UI.field(`«${esc(k)}» في المبيعات`, UI.select('impPay' + i, payOptions(base), opts.salesPay[k], `data-imp-pay="${esc(k)}"`))).join('')}
+          ${Object.keys(opts.expensePay).map((k, i) => UI.field(`«${esc(k)}» في المصروفات`, UI.select('impExp' + i, [{ v: 'skip', l: 'تخطي هذه السطور' }, ...base.accounts.map((a) => ({ v: a.id, l: a.name }))], opts.expensePay[k], `data-imp-exp="${esc(k)}"`))).join('')}</div>` : ''}
+        <div class="summary imp-summary">
+          <div><span>منتجات جديدة</span><b>${newProducts.length}</b></div>
+          <div><span>مخزون افتتاحي</span><b>${fmt(t.openingQty)} قطعة · ${fmt(t.openingValue)} ج.م</b></div>
+          <div><span>عملاء جدد</span><b>${plan.customers.length}</b></div>
+          <div class="strong"><span>طلبات (${t.lines} سطر)</span><b>${plan.sales.length} · ${fmt(t.revenue)} ج.م</b></div>
+          <div><span>عينات دعاية من المخزون</span><b>${fmt(t.promoQty)} قطعة</b></div>
+          <div><span>مصروفات</span><b>${plan.expenses.length} · ${fmt(t.expenses)} ج.م</b></div>
+        </div>
+        ${plan.errors.length ? `<div class="imp-box bad"><b>${plan.errors.length} سطر فيه خطأ ولن يُستورد:</b><ul>${plan.errors.map((e) => `<li>${esc(e.sheet)} — سطر ${e.row}: ${esc(e.reason)}</li>`).join('')}</ul></div>` : ''}
+        ${plan.warnings.length ? `<div class="imp-box warn"><b>تنبيهات:</b><ul>${plan.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
+        ${plan.skipped.length ? `<details class="imp-box"><summary>${plan.skipped.length} سطر سيتم تخطيه (اضغط للتفاصيل)</summary><ul>${plan.skipped.map((e) => `<li>${esc(e.sheet)} — سطر ${e.row}: ${esc(e.reason)}</li>`).join('')}</ul></details>` : ''}
+        ${plan.sales.length ? `<h3 class="sub-title">الطلبات</h3>${table(['التاريخ', 'العميل', 'الأصناف', '#الإجمالي', 'الدفع'], plan.sales.map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(custName(x.customerId)))}${td(x.items.map((it) => `${esc(productName(it.productId))} × ${fmt(it.qty)}`).join('<br>'))}${tdn(fmt(x.items.reduce((a, it) => a + it.qty * it.price, 0)))}${td(esc(payLabel(x)))}</tr>`))}` : ''}
+        ${newProducts.length ? `<h3 class="sub-title">المنتجات والمخزون الافتتاحي</h3>${table(['الكود', 'المنتج', '#الرصيد في الملف', '#خرج في الملف', '#مخزون افتتاحي', '#التكلفة', '#سعر البيع'], newProducts.map((p) => `<tr>${td(esc(p.sku), 'mono')}${td(esc(p.name))}${tdn(fmt(p.currentQty || 0))}${tdn(fmt(p.soldQty))}${tdn(fmt((p.currentQty || 0) + p.soldQty))}${tdn(fmt(p.cost))}${tdn(fmt(p.price))}</tr>`))}` : ''}
+        ${plan.expenses.length ? `<h3 class="sub-title">المصروفات</h3>${table(['التاريخ', 'البند', 'البيان', '#المبلغ'], plan.expenses.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc(Acc.COA_MAP[e.category].name))}${td(esc(e.notes))}${tdn(fmt(e.amount))}</tr>`))}` : ''}
+        ${nothing ? UI.empty('لا يوجد شيء جديد للاستيراد في هذا الملف') : '<p class="muted">سيتم حفظ نسخة من بياناتك الحالية قبل الاستيراد، وتقدر ترجع لها من الإعدادات ← «تراجع عن آخر استيراد».</p>'}`;
+    };
+    UI.modal({
+      title: 'معاينة الاستيراد', wide: true, submit: 'استيراد',
+      body: `<div id="imp-view">${view()}</div>`,
+      onOpen(f) {
+        const box = f.querySelector('#imp-view');
+        const replan = () => { base = baseState(); plan = IMP.planImport(sheets, base, opts, uid); box.innerHTML = view(); };
+        box.addEventListener('change', (e) => {
+          const el = e.target;
+          if (el.dataset.imp === 'clearDemo') {
+            opts.clearDemo = el.checked;
+            Object.assign(opts, IMP.defaultMappings(sheets, baseState()), { status: opts.status, openingDate: opts.openingDate });
+          } else if (el.dataset.imp) opts[el.dataset.imp] = el.value;
+          else if (el.dataset.impPay != null) opts.salesPay[el.dataset.impPay] = el.value;
+          else if (el.dataset.impExp != null) opts.expensePay[el.dataset.impExp] = el.value;
+          replan();
+        });
+      },
+      onSubmit() {
+        if (!plan.sales.length && !plan.promos.length && !plan.opening.length && !plan.expenses.length && !plan.products.some((p) => p.isNew)) { UI.toast('لا يوجد شيء جديد للاستيراد', 'bad'); return false; }
+        try { localStorage.setItem(PREIMPORT_KEY, JSON.stringify({ label: `${fileName} — ${fmtDate(today())}`, state: S() })); }
+        catch (e) { UI.toast('تعذر حفظ نسخة قبل الاستيراد — صدّر نسخة احتياطية أولًا', 'bad'); return false; }
+        DB.replace(IMP.applyImport(base, plan));
+        renderBrand();
+        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف`);
+        render();
+      },
+    });
+  }
+
   const ACTIONS = {
     newSale: () => saleForm(), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
     delSale: (id) => del('sales', id, 'هذا الطلب'),
@@ -819,6 +921,21 @@
     delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
     newCourier: () => courierForm(), editCourier: (id) => courierForm(DB.find('couriers', id)),
     delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i]])),
+    importExcel: pickImportFile,
+    importTemplate: () => FX.exportExcel('florume-import-template.xlsx', [
+      { name: 'المبيعات', plain: true, header: ['orderNo', 'trackingNo', 'type', 'date', 'customerName', 'customerPhone', 'customerAddress', 'productName', 'qty', 'netTotal', 'cogs', 'profit', 'account'], rows: [] },
+      { name: 'المخزون', plain: true, header: ['sku', 'name', 'qty', 'cost', 'price'], rows: [] },
+      { name: 'المصاريف التشغيلية', plain: true, header: ['date', 'category', 'amount', 'payment', 'desc'], rows: [] },
+    ], { business: S().settings.businessName, subtitle: '' }),
+    undoImport: () => {
+      const snap = lastImport();
+      if (!snap) return;
+      UI.confirm(`هيرجع النظام لحالته قبل استيراد «${esc(snap.label)}». أي تعديل عملته بعد الاستيراد هيتلغي كمان.`, () => {
+        DB.replace(snap.state);
+        try { localStorage.removeItem(PREIMPORT_KEY); } catch (e) { /* لا شيء */ }
+        renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
+      }, 'تراجع');
+    },
     exportBackup: () => UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json'),
     pasteBackup: () => UI.modal({ title: 'استيراد نسخة احتياطية', submit: 'استيراد', body: `<p class="muted">سيتم استبدال كل البيانات الحالية بالنسخة التي تلصقها.</p><textarea id="f-paste" name="paste" class="export-box" required></textarea>`, onSubmit: (f, fd) => { importState(fd.get('paste')); } }),
     loadDemo: () => UI.confirm('سيتم استبدال بياناتك الحالية بالبيانات التجريبية. صدّر نسخة احتياطية أولًا إن احتجت.', () => { DB.replace(F.demoState()); UI.toast('تم تحميل البيانات التجريبية'); render(); }, 'تحميل'),
@@ -903,7 +1020,7 @@
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
     const pa = m.querySelector('.page-head .page-actions');
-    if (pa) pa.insertAdjacentHTML('afterbegin', '<span class="doc-tools"><button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>');
+    if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();

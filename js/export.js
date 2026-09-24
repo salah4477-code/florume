@@ -80,9 +80,11 @@
     sheet.header.forEach(measure); sheet.rows.forEach((r) => r.cells.forEach(measure));
     const rows = [];
     let r = 1;
-    rows.push(`<row r="${r}">${cellXml('A' + r, sheet.title)}</row>`.replace('s="0"', 's="5"')); r++;
-    if (sheet.subtitle) { rows.push(`<row r="${r}">${cellXml('A' + r, sheet.subtitle)}</row>`.replace('s="0"', 's="8"')); r++; }
-    r++;
+    if (!sheet.plain) {
+      rows.push(`<row r="${r}">${cellXml('A' + r, sheet.title)}</row>`.replace('s="0"', 's="5"')); r++;
+      if (sheet.subtitle) { rows.push(`<row r="${r}">${cellXml('A' + r, sheet.subtitle)}</row>`.replace('s="0"', 's="8"')); r++; }
+      r++;
+    }
     const headerRow = r;
     if (sheet.header.length) { rows.push(`<row r="${r}">${sheet.header.map((h, i) => `<c r="${colName(i)}${r}" t="inlineStr" s="1"><is><t xml:space="preserve">${xml(h)}</t></is></c>`).join('')}</row>`); r++; }
     sheet.rows.forEach((row) => { rows.push(`<row r="${r}">${row.cells.map((v, i) => cellXml(colName(i) + r, v, row.total)).join('')}</row>`); r++; });

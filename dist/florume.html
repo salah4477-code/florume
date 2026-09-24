@@ -275,6 +275,14 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
 .settings-form { gap: 14px; }
 .settings-form .btn-primary { align-self: flex-start; }
 .danger-title { color: var(--bad); margin-top: 8px; }
+.imp-sheets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.imp-box { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--surface-2); }
+.imp-box.bad { background: var(--bad-soft); border-color: transparent; }
+.imp-box.warn { background: var(--warn-soft); border-color: transparent; }
+.imp-box ul { margin: 6px 0 0; padding-inline-start: 20px; }
+.imp-box summary { cursor: pointer; font-weight: 600; }
+.check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+.check input { width: auto; }
 
 /* ---------- الهاتف ---------- */
 @media (max-width: 860px) {
@@ -680,7 +688,7 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
           { acc: '1300', dr: cost, cr: 0 }, { acc: credit, dr: 0, cr: cost },
         ]);
       } else if (num(adj.qty) < 0) {
-        const debit = adj.reason === 'tester' || adj.reason === 'gift' ? '5810' : '5800';
+        const debit = adj.reason === 'promo' ? '5300' : adj.reason === 'tester' || adj.reason === 'gift' ? '5810' : '5800';
         add(adj.date, 'adjustment', ref, `${ADJ_REASONS[adj.reason] || 'تسوية'} — ${pn}`, [
           { acc: debit, dr: cost, cr: 0 }, { acc: '1300', dr: 0, cr: cost },
         ]);
@@ -692,7 +700,7 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
     return { entries, inventory: inv, suppliers: sup };
   }
 
-  const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', other: 'أخرى' };
+  const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', promo: 'عينة دعاية', other: 'أخرى' };
 
   // ---------- التقارير ----------
   const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to);
@@ -958,9 +966,11 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
     sheet.header.forEach(measure); sheet.rows.forEach((r) => r.cells.forEach(measure));
     const rows = [];
     let r = 1;
-    rows.push(`<row r="${r}">${cellXml('A' + r, sheet.title)}</row>`.replace('s="0"', 's="5"')); r++;
-    if (sheet.subtitle) { rows.push(`<row r="${r}">${cellXml('A' + r, sheet.subtitle)}</row>`.replace('s="0"', 's="8"')); r++; }
-    r++;
+    if (!sheet.plain) {
+      rows.push(`<row r="${r}">${cellXml('A' + r, sheet.title)}</row>`.replace('s="0"', 's="5"')); r++;
+      if (sheet.subtitle) { rows.push(`<row r="${r}">${cellXml('A' + r, sheet.subtitle)}</row>`.replace('s="0"', 's="8"')); r++; }
+      r++;
+    }
     const headerRow = r;
     if (sheet.header.length) { rows.push(`<row r="${r}">${sheet.header.map((h, i) => `<c r="${colName(i)}${r}" t="inlineStr" s="1"><is><t xml:space="preserve">${xml(h)}</t></is></c>`).join('')}</row>`); r++; }
     sheet.rows.forEach((row) => { rows.push(`<row r="${r}">${row.cells.map((v, i) => cellXml(colName(i) + r, v, row.total)).join('')}</row>`); r++; });
@@ -1184,6 +1194,444 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
 
   window.FX = { buildXlsx, collectSheets, tableToSheet, exportExcel, printDoc, cleanForPrint, saveFile };
 })();
+
+/*
+ * Florume — الاستيراد من Excel / CSV
+ * 1) readWorkbook: يقرأ ملف xlsx أو csv في المتصفح (بدون مكتبات) ويرجع أوراقًا من صفوف.
+ * 2) planImport: دالة نقية تحوّل الأوراق إلى خطة (منتجات، مخزون افتتاحي، عملاء، طلبات، عينات، مصروفات)
+ *    مع الأخطاء والتحذيرات، بدون أي تعديل على البيانات.
+ * 3) applyImport: تطبق الخطة على نسخة من البيانات وترجعها.
+ * الصيغة المدعومة هي صيغة تصدير Florume ERP (أعمدة orderNo, productName, netTotal … ) مع أسماء أعمدة عربية بديلة.
+ */
+(function (root) {
+  'use strict';
+
+  // ---------- قراءة الملفات (متصفح فقط) ----------
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('المتصفح لا يدعم فك ضغط الملفات — حدّث المتصفح أو احفظ الملف بصيغة CSV');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  async function unzip(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const dv = new DataView(buffer);
+    let eocd = -1;
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) throw new Error('الملف ليس ملف Excel صالحًا (xlsx)');
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const dec = new TextDecoder();
+    const files = {};
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      const method = dv.getUint16(p + 10, true), compSize = dv.getUint32(p + 20, true);
+      const nameLen = dv.getUint16(p + 28, true), extraLen = dv.getUint16(p + 30, true), commentLen = dv.getUint16(p + 32, true);
+      const localOff = dv.getUint32(p + 42, true);
+      const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+      const start = localOff + 30 + dv.getUint16(localOff + 26, true) + dv.getUint16(localOff + 28, true);
+      files[name] = { method, data: bytes.subarray(start, start + compSize) };
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return {
+      has: (name) => !!files[name],
+      async text(name) {
+        const f = files[name];
+        if (!f) return null;
+        const raw = f.method === 8 ? await inflateRaw(f.data) : f.data;
+        return dec.decode(raw);
+      },
+    };
+  }
+  const tags = (node, name) => [...node.getElementsByTagNameNS('*', name)];
+  const colIndex = (ref) => { let n = 0; for (const ch of ref.replace(/\d+/g, '')) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+  function textOf(node) {
+    // نص الخلية مع تجاهل النطق الصوتي (rPh)
+    return tags(node, 't').filter((t) => !t.parentNode || t.parentNode.localName !== 'rPh').map((t) => t.textContent).join('');
+  }
+  async function readXlsx(buffer) {
+    const zip = await unzip(buffer);
+    const parse = (s) => new DOMParser().parseFromString(s, 'application/xml');
+    const wb = parse(await zip.text('xl/workbook.xml'));
+    const relsText = await zip.text('xl/_rels/workbook.xml.rels');
+    const rels = {};
+    if (relsText) tags(parse(relsText), 'Relationship').forEach((r) => (rels[r.getAttribute('Id')] = r.getAttribute('Target')));
+    const sstText = await zip.text('xl/sharedStrings.xml');
+    const shared = sstText ? tags(parse(sstText), 'si').map(textOf) : [];
+    const out = [];
+    for (const sh of tags(wb, 'sheet')) {
+      const rid = sh.getAttribute('r:id') || sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+      let target = rels[rid] || '';
+      target = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+      const xmlText = await zip.text(target);
+      const rows = [];
+      if (xmlText) {
+        tags(parse(xmlText), 'row').forEach((row) => {
+          const r = Number(row.getAttribute('r')) - 1;
+          const cells = [];
+          let next = 0;
+          tags(row, 'c').forEach((c) => {
+            const ref = c.getAttribute('r');
+            const ci = ref ? colIndex(ref) : next;
+            next = ci + 1;
+            const t = c.getAttribute('t');
+            const v = tags(c, 'v')[0];
+            let val = null;
+            if (t === 's') val = v ? shared[Number(v.textContent)] : null;
+            else if (t === 'inlineStr') val = textOf(c);
+            else if (t === 'str' || t === 'e') val = v ? v.textContent : null;
+            else if (t === 'b') val = v ? v.textContent === '1' : null;
+            else if (v && v.textContent !== '') val = Number(v.textContent);
+            cells[ci] = val;
+          });
+          rows[r >= 0 ? r : rows.length] = cells;
+        });
+      }
+      out.push({ name: sh.getAttribute('name'), rows: Array.from(rows, (r) => r || []) });
+    }
+    return out;
+  }
+  function parseCsv(text) {
+    text = text.replace(/^﻿/, '');
+    const first = text.split(/\r?\n/)[0] || '';
+    const sep = [',', ';', '\t'].sort((a, b) => first.split(b).length - first.split(a).length)[0];
+    const rows = [];
+    let row = [], cell = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === sep) { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  async function readWorkbook(file) {
+    const name = (file.name || '').toLowerCase();
+    if (name.endsWith('.csv') || name.endsWith('.txt')) return [{ name: file.name.replace(/\.[^.]+$/, ''), rows: parseCsv(await file.text()) }];
+    if (name.endsWith('.xls')) throw new Error('صيغة xls القديمة غير مدعومة — افتح الملف في Excel واحفظه بصيغة xlsx');
+    return readXlsx(await file.arrayBuffer());
+  }
+
+  // ---------- أدوات التطبيع ----------
+  const AR_DIGITS = { '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9', '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4', '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9' };
+  const latinDigits = (s) => String(s == null ? '' : s).replace(/[٠-٩۰-۹]/g, (d) => AR_DIGITS[d]);
+  const str = (v) => (v == null ? '' : String(v).replace(/\s+/g, ' ').trim());
+  const normName = (s) => latinDigits(str(s)).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '').replace(/\s*([+*()\-×x/،,])\s*/g, '$1').replace(/\s+/g, ' ');
+  const normKey = (s) => normName(s).replace(/[\s_\-.]/g, '');
+  const phoneKey = (s) => { let d = latinDigits(s).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); else if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
+  const cleanRef = (s) => latinDigits(str(s)).replace(/[#\s]/g, '');
+  function toNumber(v) {
+    if (typeof v === 'number') return v;
+    const s = latinDigits(str(v)).replace(/[,٬\s]|ج\.?م|EGP/gi, '').replace('٫', '.');
+    if (s === '') return null;
+    const n = Number(s);
+    return isFinite(n) ? n : NaN;
+  }
+  function toDate(v) {
+    if (v == null || v === '') return '';
+    if (typeof v === 'number' && v > 20000 && v < 80000) {
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      return d.toISOString().slice(0, 10);
+    }
+    const s = latinDigits(str(v));
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+    if (m) { // يوم/شهر/سنة (الصيغة المصرية)، إلا لو اليوم > 12 في الخانة الثانية
+      let [dd, mm] = [Number(m[1]), Number(m[2])];
+      if (mm > 12 && dd <= 12) [dd, mm] = [mm, dd];
+      if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) return `${m[3]}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+    }
+    return 'invalid';
+  }
+
+  // ---------- التعرف على الأوراق ----------
+  const FIELDS = {
+    sales: {
+      orderNo: ['orderno', 'رقمالفاتوره', 'رقمالطلب', 'الفاتوره', 'م'],
+      trackingNo: ['trackingno', 'tracking', 'رقمالبوليصه', 'البوليصه', 'رقمالشحنه'],
+      type: ['type', 'النوع'],
+      date: ['date', 'التاريخ'],
+      customerName: ['customername', 'customer', 'العميل', 'اسمالعميل'],
+      customerPhone: ['customerphone', 'phone', 'الموبايل', 'الهاتف', 'رقمالموبايل', 'التليفون'],
+      customerAddress: ['customeraddress', 'address', 'العنوان'],
+      productName: ['productname', 'product', 'المنتج', 'الصنف', 'اسمالمنتج'],
+      qty: ['qty', 'quantity', 'الكميه', 'العدد'],
+      netTotal: ['nettotal', 'total', 'الاجمالي', 'صافيالاجمالي', 'قيمهالبيع'],
+      cogs: ['cogs', 'التكلفه'],
+      profit: ['profit', 'الربح'],
+      account: ['account', 'payment', 'طريقهالدفع', 'الحساب', 'الدفع'],
+      channel: ['channel', 'القناه'],
+    },
+    stock: {
+      sku: ['sku', 'code', 'الكود', 'كودالمنتج'],
+      name: ['name', 'productname', 'الاسم', 'المنتج', 'اسمالمنتج'],
+      qty: ['qty', 'quantity', 'الكميه', 'الرصيد'],
+      cost: ['cost', 'unitcost', 'التكلفه', 'تكلفهالوحده'],
+      price: ['price', 'saleprice', 'السعر', 'سعرالبيع'],
+    },
+    expenses: {
+      date: ['date', 'التاريخ'],
+      category: ['category', 'البند', 'التصنيف', 'النوع'],
+      amount: ['amount', 'المبلغ', 'القيمه'],
+      payment: ['payment', 'account', 'طريقهالدفع', 'الحساب', 'دفعمن'],
+      desc: ['desc', 'description', 'notes', 'البيان', 'الوصف', 'ملاحظات'],
+    },
+  };
+  const REQUIRED = { sales: ['date', 'productName', 'qty', 'netTotal'], stock: ['name', 'qty'], expenses: ['date', 'amount'] };
+  const KIND_LABEL = { sales: 'مبيعات', stock: 'مخزون ومنتجات', expenses: 'مصروفات' };
+
+  function mapHeader(cells, kind) {
+    const map = {};
+    const keys = cells.map(normKey);
+    Object.entries(FIELDS[kind]).forEach(([field, aliases]) => {
+      const i = keys.findIndex((k, idx) => k && aliases.includes(k) && !Object.values(map).includes(idx));
+      if (i >= 0) map[field] = i;
+    });
+    return map;
+  }
+  function detectSheets(sheets) {
+    const found = [], ignored = [];
+    sheets.forEach((sh) => {
+      const nonEmpty = sh.rows.filter((r) => r.some((v) => str(v) !== ''));
+      if (!nonEmpty.length) { ignored.push({ name: sh.name, reason: 'الورقة فارغة' }); return; }
+      let best = null;
+      for (let h = 0; h < Math.min(sh.rows.length, 12) && !best; h++) {
+        const cells = sh.rows[h] || [];
+        for (const kind of ['sales', 'expenses', 'stock']) {
+          const map = mapHeader(cells, kind);
+          if (REQUIRED[kind].every((f) => map[f] != null)) { best = { kind, map, headerRow: h }; break; }
+        }
+      }
+      if (!best) { ignored.push({ name: sh.name, reason: 'لم أتعرف على أعمدة هذه الورقة' }); return; }
+      const rows = [];
+      for (let r = best.headerRow + 1; r < sh.rows.length; r++) {
+        const cells = sh.rows[r] || [];
+        if (!cells.some((v) => str(v) !== '')) continue;
+        const obj = { _row: r + 1 };
+        Object.entries(best.map).forEach(([f, i]) => (obj[f] = cells[i]));
+        rows.push(obj);
+      }
+      found.push({ name: sh.name, kind: best.kind, rows });
+    });
+    return { found, ignored };
+  }
+
+  // ---------- تصنيف المصروفات وطرق الدفع ----------
+  const CATEGORY_RULES = [
+    [/تسويق|اعلان|إعلان|دعايه|دعاية|ميتا|فيسبوك|انستا|تيك|marketing|ads/i, '5300'],
+    [/تغليف|تعبئه|تعبئة|علب|اكياس|أكياس|packag/i, '5400'],
+    [/شحن|مندوب|توصيل|shipping|courier/i, '5200'],
+    [/راتب|رواتب|مرتب|عموله|عمولة|salary/i, '5500'],
+    [/ايجار|إيجار|كهرباء|مياه|انترنت|إنترنت|rent/i, '5600'],
+    [/بنك|تحويل|bank|fee/i, '5700'],
+    [/اشتراك|برنامج|موقع|دومين|subscription|software/i, '5950'],
+  ];
+  const guessCategory = (s) => { const t = str(s); for (const [re, code] of CATEGORY_RULES) if (re.test(t)) return code; return '5990'; };
+  const isStockPayment = (v) => /مخزون|stock|inventory/i.test(str(v));
+  const isPromo = (row) => /promo|عين|دعاي|هدي|gift|sample/i.test(`${str(row.type)} ${str(row.account)}`);
+
+  function guessAccount(value, accounts) {
+    const v = normName(value);
+    const byType = (t) => accounts.find((a) => a.type === t);
+    const byName = (re) => accounts.find((a) => re.test(normName(a.name)));
+    if (/فودافون|vodafone|voda/.test(v)) return (byName(/فودافون|vodafone/) || byType('wallet') || {}).id;
+    if (/انستا|instapay|insta/.test(v)) return (byName(/انستا|insta/) || byType('wallet') || {}).id;
+    if (/بنك|bank|تحويل|transfer/.test(v)) return (byType('bank') || {}).id;
+    if (/نقد|كاش|cash|خزين/.test(v)) return (byType('cash') || {}).id;
+    return null;
+  }
+  // الاقتراح المبدئي لربط قيم الدفع في الملف بحسابات النظام
+  function defaultMappings(sheets, state) {
+    const { found } = detectSheets(sheets);
+    const accounts = state.accounts || [], couriers = state.couriers || [];
+    const cod = couriers[0] ? `cod:${couriers[0].id}` : 'cod:';
+    const salesPay = {}, expensePay = {};
+    found.filter((s) => s.kind === 'sales').forEach((s) => s.rows.forEach((r) => {
+      if (isPromo(r)) return;
+      const key = str(r.account) || '(فارغ)';
+      if (salesPay[key]) return;
+      const acc = /ship|شحن|cod|استلام|courier/i.test(key) ? null : guessAccount(key, accounts);
+      salesPay[key] = acc || cod;
+    }));
+    found.filter((s) => s.kind === 'expenses').forEach((s) => s.rows.forEach((r) => {
+      const key = str(r.payment) || '(فارغ)';
+      if (expensePay[key]) return;
+      expensePay[key] = isStockPayment(key) ? 'skip' : guessAccount(key, accounts) || (accounts.find((a) => a.type === 'cash') || accounts[0] || {}).id || 'skip';
+    }));
+    const dates = found.flatMap((s) => (s.kind === 'stock' ? [] : s.rows.map((r) => toDate(r.date)))).filter((d) => d && d !== 'invalid').sort();
+    return { salesPay, expensePay, status: 'delivered', openingDate: dates[0] || '' };
+  }
+
+  // ---------- الخطة ----------
+  function planImport(sheets, state, opts, uid) {
+    const makeId = uid || (() => Math.random().toString(36).slice(2, 10));
+    const { found, ignored } = detectSheets(sheets);
+    const errors = [], warnings = [], skipped = [];
+    const today = new Date().toISOString().slice(0, 10);
+    const openingDate = opts.openingDate || today;
+    const existingRefs = new Set([...(state.sales || []), ...(state.adjustments || []), ...(state.expenses || [])].map((x) => x.importRef).filter(Boolean));
+
+    // المنتجات
+    const products = []; // {id, sku, name, price, cost, currentQty, soldQty, isNew, fromSales}
+    const byNorm = new Map(), bySku = new Map();
+    (state.products || []).forEach((p) => {
+      const label = `${p.brand ? p.brand + ' ' : ''}${p.name}`;
+      const entry = { id: p.id, sku: p.sku || '', name: p.name, price: p.price, cost: null, currentQty: null, soldQty: 0, isNew: false, existing: p };
+      if (p.sku) bySku.set(normKey(p.sku), entry);
+      byNorm.set(normName(p.name), entry); byNorm.set(normName(label), entry);
+    });
+    const registerFileProduct = (row, sheet) => {
+      const name = str(row.name);
+      if (!name) { errors.push({ sheet, row: row._row, reason: 'اسم المنتج فارغ' }); return; }
+      const qty = toNumber(row.qty), cost = toNumber(row.cost), price = toNumber(row.price);
+      if (qty == null || isNaN(qty) || qty < 0) { errors.push({ sheet, row: row._row, reason: `كمية غير صحيحة للمنتج «${name}»` }); return; }
+      const sku = str(row.sku);
+      let entry = (sku && bySku.get(normKey(sku))) || byNorm.get(normName(name));
+      if (entry && !entry.isNew) {
+        warnings.push(`المنتج «${name}» موجود بالفعل في النظام — لن يُضاف له مخزون افتتاحي من الملف`);
+        entry.currentQty = qty; entry.cost = isNaN(cost) ? null : cost;
+        return;
+      }
+      if (entry && entry.isNew) { warnings.push(`المنتج «${name}» مكرر في ورقة المخزون (سطر ${row._row}) — تم جمع الكميات`); entry.currentQty += qty; return; }
+      entry = { id: makeId(), sku, name, price: isNaN(price) || price == null ? 0 : price, cost: isNaN(cost) || cost == null ? 0 : cost, currentQty: qty, soldQty: 0, isNew: true };
+      products.push(entry);
+      if (sku) bySku.set(normKey(sku), entry);
+      byNorm.set(normName(name), entry);
+      if (cost == null || isNaN(cost)) warnings.push(`المنتج «${name}» بدون تكلفة — سيُسجل مخزونه الافتتاحي بتكلفة صفر`);
+    };
+    found.filter((s) => s.kind === 'stock').forEach((s) => s.rows.forEach((r) => registerFileProduct(r, s.name)));
+
+    // العملاء
+    const customers = [];
+    const custByPhone = new Map(), custByName = new Map();
+    (state.customers || []).forEach((c) => { if (phoneKey(c.phone)) custByPhone.set(phoneKey(c.phone), c); custByName.set(normName(c.name), c); });
+    const customerFor = (row) => {
+      const name = str(row.customerName), phone = phoneKey(row.customerPhone);
+      if (!name && !phone) return '';
+      let c = (phone && custByPhone.get(phone)) || (!phone && custByName.get(normName(name)));
+      if (!c) {
+        c = { id: makeId(), name: name || phone, phone: phone || '', city: '', address: str(row.customerAddress) };
+        const m = c.address.match(/[,،]\s*([^,،]+)$/);
+        if (m) c.city = m[1].trim();
+        customers.push(c);
+        if (phone) custByPhone.set(phone, c);
+        custByName.set(normName(c.name), c);
+      }
+      return c.id;
+    };
+
+    // المبيعات والعينات
+    const groups = new Map();
+    const promos = [];
+    let fileCogs = 0, cogsGap = 0, cogsGapLines = 0;
+    found.filter((s) => s.kind === 'sales').forEach((s) => s.rows.forEach((r) => {
+      const where = { sheet: s.name, row: r._row };
+      const date = toDate(r.date);
+      const qty = toNumber(r.qty), total = toNumber(r.netTotal);
+      const pname = str(r.productName);
+      if (!date || date === 'invalid') { errors.push({ ...where, reason: `تاريخ غير صحيح «${str(r.date)}»` }); return; }
+      if (!pname) { errors.push({ ...where, reason: 'اسم المنتج فارغ' }); return; }
+      if (qty == null || isNaN(qty) || qty <= 0) { errors.push({ ...where, reason: `كمية غير صحيحة «${str(r.qty)}»` }); return; }
+      if (total == null || isNaN(total) || total < 0) { errors.push({ ...where, reason: `مبلغ غير صحيح «${str(r.netTotal)}»` }); return; }
+      let product = byNorm.get(normName(pname));
+      const cogs = toNumber(r.cogs);
+      if (!product) {
+        product = { id: makeId(), sku: '', name: pname, price: total > 0 ? total / qty : 0, cost: cogs > 0 ? cogs / qty : 0, currentQty: 0, soldQty: 0, isNew: true, fromSales: true };
+        products.push(product); byNorm.set(normName(pname), product);
+        warnings.push(`المنتج «${pname}» غير موجود في ورقة المخزون — سيُضاف بتكلفة ${Math.round(product.cost)} ورصيد صفر بعد البيع`);
+      }
+      const ref = cleanRef(r.trackingNo);
+      const promo = isPromo(r);
+      const importRef = promo ? `erp:promo:${str(r.orderNo) || r._row}` : `erp:${ref || 'line:' + (str(r.orderNo) || r._row)}`;
+      if (existingRefs.has(importRef)) { skipped.push({ ...where, reason: `مستورد من قبل (${ref || 'بند ' + str(r.orderNo)})` }); return; }
+      product.soldQty += qty;
+      if (cogs > 0 && product.cost != null) { fileCogs += cogs; const gap = cogs - qty * product.cost; if (Math.abs(gap) > 1) { cogsGap += gap; cogsGapLines++; } }
+      if (promo) {
+        promos.push({ id: makeId(), date, productId: product.id, qty: -qty, unitCost: null, reason: 'promo', notes: `عينة دعاية${str(r.customerName) ? ' — ' + str(r.customerName) : ''}${str(r.orderNo) ? ' (بند ' + str(r.orderNo) + ')' : ''}`, importRef });
+        return;
+      }
+      const customerId = customerFor(r);
+      const payKey = str(r.account) || '(فارغ)';
+      const pay = opts.salesPay[payKey] || 'cod:';
+      if (!groups.has(importRef)) {
+        const isCod = pay.startsWith('cod:');
+        groups.set(importRef, {
+          id: makeId(), date, customerId, channel: 'other', status: opts.status || 'delivered',
+          items: [], discount: 0, shippingCharged: 0, courierId: isCod ? pay.slice(4) : ((state.couriers || [])[0] || {}).id || '', courierFee: 0,
+          payment: isCod ? 'cod' : pay, returnDate: '', returnFee: 0,
+          notes: `مستورد من الملف${ref ? ' — بوليصة ' + ref : ''} — بند ${str(r.orderNo) || r._row}`, importRef, _rows: [r._row],
+        });
+      } else {
+        const g = groups.get(importRef);
+        g._rows.push(r._row);
+        g.notes = `مستورد من الملف${ref ? ' — بوليصة ' + ref : ''} — بنود ${g._rows.length}`;
+        if (g.date !== date) warnings.push(`البوليصة ${ref} فيها أكثر من تاريخ — استخدمت ${g.date}`);
+      }
+      groups.get(importRef).items.push({ productId: product.id, qty, price: Math.round((total / qty) * 100) / 100 });
+    }));
+    const sales = [...groups.values()];
+    if (cogsGapLines) warnings.push(`${cogsGapLines} سطر مبيعات تكلفتها في الملف تختلف عن تكلفة المنتج في ورقة المخزون (الفرق ${Math.round(cogsGap)} ج.م) — النظام يحسب التكلفة من تكلفة المخزون`);
+
+    // المخزون الافتتاحي = الرصيد الحالي + ما خرج في الملف
+    const opening = [];
+    products.filter((p) => p.isNew).forEach((p) => {
+      const qty = (p.currentQty || 0) + p.soldQty;
+      if (qty > 0) opening.push({ id: makeId(), date: openingDate, productId: p.id, qty, unitCost: p.cost || 0, reason: 'opening', notes: 'مخزون افتتاحي من ملف الاستيراد', importRef: `erp:opening:${p.sku || normKey(p.name)}` });
+    });
+    products.filter((p) => !p.isNew && p.soldQty > 0).forEach((p) => warnings.push(`«${p.name}» موجود مسبقًا وخرج منه ${p.soldQty} في الملف — تأكد أن رصيده في النظام يكفي`));
+    const early = [...sales, ...promos].filter((x) => x.date < openingDate);
+    if (early.length) warnings.push(`${early.length} عملية قبل تاريخ المخزون الافتتاحي (${openingDate}) — سيظهر رصيد غير كافٍ. اختر تاريخًا أقدم`);
+
+    // المصروفات
+    const expenses = [];
+    found.filter((s) => s.kind === 'expenses').forEach((s) => s.rows.forEach((r) => {
+      const where = { sheet: s.name, row: r._row };
+      const date = toDate(r.date), amount = toNumber(r.amount);
+      if (!date || date === 'invalid') { errors.push({ ...where, reason: `تاريخ غير صحيح «${str(r.date)}»` }); return; }
+      if (amount == null || isNaN(amount) || amount <= 0) { errors.push({ ...where, reason: `مبلغ غير صحيح «${str(r.amount)}»` }); return; }
+      const payKey = str(r.payment) || '(فارغ)';
+      const acc = opts.expensePay[payKey];
+      if (!acc || acc === 'skip') { skipped.push({ ...where, reason: isStockPayment(payKey) ? `مدفوع من المخزون — مسجل كعينة دعاية: ${str(r.desc).slice(0, 60)}` : `طريقة الدفع «${payKey}» اخترت تخطيها` }); return; }
+      const importRef = `erp:exp:${date}:${amount}:${normKey(r.desc).slice(0, 40)}`;
+      if (existingRefs.has(importRef)) { skipped.push({ ...where, reason: 'مستورد من قبل' }); return; }
+      expenses.push({ id: makeId(), date, category: guessCategory(`${str(r.category)} ${str(r.desc)}`), amount, accountId: acc, notes: str(r.desc) || str(r.category), importRef });
+    }));
+
+    const totals = {
+      revenue: sales.reduce((s, x) => s + x.items.reduce((a, it) => a + it.qty * it.price, 0), 0),
+      lines: sales.reduce((s, x) => s + x.items.length, 0),
+      openingQty: opening.reduce((s, a) => s + a.qty, 0),
+      openingValue: opening.reduce((s, a) => s + a.qty * a.unitCost, 0),
+      promoQty: promos.reduce((s, a) => s - a.qty, 0),
+      expenses: expenses.reduce((s, e) => s + e.amount, 0),
+      fileCogs,
+    };
+    return { found: found.map((f) => ({ name: f.name, kind: f.kind, label: KIND_LABEL[f.kind], rows: f.rows.length })), ignored, products, customers, sales, promos, opening, expenses, errors, warnings, skipped, totals, openingDate };
+  }
+
+  // ---------- التطبيق ----------
+  function applyImport(state, plan) {
+    const s = JSON.parse(JSON.stringify(state));
+    plan.products.filter((p) => p.isNew).forEach((p) => s.products.push({ id: p.id, sku: p.sku, brand: '', name: p.name, sizeMl: '', gender: 'unisex', price: p.price, minStock: s.settings.lowStock }));
+    s.customers.push(...plan.customers);
+    s.adjustments.push(...plan.opening, ...plan.promos);
+    [...plan.sales].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)).forEach((sale) => {
+      const { _rows, ...clean } = sale;
+      s.sales.push({ ...clean, no: s.settings.nextInvoiceNo++ });
+    });
+    s.expenses.push(...plan.expenses);
+    if (plan.openingDate && (!s.settings.startDate || s.settings.startDate > plan.openingDate)) s.settings.startDate = plan.openingDate;
+    s.demo = false;
+    return s;
+  }
+
+  const api = { readWorkbook, parseCsv, detectSheets, defaultMappings, planImport, applyImport, toDate, toNumber, phoneKey, normName };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.IMP = api;
+})(typeof window !== 'undefined' ? window : globalThis);
 
 /* Florume — التخزين، الأدوات المشتركة، عناصر الواجهة، والبيانات التجريبية */
 (function () {
@@ -1879,7 +2327,7 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
         let qty = num(fd.get('qty'));
         const reason = fd.get('reason');
         if (!qty) { UI.toast('أدخل الكمية', 'bad'); return false; }
-        if (['damage', 'tester', 'gift'].includes(reason) && qty > 0) qty = -qty;
+        if (['damage', 'tester', 'gift', 'promo'].includes(reason) && qty > 0) qty = -qty;
         if (reason === 'opening' && (qty < 0 || fd.get('unitCost') === '')) { UI.toast('المخزون الافتتاحي يحتاج كمية موجبة وتكلفة وحدة', 'bad'); return false; }
         DB.upsert('adjustments', { id: uid(), date: fd.get('date'), productId: fd.get('productId'), qty, unitCost: qty > 0 && fd.get('unitCost') !== '' ? num(fd.get('unitCost')) : null, reason, notes: fd.get('notes') });
         UI.toast('تم تسجيل التسوية'); render();
@@ -2171,6 +2619,13 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
       <section class="panel">
+        <h2 class="section-title">استيراد من Excel</h2>
+        <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP. هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
+        <div class="btn-row">
+          <button class="btn btn-primary" data-action="importExcel">رفع ملف Excel</button>
+          <button class="btn" data-action="importTemplate">تنزيل نموذج فاضي</button>
+          ${lastImport() ? `<button class="btn btn-danger" data-action="undoImport">تراجع عن آخر استيراد (${esc(lastImport().label)})</button>` : ''}
+        </div>
         <h2 class="section-title">النسخ الاحتياطي</h2>
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
@@ -2211,6 +2666,101 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
     if (guard && guard()) { UI.toast(`لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`, 'bad'); return; }
     UI.confirm(`هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
   };
+  // =====================================================================
+  // الاستيراد من Excel
+  // =====================================================================
+  const PREIMPORT_KEY = 'florume.preimport';
+  function lastImport() { try { return JSON.parse(localStorage.getItem(PREIMPORT_KEY) || 'null'); } catch (e) { return null; } }
+  function pickImportFile() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.xlsx,.csv,.txt'; input.hidden = true;
+    input.addEventListener('change', async () => {
+      const file = input.files[0]; input.remove();
+      if (!file) return;
+      try {
+        const sheets = await IMP.readWorkbook(file);
+        importPreview(file.name, sheets);
+      } catch (err) { UI.toast(err.message || 'تعذرت قراءة الملف', 'bad'); }
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+  function importPreview(fileName, sheets) {
+    const clearDemo = !!S().demo;
+    const emptyBase = F.emptyState();
+    const baseState = () => (opts.clearDemo ? emptyBase : S());
+    const opts = { clearDemo, ...IMP.defaultMappings(sheets, clearDemo ? emptyBase : S()) };
+    let base = baseState();
+    let plan = IMP.planImport(sheets, base, opts, uid);
+    const payOptions = (st) => [
+      ...st.couriers.map((c) => ({ v: `cod:${c.id}`, l: `عند الاستلام — ${c.name}` })),
+      ...st.accounts.map((a) => ({ v: a.id, l: `مدفوع مقدمًا — ${a.name}` })),
+    ];
+    const view = () => {
+      const t = plan.totals;
+      const newProducts = plan.products.filter((p) => p.isNew);
+      const productName = (id) => (plan.products.find((p) => p.id === id) || {}).name || (DB.find('products', id) || {}).name || '—';
+      const custName = (id) => (plan.customers.find((c) => c.id === id) || base.customers.find((c) => c.id === id) || {}).name || '—';
+      const payLabel = (sale) => (sale.payment === 'cod' ? `عند الاستلام — ${(base.couriers.find((c) => c.id === sale.courierId) || {}).name || ''}` : (base.accounts.find((a) => a.id === sale.payment) || {}).name || '—');
+      const nothing = !plan.sales.length && !plan.promos.length && !newProducts.length && !plan.expenses.length && !plan.opening.length;
+      return `
+        <p class="muted">الملف: <b>${esc(fileName)}</b></p>
+        <ul class="imp-sheets">
+          ${plan.found.map((f) => `<li>${UI.pill('تمت القراءة', 'good')} <b>${esc(f.name)}</b> — ${f.label} (${f.rows} سطر)</li>`).join('')}
+          ${plan.ignored.map((f) => `<li>${UI.pill('اتتخطت', 'mute')} <b>${esc(f.name)}</b> — ${esc(f.reason)}</li>`).join('')}
+        </ul>
+        <div class="form-grid">
+          ${UI.field('حالة الطلبات المستوردة', UI.select('impStatus', { delivered: 'تم التسليم', shipped: 'مع شركة الشحن' }, opts.status, 'data-imp="status"'))}
+          ${UI.field('تاريخ المخزون الافتتاحي', UI.input('impOpening', opts.openingDate, 'type="date" data-imp="openingDate"'), { hint: 'قبل أول عملية في الملف' })}
+          ${S().demo ? UI.field('البيانات التجريبية', `<label class="check"><input type="checkbox" id="f-impClear" data-imp="clearDemo" ${opts.clearDemo ? 'checked' : ''}> امسحها واستورد على نظام فاضي</label>`) : ''}
+        </div>
+        ${Object.keys(opts.salesPay).length || Object.keys(opts.expensePay).length ? `<h3 class="sub-title">طريقة الدفع في الملف ← في النظام</h3><div class="form-grid">${Object.keys(opts.salesPay).map((k, i) => UI.field(`«${esc(k)}» في المبيعات`, UI.select('impPay' + i, payOptions(base), opts.salesPay[k], `data-imp-pay="${esc(k)}"`))).join('')}
+          ${Object.keys(opts.expensePay).map((k, i) => UI.field(`«${esc(k)}» في المصروفات`, UI.select('impExp' + i, [{ v: 'skip', l: 'تخطي هذه السطور' }, ...base.accounts.map((a) => ({ v: a.id, l: a.name }))], opts.expensePay[k], `data-imp-exp="${esc(k)}"`))).join('')}</div>` : ''}
+        <div class="summary imp-summary">
+          <div><span>منتجات جديدة</span><b>${newProducts.length}</b></div>
+          <div><span>مخزون افتتاحي</span><b>${fmt(t.openingQty)} قطعة · ${fmt(t.openingValue)} ج.م</b></div>
+          <div><span>عملاء جدد</span><b>${plan.customers.length}</b></div>
+          <div class="strong"><span>طلبات (${t.lines} سطر)</span><b>${plan.sales.length} · ${fmt(t.revenue)} ج.م</b></div>
+          <div><span>عينات دعاية من المخزون</span><b>${fmt(t.promoQty)} قطعة</b></div>
+          <div><span>مصروفات</span><b>${plan.expenses.length} · ${fmt(t.expenses)} ج.م</b></div>
+        </div>
+        ${plan.errors.length ? `<div class="imp-box bad"><b>${plan.errors.length} سطر فيه خطأ ولن يُستورد:</b><ul>${plan.errors.map((e) => `<li>${esc(e.sheet)} — سطر ${e.row}: ${esc(e.reason)}</li>`).join('')}</ul></div>` : ''}
+        ${plan.warnings.length ? `<div class="imp-box warn"><b>تنبيهات:</b><ul>${plan.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
+        ${plan.skipped.length ? `<details class="imp-box"><summary>${plan.skipped.length} سطر سيتم تخطيه (اضغط للتفاصيل)</summary><ul>${plan.skipped.map((e) => `<li>${esc(e.sheet)} — سطر ${e.row}: ${esc(e.reason)}</li>`).join('')}</ul></details>` : ''}
+        ${plan.sales.length ? `<h3 class="sub-title">الطلبات</h3>${table(['التاريخ', 'العميل', 'الأصناف', '#الإجمالي', 'الدفع'], plan.sales.map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(custName(x.customerId)))}${td(x.items.map((it) => `${esc(productName(it.productId))} × ${fmt(it.qty)}`).join('<br>'))}${tdn(fmt(x.items.reduce((a, it) => a + it.qty * it.price, 0)))}${td(esc(payLabel(x)))}</tr>`))}` : ''}
+        ${newProducts.length ? `<h3 class="sub-title">المنتجات والمخزون الافتتاحي</h3>${table(['الكود', 'المنتج', '#الرصيد في الملف', '#خرج في الملف', '#مخزون افتتاحي', '#التكلفة', '#سعر البيع'], newProducts.map((p) => `<tr>${td(esc(p.sku), 'mono')}${td(esc(p.name))}${tdn(fmt(p.currentQty || 0))}${tdn(fmt(p.soldQty))}${tdn(fmt((p.currentQty || 0) + p.soldQty))}${tdn(fmt(p.cost))}${tdn(fmt(p.price))}</tr>`))}` : ''}
+        ${plan.expenses.length ? `<h3 class="sub-title">المصروفات</h3>${table(['التاريخ', 'البند', 'البيان', '#المبلغ'], plan.expenses.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc(Acc.COA_MAP[e.category].name))}${td(esc(e.notes))}${tdn(fmt(e.amount))}</tr>`))}` : ''}
+        ${nothing ? UI.empty('لا يوجد شيء جديد للاستيراد في هذا الملف') : '<p class="muted">سيتم حفظ نسخة من بياناتك الحالية قبل الاستيراد، وتقدر ترجع لها من الإعدادات ← «تراجع عن آخر استيراد».</p>'}`;
+    };
+    UI.modal({
+      title: 'معاينة الاستيراد', wide: true, submit: 'استيراد',
+      body: `<div id="imp-view">${view()}</div>`,
+      onOpen(f) {
+        const box = f.querySelector('#imp-view');
+        const replan = () => { base = baseState(); plan = IMP.planImport(sheets, base, opts, uid); box.innerHTML = view(); };
+        box.addEventListener('change', (e) => {
+          const el = e.target;
+          if (el.dataset.imp === 'clearDemo') {
+            opts.clearDemo = el.checked;
+            Object.assign(opts, IMP.defaultMappings(sheets, baseState()), { status: opts.status, openingDate: opts.openingDate });
+          } else if (el.dataset.imp) opts[el.dataset.imp] = el.value;
+          else if (el.dataset.impPay != null) opts.salesPay[el.dataset.impPay] = el.value;
+          else if (el.dataset.impExp != null) opts.expensePay[el.dataset.impExp] = el.value;
+          replan();
+        });
+      },
+      onSubmit() {
+        if (!plan.sales.length && !plan.promos.length && !plan.opening.length && !plan.expenses.length && !plan.products.some((p) => p.isNew)) { UI.toast('لا يوجد شيء جديد للاستيراد', 'bad'); return false; }
+        try { localStorage.setItem(PREIMPORT_KEY, JSON.stringify({ label: `${fileName} — ${fmtDate(today())}`, state: S() })); }
+        catch (e) { UI.toast('تعذر حفظ نسخة قبل الاستيراد — صدّر نسخة احتياطية أولًا', 'bad'); return false; }
+        DB.replace(IMP.applyImport(base, plan));
+        renderBrand();
+        UI.toast(`تم استيراد ${plan.sales.length} طلب و${plan.products.filter((p) => p.isNew).length} منتج و${plan.expenses.length} مصروف`);
+        render();
+      },
+    });
+  }
+
   const ACTIONS = {
     newSale: () => saleForm(), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
     delSale: (id) => del('sales', id, 'هذا الطلب'),
@@ -2247,6 +2797,21 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
     delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
     newCourier: () => courierForm(), editCourier: (id) => courierForm(DB.find('couriers', id)),
     delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i]])),
+    importExcel: pickImportFile,
+    importTemplate: () => FX.exportExcel('florume-import-template.xlsx', [
+      { name: 'المبيعات', plain: true, header: ['orderNo', 'trackingNo', 'type', 'date', 'customerName', 'customerPhone', 'customerAddress', 'productName', 'qty', 'netTotal', 'cogs', 'profit', 'account'], rows: [] },
+      { name: 'المخزون', plain: true, header: ['sku', 'name', 'qty', 'cost', 'price'], rows: [] },
+      { name: 'المصاريف التشغيلية', plain: true, header: ['date', 'category', 'amount', 'payment', 'desc'], rows: [] },
+    ], { business: S().settings.businessName, subtitle: '' }),
+    undoImport: () => {
+      const snap = lastImport();
+      if (!snap) return;
+      UI.confirm(`هيرجع النظام لحالته قبل استيراد «${esc(snap.label)}». أي تعديل عملته بعد الاستيراد هيتلغي كمان.`, () => {
+        DB.replace(snap.state);
+        try { localStorage.removeItem(PREIMPORT_KEY); } catch (e) { /* لا شيء */ }
+        renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
+      }, 'تراجع');
+    },
     exportBackup: () => UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json'),
     pasteBackup: () => UI.modal({ title: 'استيراد نسخة احتياطية', submit: 'استيراد', body: `<p class="muted">سيتم استبدال كل البيانات الحالية بالنسخة التي تلصقها.</p><textarea id="f-paste" name="paste" class="export-box" required></textarea>`, onSubmit: (f, fd) => { importState(fd.get('paste')); } }),
     loadDemo: () => UI.confirm('سيتم استبدال بياناتك الحالية بالبيانات التجريبية. صدّر نسخة احتياطية أولًا إن احتجت.', () => { DB.replace(F.demoState()); UI.toast('تم تحميل البيانات التجريبية'); render(); }, 'تحميل'),
@@ -2331,7 +2896,7 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
     const pa = m.querySelector('.page-head .page-actions');
-    if (pa) pa.insertAdjacentHTML('afterbegin', '<span class="doc-tools"><button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>');
+    if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();

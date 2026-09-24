@@ -338,7 +338,7 @@
           { acc: '1300', dr: cost, cr: 0 }, { acc: credit, dr: 0, cr: cost },
         ]);
       } else if (num(adj.qty) < 0) {
-        const debit = adj.reason === 'tester' || adj.reason === 'gift' ? '5810' : '5800';
+        const debit = adj.reason === 'promo' ? '5300' : adj.reason === 'tester' || adj.reason === 'gift' ? '5810' : '5800';
         add(adj.date, 'adjustment', ref, `${ADJ_REASONS[adj.reason] || 'تسوية'} — ${pn}`, [
           { acc: debit, dr: cost, cr: 0 }, { acc: '1300', dr: 0, cr: cost },
         ]);
@@ -350,7 +350,7 @@
     return { entries, inventory: inv, suppliers: sup };
   }
 
-  const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', other: 'أخرى' };
+  const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', promo: 'عينة دعاية', other: 'أخرى' };
 
   // ---------- التقارير ----------
   const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to);
