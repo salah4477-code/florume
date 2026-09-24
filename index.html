@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Florume Ledger</title>
+<!--HEAD-START-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Reem+Kufi:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+<!--HEAD-END-->
+</head>
+<body>
+<!--BODY-START-->
+<div class="app" dir="rtl" lang="ar">
+  <aside class="side">
+    <a class="brand" href="#dashboard"><span class="brand-drop" aria-hidden="true"></span><span><b data-brand>Florume</b><small>حسابات العطور المستوردة</small></span></a>
+    <nav class="nav" aria-label="القائمة الرئيسية">
+      <a href="#dashboard">لوحة التحكم</a>
+      <a href="#sales">المبيعات</a>
+      <a href="#shipments">شحنات الاستيراد</a>
+      <a href="#products">المنتجات والمخزون</a>
+      <a href="#suppliers">الموردين</a>
+      <a href="#customers">العملاء</a>
+      <a href="#treasury">الخزينة والبنوك</a>
+      <a href="#expenses">المصروفات</a>
+      <a href="#reports">التقارير</a>
+      <a href="#settings">الإعدادات</a>
+    </nav>
+    <p class="side-foot">SAR · AED → EGP</p>
+  </aside>
+  <main class="main">
+    <div class="demo-banner" id="demo-banner" hidden>
+      <span><b>بيانات تجريبية.</b> الأرقام المعروضة مثال لمتجر عطور وهمي حتى تجرب النظام.</span>
+      <button class="btn btn-small" data-action="clearDemo">امسحها وابدأ ببياناتي</button>
+    </div>
+    <div id="main"></div>
+  </main>
+</div>
+<div id="modal" class="modal" hidden></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="tip" class="tip" hidden></div>
+<!--BODY-END-->
+<script src="js/accounting.js"></script>
+<script src="js/core.js"></script>
+<script src="js/pages.js"></script>
+</body>
+</html>
