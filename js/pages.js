@@ -1,7 +1,7 @@
 /* Florume — الشاشات */
 (function () {
   'use strict';
-  const { DB, UI, esc, fmt, money, pct, num, today, uid, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS } = F;
+  const { DB, UI, esc, fmt, money, pct, num, today, uid, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS } = F;
   const S = () => DB.state;
   const J = () => DB.journal;
   const main = () => document.getElementById('main');
@@ -40,7 +40,7 @@
   const invoiceNo = (sale) => `${S().settings.invoicePrefix || ''}${sale.no || ''}`;
   const accountOptions = () => S().accounts.map((a) => ({ v: a.id, l: a.name }));
   const productOptions = () => [{ v: '', l: 'اختر المنتج…' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))];
-  const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
+  const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', lost: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
   const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '—');
   const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
@@ -54,6 +54,26 @@
   const partyName = (party) => nameOf(PARTY_LISTS[party.type] || 'couriers', party.id);
   const campaignOptions = (blank = 'بدون حملة') => [{ v: '', l: blank }, ...S().campaigns.map((c) => ({ v: c.id, l: `${c.name} (${CHANNELS[c.platform] || ''})` }))];
   const isPromo = (x) => Acc.isPromo(x);
+  const govOptions = (blank = 'اختر المحافظة…') => [{ v: '', l: blank }, ...GOVERNORATES.map((g) => ({ v: g, l: g }))];
+  // لو العميل قديم ومدينته مكتوبة بشكل تاني نسيبها اختيار عشان ما تضيعش
+  const govOfOptions = (city) => (city && !GOVERNORATES.includes(city) ? [...govOptions(), { v: city, l: city }] : govOptions());
+  // المحافظة من مدينة العميل (بتقبل «الجيزة — الدقي» مثلًا)
+  const govOf = (city) => { const c = String(city || ''); return GOVERNORATES.find((g) => c.includes(g)) || ''; };
+  // سعر الشحن لشركة ومحافظة: التكلفة علينا ومصاريف المرتجع واللي بنحصّله من العميل
+  const shipRate = (courierId, city) => { const c = DB.find('couriers', courierId); if (!c) return null; const g = govOf(city); return (g && c.rates && c.rates[g]) || c.defaultRate || null; };
+  // عمولة بوابة الدفع للحساب
+  const accountFee = (accountId, total) => { const a = DB.find('accounts', accountId); return a ? Acc.round2(num(total) * num(a.feePct) / 100 + (num(total) > 0 ? num(a.feeFixed) : 0)) : 0; };
+  const couponByCode = (code) => { const k = String(code || '').trim().toUpperCase(); return k ? S().coupons.find((c) => String(c.code).toUpperCase() === k) : null; };
+  const couponUses = (id, exceptSaleId) => S().sales.filter((x) => x.couponId === id && x.id !== exceptSaleId && x.status !== 'cancelled').length;
+  function couponProblem(c, date, exceptSaleId) {
+    if (!c) return 'الكود ده مش موجود';
+    if (c.active === false) return 'الكود ده متوقف';
+    if (c.validTo && date > c.validTo) return `الكود انتهى يوم ${fmtDate(c.validTo)}`;
+    if (num(c.maxUses) && couponUses(c.id, exceptSaleId) >= num(c.maxUses)) return `الكود وصل للحد الأقصى (${c.maxUses} استخدام)`;
+    return '';
+  }
+  const couponDiscount = (c, gross) => Acc.round2(Math.min(gross, c.type === 'fixed' ? num(c.value) : (gross * num(c.value)) / 100));
+  const couponCommission = (c, net) => Acc.round2(c.commissionType === 'fixed' ? num(c.commission) : (net * num(c.commission)) / 100);
 
   // ---------- قواعد الحفظ ----------
   const fail = (msg) => { UI.toast(msg, 'bad'); return false; };
@@ -299,7 +319,10 @@
   function saleForm(sale, kind) {
     const s = S();
     const isNew = !sale;
-    sale = sale || { id: uid(), kind: kind === 'promo' ? 'promo' : 'sale', date: today(), channel: 'instagram', status: 'pending', payment: 'cod', courierId: (s.couriers[0] || {}).id, courierFee: 0, shippingCharged: 0, discount: 0, items: [{ qty: 1 }], returnFee: 0, campaignId: '', trackingNo: '' };
+    sale = sale || { id: uid(), kind: kind === 'promo' ? 'promo' : 'sale', date: today(), channel: 'instagram', status: 'pending', payment: 'cod', courierId: (s.couriers[0] || {}).id, courierFee: 0, shippingCharged: 0, discount: 0, items: [{ qty: 1 }], returnFee: 0, campaignId: '', trackingNo: '',
+      samples: kind !== 'promo' && s.settings.sampleProductId ? [{ productId: s.settings.sampleProductId, qty: num(s.settings.sampleQty) || 1 }] : [] };
+    const coupon0 = sale.couponId ? DB.find('coupons', sale.couponId) : null;
+    const sample0 = (sale.samples || [])[0] || {};
     const custOpts = [{ v: '', l: 'اختر العميل…' }, { v: '__new', l: '+ عميل جديد' }, ...s.customers.map((c) => ({ v: c.id, l: `${c.name}${c.phone ? ' — ' + c.phone : ''}` }))];
     const locked = !isNew && RULES.isReconciled(s, sale.id);
     const body = `
@@ -316,7 +339,7 @@
       <div class="form-grid new-customer" hidden>
         ${UI.field('اسم العميل', UI.input('cName', ''), { req: true })}
         ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'))}
-        ${UI.field('المحافظة / المدينة', UI.input('cCity', ''))}
+        ${UI.field('المحافظة', UI.select('cCity', govOptions(), ''))}
         ${UI.field('العنوان', UI.input('cAddress', ''))}
       </div>
       ${scanBox()}
@@ -324,16 +347,25 @@
         <tbody id="lines">${sale.items.map(saleLineRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
       <div class="form-grid">
+        ${UI.field('كود خصم', UI.input('couponCode', coupon0 ? coupon0.code : '', 'dir="ltr" autocomplete="off" placeholder="MARWA10"'), { cls: 'sale-only', hint: '<span id="coupon-hint">كود مؤثر أو عرض — بيحسب الخصم لوحده</span>' })}
         ${UI.field('خصم (ج.م)', UI.input('discount', sale.discount || 0, 'type="number" min="0" step="0.01"'), { cls: 'sale-only' })}
         ${UI.field('شحن محصل من العميل', UI.input('shippingCharged', sale.shippingCharged || 0, 'type="number" min="0" step="0.01"'), { cls: 'sale-only' })}
         ${UI.field('طريقة الدفع', UI.select('payment', [{ v: 'cod', l: 'الدفع عند الاستلام (مع شركة الشحن)' }, ...accountOptions().map((a) => ({ v: a.v, l: 'مدفوع مقدمًا — ' + a.l }))], sale.payment), { cls: 'sale-only' })}
         ${UI.field('شركة الشحن', UI.select('courierId', [{ v: '', l: '—' }, ...s.couriers.map((c) => ({ v: c.id, l: c.name }))], sale.courierId || ''))}
         ${UI.field('رقم البوليصة', UI.input('trackingNo', sale.trackingNo || '', 'dir="ltr" autocomplete="off"'), { hint: 'يُستخدم في مطابقة كشف شركة الشحن' })}
-        ${UI.field('تكلفة الشحن علينا', UI.input('courierFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'), { hint: 'تخصمها شركة الشحن من التحصيل' })}
+        ${UI.field('تكلفة الشحن علينا', UI.input('courierFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'), { hint: '<span id="ship-hint">تخصمها شركة الشحن من التحصيل</span>' })}
+        ${UI.field('عينة هدية مع الطلب', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))], sample0.productId || ''), { cls: 'sale-only', hint: 'تتخصم من المخزون وتتحسب مصروف عينات' })}
+        ${UI.field('عدد العينات', UI.input('sampleQty', sample0.qty || 1, 'type="number" min="1" step="1"'), { cls: 'sale-only sample-qty' })}
       </div>
       <div class="form-grid return-fields" hidden>
         ${UI.field('تاريخ المرتجع', UI.input('returnDate', sale.returnDate || today(), 'type="date"'))}
         ${UI.field('مصاريف المرتجع', UI.input('returnFee', sale.returnFee || 0, 'type="number" min="0" step="0.01"'))}
+        ${UI.field('الفلوس ترجع للعميل من', UI.select('refundAccountId', accountOptions(), sale.refundAccountId || (sale.payment !== 'cod' ? sale.payment : '')), { cls: 'prepaid-only' })}
+      </div>
+      <div class="form-grid lost-fields" hidden>
+        ${UI.field('تاريخ ضياع الشحنة', UI.input('lostDate', sale.lostDate || today(), 'type="date"'))}
+        ${UI.field('تعويض شركة الشحن', UI.input('compensation', sale.compensation || 0, 'type="number" min="0" step="0.01"'), { hint: 'المبلغ اللي الشركة هتعوضك بيه' })}
+        ${UI.field('الفلوس ترجع للعميل من', UI.select('lostRefundAccountId', accountOptions(), sale.lostRefundAccountId || (sale.payment !== 'cod' ? sale.payment : '')), { cls: 'prepaid-only' })}
       </div>
       ${UI.field('ملاحظات', `<textarea id="f-notes" name="notes" rows="2">${esc(sale.notes || '')}</textarea>`)}
       <div class="summary" id="sale-summary"></div>`;
@@ -359,10 +391,27 @@
             f.querySelector('#sale-summary').innerHTML = `<div><span>تكلفة القطع</span><b>${fmt(cost)}</b></div><div><span>شحن علينا</span><b>${fmt(fee)}</b></div><div class="strong"><span>يُحمَّل على مصروف الدعاية</span><b>${fmt(cost + fee)} ج.م</b></div><div><span>المطلوب من المستلم</span><b>0</b></div>`;
             return;
           }
+          // كود الخصم
+          const c = couponByCode(f.couponCode.value);
+          const hint = f.querySelector('#coupon-hint');
+          let commission = 0;
+          if (f.couponCode.value.trim()) {
+            const problem = couponProblem(c, f.date.value, sale.id);
+            if (problem) hint.innerHTML = `<span class="bad-text">${esc(problem)}</span>`;
+            else {
+              if (f.dataset.couponFor !== c.id + ':' + gross) { f.discount.value = couponDiscount(c, gross); f.dataset.couponFor = c.id + ':' + gross; }
+              commission = couponCommission(c, gross - num(f.discount.value));
+              hint.innerHTML = `<span class="good-text">✔ ${esc(c.influencer || c.code)} — ${c.type === 'fixed' ? fmt(c.value) + ' ج.م' : fmt(c.value) + '٪'} خصم${commission ? ` · عمولة ${fmt(commission)}` : ''}</span>`;
+            }
+          } else hint.textContent = 'كود مؤثر أو عرض — بيحسب الخصم لوحده';
           const disc = num(f.discount.value), ship = num(f.shippingCharged.value);
           const total = gross - disc + ship;
-          const profit = total - cost - fee;
-          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div><div class="${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
+          const payFee = f.payment.value !== 'cod' ? accountFee(f.payment.value, total) : 0;
+          const sp = f.sampleProductId.value && J().inventory.products[f.sampleProductId.value];
+          const sampleCost = sp ? sp.avgCost * (num(f.sampleQty.value) || 1) : 0;
+          const profit = total - cost - fee - payFee - commission - sampleCost;
+          const extra = [payFee ? `<div><span>عمولة الدفع</span><b>${fmt(payFee)}</b></div>` : '', commission ? `<div><span>عمولة المؤثر</span><b>${fmt(commission)}</b></div>` : '', sampleCost ? `<div><span>العينة</span><b>${fmt(sampleCost)}</b></div>` : ''].join('');
+          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div>${extra}<div class="${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
         };
         const addProduct = (p) => {
           const rows = [...lines.querySelectorAll('.line')];
@@ -393,10 +442,30 @@
           f.querySelector('.new-customer').hidden = f.customerId.value !== '__new';
           f.querySelector('#f-cName').required = f.customerId.value === '__new';
           f.querySelector('.return-fields').hidden = f.status.value !== 'returned';
+          f.querySelector('.lost-fields').hidden = f.status.value !== 'lost';
+          f.querySelectorAll('.prepaid-only').forEach((el) => (el.hidden = promo || f.payment.value === 'cod'));
+          f.querySelector('.sample-qty').hidden = promo || !f.sampleProductId.value;
           recalc();
         };
-        f.customerId.addEventListener('change', toggle); f.status.addEventListener('change', toggle); f.kind.addEventListener('change', toggle);
-        toggle();
+        // سعر الشحن حسب محافظة العميل، إلا لو كتبته بإيدك
+        let feeTouched = !isNew, chargeTouched = !isNew, retTouched = !isNew;
+        f.courierFee.addEventListener('input', () => (feeTouched = true));
+        f.shippingCharged.addEventListener('input', () => (chargeTouched = true));
+        f.returnFee.addEventListener('input', () => (retTouched = true));
+        const autoShip = () => {
+          const city = f.customerId.value === '__new' ? f.cCity.value : (DB.find('customers', f.customerId.value) || {}).city;
+          const r = shipRate(f.courierId.value, city);
+          const hint = f.querySelector('#ship-hint');
+          if (!r) { hint.textContent = 'تخصمها شركة الشحن من التحصيل'; return; }
+          hint.textContent = `حسب ${govOf(city) || 'السعر الافتراضي'}: ${fmt(r.fee)}${r.returnFee ? ` · مرتجع ${fmt(r.returnFee)}` : ''}`;
+          if (!feeTouched) f.courierFee.value = num(r.fee);
+          if (!chargeTouched && r.charge != null && r.charge !== '') f.shippingCharged.value = num(r.charge);
+          if (!retTouched) f.returnFee.value = num(r.returnFee);
+          recalc();
+        };
+        f.customerId.addEventListener('change', () => { toggle(); autoShip(); }); f.courierId.addEventListener('change', autoShip); f.cCity.addEventListener('change', autoShip);
+        f.status.addEventListener('change', toggle); f.kind.addEventListener('change', toggle); f.payment.addEventListener('change', toggle); f.sampleProductId.addEventListener('change', toggle);
+        toggle(); if (isNew) autoShip();
       },
       onSubmit(f, fd) {
         const promo = fd.get('kind') === 'promo';
@@ -407,7 +476,20 @@
         const status = fd.get('status');
         const obj = { ...sale, kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
           discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
-          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes') };
+          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
+          refundAccountId: status === 'returned' ? fd.get('refundAccountId') : '', lostDate: status === 'lost' ? fd.get('lostDate') : '', compensation: status === 'lost' ? num(fd.get('compensation')) : 0, lostRefundAccountId: status === 'lost' ? fd.get('lostRefundAccountId') : '',
+          samples: !promo && fd.get('sampleProductId') ? [{ productId: fd.get('sampleProductId'), qty: num(fd.get('sampleQty')) || 1 }] : [] };
+        // كود الخصم وعمولة المؤثر وعمولة الدفع بتتحفظ رقم ثابت وقت الحفظ
+        const code = promo ? '' : String(fd.get('couponCode') || '').trim();
+        if (code) {
+          const c = couponByCode(code);
+          const problem = couponProblem(c, obj.date, obj.id);
+          if (problem && !(c && c.id === sale.couponId)) return fail(`كود الخصم: ${problem}`);
+          const gross = obj.items.reduce((a, it) => a + it.qty * it.price, 0);
+          obj.couponId = c.id; obj.commission = couponCommission(c, gross - obj.discount);
+          if (!obj.campaignId && c.campaignId) obj.campaignId = c.campaignId;
+        } else { obj.couponId = ''; obj.commission = 0; }
+        obj.payFee = !promo && obj.payment !== 'cod' ? accountFee(obj.payment, Acc.saleTotals(obj).total) : 0;
         if (!dateOk(obj.date, 'تاريخ الفاتورة')) return false;
         const dErr = RULES.saleDateError(obj);
         if (dErr) return fail(dErr);
@@ -423,7 +505,7 @@
         if (isNew) obj.no = RULES.nextFreeInvoiceNo(S());
         if (!cashOk(f, RULES.withDoc(S(), 'sales', obj))) return false;
         if (obj.customerId === '__new') {
-          const c = { id: uid(), name: fd.get('cName').trim(), phone: fd.get('cPhone').trim(), city: fd.get('cCity').trim(), address: fd.get('cAddress').trim() };
+          const c = { id: uid(), name: fd.get('cName').trim(), phone: fd.get('cPhone').trim(), city: fd.get('cCity'), address: fd.get('cAddress').trim() };
           S().customers.push(c); obj.customerId = c.id;
         }
         if (isNew) S().settings.nextInvoiceNo = obj.no + 1;
@@ -456,7 +538,9 @@
       lines.push('', `إجمالي الأصناف: ${fmt(t.gross)} ج.م`);
       if (t.discount) lines.push(`الخصم: -${fmt(t.discount)} ج.م`);
       if (t.shipping) lines.push(`الشحن: ${fmt(t.shipping)} ج.م`);
-      lines.push(`*المطلوب: ${fmt(t.total)} ج.م*${sale.payment === 'cod' ? ' (الدفع عند الاستلام)' : ' (مدفوع مقدمًا ✅)'}`);
+      const due = Acc.round2(t.total - Acc.partialReturns(sale).value - num(sale.exchangeCredit));
+      if (num(sale.exchangeCredit)) lines.push(`رصيد الاستبدال: -${fmt(sale.exchangeCredit)} ج.م`);
+      lines.push(`*المطلوب: ${fmt(due)} ج.م*${sale.payment === 'cod' ? ' (الدفع عند الاستلام)' : ' (مدفوع مقدمًا ✅)'}`);
     }
     if (sale.courierId) lines.push('', `الشحن مع ${nameOf('couriers', sale.courierId)}${sale.trackingNo ? ' — رقم البوليصة ' + sale.trackingNo : ''}`);
     if (s.settings.waFooter) lines.push('', s.settings.waFooter);
@@ -490,16 +574,85 @@
         <div class="inv-party"><span class="muted">${promo ? 'المستلم' : 'العميل'}</span><b>${esc(c.name || '—')}</b><span>${esc(c.phone || '')}</span><span>${esc([c.city, c.address].filter(Boolean).join(' — '))}</span></div>
         ${itemsTable}
         <p class="muted">${promo ? 'قطع مجانية لأغراض الدعاية — بدون مقابل' : `الدفع: ${sale.payment === 'cod' ? 'عند الاستلام' : 'مدفوع مقدمًا — ' + esc(nameOf('accounts', sale.payment))}`} · الشحن: ${esc(nameOf('couriers', sale.courierId))}${sale.trackingNo ? ` · بوليصة <span class="mono">${esc(sale.trackingNo)}</span>` : ''}</p>
+        ${(() => { const pr = Acc.partialReturns(sale); return pr.list.length ? `<h3 class="sub-title">مرتجعات جزئية</h3>${table(['التاريخ', 'الأصناف', '#القيمة'], pr.list.map((r) => `<tr>${td(fmtDate(r.date))}${td(r.lines.map((x) => `${esc(productLabel(productById(sale.items[x.line].productId)))} × ${fmt(x.qty)}`).join('<br>'))}${tdn(fmt(r.value))}</tr>`), { foot: `<tr><td colspan="2">المطلوب بعد المرتجع</td>${tdn(fmt(p.total - pr.value - num(sale.exchangeCredit)) + ' ج.م')}</tr>` })}` : ''; })()}
+        ${sale.exchangeOf ? `<p class="muted">استبدال من فاتورة ${esc(invoiceNo(DB.find('sales', sale.exchangeOf) || {}))} — رصيد المرتجع ${fmt(sale.exchangeCredit)} ج.م بيتخصم من التحصيل</p>` : ''}
+        ${sale.status === 'lost' ? `<p class="bad-text">الشحنة ضاعت مع شركة الشحن يوم ${fmtDate(sale.lostDate)}${num(sale.compensation) ? ` — التعويض ${fmt(sale.compensation)} ج.م` : ''}</p>` : ''}
         ${sale.notes ? `<p>${esc(sale.notes)}</p>` : ''}
       </article>
       <div class="internal"><span>داخلي — لا يظهر للعميل:</span> ${promo
         ? `يُحمَّل على مصروف الإعلانات <b class="bad-text">${fmt(Acc.BOOKED.has(sale.status) ? p.promoCost : promoTotal + num(sale.courierFee))} ج.م</b>${Acc.BOOKED.has(sale.status) ? '' : ' (تقديري — يتسجل لما تخرج الفاتورة مع الشحن)'}`
-        : `التكلفة ${fmt(p.cogs)} · شحن علينا ${fmt(sale.courierFee)} · الربح <b class="${p.profit < 0 ? 'bad-text' : 'good-text'}">${fmt(p.profit)} ج.م</b>`}${sale.campaignId ? ` · الحملة: ${esc(nameOf('campaigns', sale.campaignId))}` : ''}</div>`;
+        : `التكلفة ${fmt(p.cogs)} · شحن علينا ${fmt(sale.courierFee)}${p.payFee ? ` · عمولة الدفع ${fmt(p.payFee)}` : ''}${p.commission ? ` · عمولة المؤثر ${fmt(p.commission)}` : ''}${p.samples ? ` · عينات ${fmt(p.samples)}` : ''} · الربح <b class="${p.profit < 0 ? 'bad-text' : 'good-text'}">${fmt(p.profit)} ج.م</b>`}${sale.campaignId ? ` · الحملة: ${esc(nameOf('campaigns', sale.campaignId))}` : ''}</div>`;
     UI.modal({ title: esc(title), body, wide: true,
       tools: { title, target: '.invoice', invoice: true, file: `invoice-${invoiceNo(sale)}` },
-      footer: `${waButton(sale, 'btn btn-wa') || '<span class="muted small-note">سجّل موبايل العميل لإرسال الفاتورة على واتساب</span>'}<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
+      footer: `${waButton(sale, 'btn btn-wa') || '<span class="muted small-note">سجّل موبايل العميل لإرسال الفاتورة على واتساب</span>'}${!promo && sale.status === 'delivered' && !RULES.isReconciled(s, sale.id) ? '<button type="button" class="btn" id="ret-btn">مرتجع جزئي / استبدال</button>' : ''}<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
       onOpen(f) {
         f.querySelector('#edit-btn').addEventListener('click', () => saleForm(sale));
+        const rb = f.querySelector('#ret-btn'); if (rb) rb.addEventListener('click', () => partialReturnForm(sale));
+      } });
+  }
+
+  // مرتجع جزئي لأصناف من طلب اتسلم، واختياري استبدالها بأصناف تانية في طلب جديد
+  function partialReturnForm(sale) {
+    const s = S();
+    const pr = Acc.partialReturns(sale);
+    const prepaid = sale.payment !== 'cod';
+    const rows = sale.items.map((it, i) => `<tr><td>${esc(productLabel(productById(it.productId)))}</td><td class="num">${fmt(it.qty)}</td><td class="num">${fmt(pr.qtyBack[i])}</td><td><input class="r-qty" data-line="${i}" type="number" min="0" max="${pr.remaining[i]}" step="1" value="0" aria-label="الكمية المرتجعة"></td><td class="num">${fmt(it.price)}</td></tr>`).join('');
+    UI.modal({ title: `مرتجع جزئي — فاتورة ${esc(invoiceNo(sale))}`, wide: true, submit: 'تسجيل المرتجع',
+      body: `<p class="muted">حدد الكمية اللي رجعت من كل صنف. قيمتها بتتحسب بسعر البيع بعد توزيع الخصم، والقطع بترجع المخزون بتكلفتها.</p>
+        <div class="table-wrap"><table class="lines"><thead><tr><th>الصنف</th><th class="num">المباع</th><th class="num">رجع قبل كده</th><th>بيرجع دلوقتي</th><th class="num">السعر</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="form-grid">
+          ${UI.field('تاريخ المرتجع', UI.input('date', today() < sale.date ? sale.date : today(), 'type="date" required'), { req: true })}
+          ${UI.field('مصاريف المرتجع علينا', UI.input('fee', 0, 'type="number" min="0" step="0.01"'), { hint: 'اللي شركة الشحن هتخصمه' })}
+          ${prepaid ? UI.field('الفلوس ترجع للعميل من', UI.select('refundAccountId', accountOptions(), sale.payment)) : ''}
+          ${UI.field('ملاحظات', UI.input('note', ''))}
+        </div>
+        <label class="check"><input type="checkbox" name="exchange" id="f-exchange"> <b>استبدال:</b> العميل هياخد أصناف تانية بدالها (هيتعمل طلب جديد، وقيمة المرتجع تتخصم من اللي المندوب هيحصّله)</label>
+        <div id="ex-box" hidden>
+          <div class="table-wrap"><table class="lines"><thead><tr><th>الصنف البديل</th><th>الكمية</th><th class="col-price">السعر</th><th class="col-cost num">التكلفة</th><th class="num">الإجمالي</th><th></th></tr></thead><tbody id="lines">${saleLineRow({ qty: 1 })}</tbody></table></div>
+          <button type="button" class="btn btn-small" id="add-line">+ صنف</button>
+          <div class="form-grid">${UI.field('تكلفة شحن البديل علينا', UI.input('exFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'))}</div>
+        </div>
+        <div class="summary" id="ret-sum"></div>`,
+      onOpen(f) {
+        const lines = f.querySelector('#lines');
+        const t = Acc.saleTotals(sale), factor = t.gross ? t.net / t.gross : 1;
+        const recalc = () => {
+          const value = [...f.querySelectorAll('.r-qty')].reduce((a, i) => a + num(i.value) * num(sale.items[i.dataset.line].price) * factor, 0);
+          let ex = 0;
+          lines.querySelectorAll('.line').forEach((r) => { const q = num(r.querySelector('.l-qty').value), p = num(r.querySelector('.l-price').value); ex += q * p; r.querySelector('.l-total').textContent = fmt(q * p); const st = J().inventory.products[r.querySelector('.l-product').value]; r.querySelector('.l-unitcost').textContent = st ? fmt(st.avgCost) : '—'; r.querySelector('.l-stock').textContent = st ? `متاح: ${fmt(st.available)}` : ''; });
+          const exchange = f.exchange.checked;
+          f.querySelector('#ex-box').hidden = !exchange;
+          f.querySelector('#ret-sum').innerHTML = `<div class="strong"><span>قيمة المرتجع</span><b>${fmt(value)} ج.م</b></div>${exchange ? `<div><span>قيمة البديل</span><b>${fmt(ex)}</b></div><div class="strong"><span>${ex - value >= 0 ? 'العميل يدفع فرق' : 'نرجّع للعميل فرق'}</span><b>${fmt(Math.abs(ex - value))} ج.م</b></div>` : `<div><span>${prepaid ? 'هيترجع للعميل' : 'المندوب هيحصّل أقل بـ'}</span><b>${fmt(value)}</b></div>`}`;
+        };
+        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
+        lines.addEventListener('change', (e) => { if (e.target.classList.contains('l-product')) { const p = productById(e.target.value); const pr0 = e.target.closest('tr').querySelector('.l-price'); if (p && !num(pr0.value)) pr0.value = p.price || ''; } recalc(); });
+        lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
+        f.addEventListener('input', recalc); f.addEventListener('change', recalc);
+        recalc();
+      },
+      onSubmit(f, fd) {
+        const ret = { id: uid(), date: fd.get('date'), fee: num(fd.get('fee')), note: fd.get('note'), items: [...f.querySelectorAll('.r-qty')].map((i) => ({ line: +i.dataset.line, qty: num(i.value) })).filter((x) => x.qty > 0) };
+        if (prepaid) ret.refundAccountId = fd.get('refundAccountId');
+        const err = RULES.partialReturnError(sale, ret);
+        if (err) return fail(err);
+        if (!dateOk(ret.date, 'تاريخ المرتجع')) return false;
+        const updated = { ...sale, returns: [...(sale.returns || []), ret] };
+        let exSale = null;
+        if (fd.get('exchange')) {
+          const items = [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), price: num(r.querySelector('.l-price').value) })).filter((l) => l.productId && l.qty > 0);
+          if (!items.length) return fail('اختار الصنف البديل');
+          ret.refundTo = 'courier'; ret.courierId = sale.courierId;
+          const value = Acc.partialReturns(updated).list.slice(-1)[0].value;
+          exSale = { id: uid(), no: RULES.nextFreeInvoiceNo(S()), kind: 'sale', date: ret.date, customerId: sale.customerId, channel: sale.channel, status: 'pending', items: RULES.mergeLines(items).items, discount: 0, shippingCharged: 0, payment: 'cod', courierId: sale.courierId, courierFee: num(fd.get('exFee')), returnFee: 0, campaignId: sale.campaignId || '', trackingNo: '', notes: `استبدال من فاتورة ${invoiceNo(sale)}`, exchangeOf: sale.id, exchangeCredit: value, samples: [] };
+          const stock = RULES.checkSaleStock(S(), J(), exSale, null);
+          if (stock.errors.length) return fail(stockMsg(stock.errors, 'pending'));
+          exSale.preorder = stock.preorder;
+        }
+        if (!cashOk(f, RULES.withDoc(S(), 'sales', updated))) return false;
+        DB.upsert('sales', updated);
+        if (exSale) { S().settings.nextInvoiceNo = exSale.no + 1; DB.upsert('sales', exSale); UI.toast(`تم تسجيل المرتجع وطلب البديل ${invoiceNo(exSale)}`); }
+        else UI.toast('تم تسجيل المرتجع الجزئي');
+        render();
       } });
   }
 
@@ -642,9 +795,9 @@
     const adj = [...s.adjustments].sort((a, b) => (a.date < b.date ? 1 : -1)).map((a) => `<tr>${td(fmtDate(a.date))}${td(esc(productLabel(productById(a.productId))))}${td(Acc.ADJ_REASONS[a.reason] || a.reason)}${tdn(fmt(a.qty))}${tdn(fmt(J().inventory.adjCost[a.id] || 0))}${td(esc(a.notes || ''))}${actions(btn('حذف', 'delAdjustment', a.id, 'danger'))}</tr>`);
     const dec = [...s.decants].sort((a, b) => (a.date < b.date ? 1 : -1)).map((d) => {
       const c = J().inventory.decantCost[d.id] || { total: 0, costPerMl: 0 };
-      return `<tr>${td(fmtDate(d.date))}${td(`${d.kind === 'unbox' ? UI.pill('فك بوكس', 'info') + ' ' : ''}${esc(productLabel(productById(d.sourceProductId)))}`)}${tdn(fmt(d.sourceQty))}${td(d.outputs.map((o) => `${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`).join('<br>'))}${tdn(fmt(d.materialsCost))}${tdn(fmt(c.total))}${tdn(d.kind === 'unbox' ? '—' : fmt(c.costPerMl))}${actions(btn('التفاصيل', 'viewDecant', d.id), btn('حذف', 'delDecant', d.id, 'danger'))}</tr>`;
+      return `<tr>${td(fmtDate(d.date))}${td(`${d.kind === 'unbox' ? UI.pill('فك بوكس', 'info') + ' ' : d.kind === 'assemble' ? UI.pill('تجميع', 'good') + ' ' : ''}${esc(productLabel(productById(d.sourceProductId)))}`)}${tdn(fmt(d.sourceQty))}${td((d.kind === 'assemble' ? (d.inputs || []).map((o) => `− ${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`) : d.outputs.map((o) => `${esc(productLabel(productById(o.productId)))} × ${fmt(o.qty)}`)).join('<br>'))}${tdn(fmt(d.materialsCost))}${tdn(fmt(c.total))}${tdn(d.kind === 'unbox' || d.kind === 'assemble' ? '—' : fmt(c.costPerMl))}${actions(btn('التفاصيل', 'viewDecant', d.id), btn('حذف', 'delDecant', d.id, 'danger'))}</tr>`;
     });
-    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newDecant">تقسيم عبوة (ديكانت)</button><button class="btn" data-action="unbox">فك بوكس</button><button class="btn" data-action="barcodeLabels">طباعة باركود</button><button class="btn" data-action="stockCount">جرد بالباركود</button><button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
+    return `${header('المنتجات والمخزون', 'الرصيد والتكلفة تُحسب تلقائيًا من الشحنات المستلمة والمبيعات والمرتجعات بطريقة المتوسط المرجح.', '<button class="btn" data-action="newDecant">تقسيم عبوة (ديكانت)</button><button class="btn" data-action="unbox">فك بوكس</button><button class="btn" data-action="assemble">تجميع بوكس</button><button class="btn" data-action="barcodeLabels">طباعة باركود</button><button class="btn" data-action="stockCount">جرد بالباركود</button><button class="btn" data-action="newAdjustment">تسوية مخزون</button><button class="btn btn-primary" data-action="newProduct">+ منتج جديد</button>')}
       <section class="kpis kpis-3">${kpi('قيمة المخزون بالتكلفة', money0(totals.value))}${kpi('قيمته بسعر البيع', money0(totals.retail))}${kpi('ربح متوقع في المخزون', money0(totals.retail - totals.value), totals.retail ? `هامش ${pct((totals.retail - totals.value) / totals.retail)}` : '')}</section>
       ${table(['الكود', 'المنتج', 'الحجم', 'الفئة', '#سعر البيع', '#الرصيد', '#محجوز', '#متاح', '#متوسط التكلفة', '#قيمة المخزون', '#الهامش', 'الحالة', ''], rows, { empty: 'لا توجد منتجات بعد' })}
       <h2 class="section-title">تسويات المخزون (افتتاحي، تالف، تسترات، هدايا، فروق جرد)</h2>
@@ -821,8 +974,8 @@
     const isNew = !c;
     c = c || { id: uid(), name: '', phone: '', city: '', address: '' };
     UI.modal({ title: isNew ? 'عميل جديد' : 'تعديل العميل',
-      body: `<div class="form-grid">${UI.field('الاسم', UI.input('name', c.name, 'required'), { req: true })}${UI.field('الموبايل', UI.input('phone', c.phone, 'inputmode="tel"'))}${UI.field('المحافظة / المدينة', UI.input('city', c.city))}${UI.field('العنوان', UI.input('address', c.address))}</div>`,
-      onSubmit(f, fd) { DB.upsert('customers', { ...c, name: fd.get('name').trim(), phone: fd.get('phone').trim(), city: fd.get('city').trim(), address: fd.get('address').trim() }); UI.toast('تم حفظ العميل'); render(); } });
+      body: `<div class="form-grid">${UI.field('الاسم', UI.input('name', c.name, 'required'), { req: true })}${UI.field('الموبايل', UI.input('phone', c.phone, 'inputmode="tel"'))}${UI.field('المحافظة', UI.select('city', govOfOptions(c.city), c.city || ''), { hint: 'بتحدد سعر الشحن تلقائي' })}${UI.field('العنوان', UI.input('address', c.address))}</div>`,
+      onSubmit(f, fd) { DB.upsert('customers', { ...c, name: fd.get('name').trim(), phone: fd.get('phone').trim(), city: fd.get('city'), address: fd.get('address').trim() }); UI.toast('تم حفظ العميل'); render(); } });
   }
 
   // =====================================================================
@@ -905,14 +1058,35 @@
     list.forEach((e) => (byCat[e.category] = (byCat[e.category] || 0) + num(e.amount)));
     const total = list.reduce((a, e) => a + num(e.amount), 0);
     const max = Math.max(1, ...Object.values(byCat));
-    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+    const due = OPS.dueRecurring(s, today());
+    const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
+    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+      ${due.length ? `<section class="panel due-panel"><h2 class="section-title">مصروفات ثابتة مستحقة (${due.length}) <button class="btn btn-small btn-primary" data-action="postAllRecurring">تسجيل الكل</button></h2><ul class="list">${due.map((d, i) => `<li><span>${esc((Acc.COA_MAP[d.category] || {}).name || '')} — ${esc(d.notes)} · ${monthLong(d.period)}</span><b>${fmt(d.amount)} ج.م</b><button class="link-btn" data-action="postRecurring" data-id="${i}">تسجيل</button></li>`).join('')}</ul></section>` : ''}
       <section class="grid-2 exp-top">
         <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(total)}</span></h2>
           ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
+      ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
       ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
   }
+  function recurringForm(r) {
+    const s = S(); const isNew = !r;
+    r = r || { id: uid(), category: '5600', amount: '', accountId: (s.accounts[0] || {}).id, day: 1, startMonth: today().slice(0, 7), notes: '', active: true };
+    UI.modal({ title: isNew ? 'مصروف ثابت شهري' : 'تعديل المصروف الثابت',
+      body: `<p class="muted">زي الإيجار والرواتب والاشتراكات: كل شهر لما ييجي ميعاده هيظهرلك «مستحق» وتسجله بضغطة.</p><div class="form-grid">${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), r.category))}${UI.field('المبلغ', UI.input('amount', r.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('يُدفع من', UI.select('accountId', accountOptions(), r.accountId))}${UI.field('يوم الاستحقاق في الشهر', UI.input('day', r.day, 'type="number" min="1" max="31" step="1"'))}${UI.field('يبدأ من شهر', UI.input('startMonth', r.startMonth, 'type="month" required'), { req: true })}${UI.field('البيان', UI.input('notes', r.notes, 'placeholder="إيجار المخزن، مرتب…"'))}${UI.field('الحالة', `<label class="check"><input type="checkbox" name="active" ${r.active !== false ? 'checked' : ''}> شغال</label>`)}</div>`,
+      onSubmit(f, fd) {
+        if (!(num(fd.get('amount')) > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!/^\d{4}-\d{2}$/.test(fd.get('startMonth'))) return fail('اختار شهر البداية');
+        DB.upsert('recurring', { ...r, category: fd.get('category'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), day: Math.min(31, Math.max(1, num(fd.get('day')) || 1)), startMonth: fd.get('startMonth'), notes: fd.get('notes').trim(), active: !!fd.get('active') });
+        UI.toast('تم الحفظ'); render();
+      } });
+  }
+  function postRecurring(list) {
+    list.forEach((d) => { if (!RULES.beforeStart(S(), d.date)) S().expenses.push({ id: uid(), date: d.date, category: d.category, amount: d.amount, accountId: d.accountId, notes: d.notes, recurringId: d.recurringId, period: d.period }); });
+    DB.save(); UI.toast(`تم تسجيل ${list.length} مصروف`); render();
+  }
+
   function expenseForm(e) {
     const s = S(); const isNew = !e;
     e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', campaignId: '' };
@@ -1015,6 +1189,11 @@
           ${UI.field('قبل ميعاد سداد المورد', UI.input('al_dueDays', st.alerts.dueDays, 'type="number" min="0"'))}
           ${UI.field('منتج ما اتباعش (ركود)', UI.input('al_stagnantDays', st.alerts.stagnantDays, 'type="number" min="7"'))}
         </div>
+        <h2 class="section-title">عينة هدية مع كل طلب</h2>
+        <div class="form-grid">
+          ${UI.field('العينة الافتراضية', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...s.products.map((p) => ({ v: p.id, l: productLabel(p) }))], st.sampleProductId || ''), { hint: 'بتتحط لوحدها في كل طلب جديد وتقدر تشيلها' })}
+          ${UI.field('العدد', UI.input('sampleQty', st.sampleQty || 1, 'type="number" min="1" step="1"'))}
+        </div>
         <h2 class="section-title">واتساب</h2>
         <div class="form-grid">
           ${UI.field('سطر في آخر رسالة الفاتورة', UI.input('waFooter', st.waFooter || ''), { cls: 'span-2', hint: 'مثال: شكرًا لطلبك — تابعنا على إنستجرام' })}
@@ -1023,10 +1202,10 @@
       </form>
       <section class="grid-2">
         <div class="panel"><h2 class="section-title">الخزائن والحسابات</h2>
-          ${table(['الحساب', 'النوع', '#رصيد افتتاحي', ''], s.accounts.map((a) => `<tr>${td(esc(a.name))}${td(ACCOUNT_TYPES[a.type] || '')}${tdn(fmt(a.opening))}${actions(btn('تعديل', 'editAccount', a.id), btn('حذف', 'delAccount', a.id, 'danger'))}</tr>`))}
+          ${table(['الحساب', 'النوع', '#رصيد افتتاحي', 'عمولة التحصيل', ''], s.accounts.map((a) => `<tr>${td(esc(a.name))}${td(ACCOUNT_TYPES[a.type] || '')}${tdn(fmt(a.opening))}${td(num(a.feePct) || num(a.feeFixed) ? `${fmt(a.feePct)}٪${num(a.feeFixed) ? ' + ' + fmt(a.feeFixed) : ''}` : '—')}${actions(btn('تعديل', 'editAccount', a.id), btn('حذف', 'delAccount', a.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newAccount">+ حساب</button></div>
         <div class="panel"><h2 class="section-title">شركات الشحن</h2>
-          ${table(['الشركة', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
+          ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
       <section class="panel">
@@ -1057,13 +1236,27 @@
   function accountForm(a) {
     const isNew = !a; a = a || { id: uid(), name: '', type: 'cash', opening: 0 };
     UI.modal({ title: isNew ? 'حساب جديد' : 'تعديل الحساب',
-      body: `<div class="form-grid">${UI.field('اسم الحساب', UI.input('name', a.name, 'required placeholder="بنك مصر، محفظة أورانج كاش…"'), { req: true })}${UI.field('النوع', UI.select('type', ACCOUNT_TYPES, a.type))}${UI.field('الرصيد الافتتاحي', UI.input('opening', a.opening, 'type="number" step="0.01"'), { hint: 'الرصيد في تاريخ بداية الحسابات' })}</div>`,
-      onSubmit(f, fd) { DB.upsert('accounts', { ...a, name: fd.get('name').trim(), type: fd.get('type'), opening: num(fd.get('opening')) }); UI.toast('تم حفظ الحساب'); render(); } });
+      body: `<div class="form-grid">${UI.field('اسم الحساب', UI.input('name', a.name, 'required placeholder="بنك مصر، محفظة أورانج كاش…"'), { req: true })}${UI.field('النوع', UI.select('type', ACCOUNT_TYPES, a.type))}${UI.field('الرصيد الافتتاحي', UI.input('opening', a.opening, 'type="number" step="0.01"'), { hint: 'الرصيد في تاريخ بداية الحسابات' })}
+        ${UI.field('عمولة التحصيل ٪', UI.input('feePct', a.feePct || 0, 'type="number" min="0" max="20" step="0.01"'), { hint: 'اللي المحفظة أو بوابة الدفع بتخصمه من كل طلب مدفوع مقدمًا' })}${UI.field('عمولة ثابتة لكل عملية (ج.م)', UI.input('feeFixed', a.feeFixed || 0, 'type="number" min="0" step="0.01"'))}</div>
+        <p class="muted">مثال: Paymob 2.75٪ + 3 ج.م. العمولة بتتحسب على الطلبات الجديدة وتتسجل مصروف «عمولات بنكية».</p>`,
+      onSubmit(f, fd) { DB.upsert('accounts', { ...a, name: fd.get('name').trim(), type: fd.get('type'), opening: num(fd.get('opening')), feePct: num(fd.get('feePct')), feeFixed: num(fd.get('feeFixed')) }); UI.toast('تم حفظ الحساب'); render(); } });
   }
   function courierForm(c) {
     const isNew = !c; c = c || { id: uid(), name: '' };
-    UI.modal({ title: isNew ? 'شركة شحن جديدة' : 'تعديل شركة الشحن', body: UI.field('الاسم', UI.input('name', c.name, 'required'), { req: true }),
-      onSubmit(f, fd) { DB.upsert('couriers', { ...c, name: fd.get('name').trim() }); UI.toast('تم الحفظ'); render(); } });
+    const r = (g) => (g ? (c.rates || {})[g] : c.defaultRate) || {};
+    const v = (x) => (x == null || x === '' ? '' : x);
+    const row = (g) => `<tr data-gov="${esc(g)}"><td>${g ? esc(g) : '<b>أي محافظة تانية</b>'}</td><td><input class="r-fee" type="number" min="0" step="0.01" value="${v(r(g).fee)}" aria-label="تكلفة الشحن علينا"></td><td><input class="r-ret" type="number" min="0" step="0.01" value="${v(r(g).returnFee)}" aria-label="مصاريف المرتجع"></td><td><input class="r-charge" type="number" min="0" step="0.01" value="${v(r(g).charge)}" aria-label="نحصّل من العميل"></td></tr>`;
+    UI.modal({ title: isNew ? 'شركة شحن جديدة' : 'تعديل شركة الشحن', wide: true,
+      body: `${UI.field('الاسم', UI.input('name', c.name, 'required'), { req: true })}
+        <h3 class="sub-title">أسعار الشحن حسب المحافظة</h3>
+        <p class="muted">بتتحط في الطلب لوحدها أول ما تختار العميل وشركة الشحن. سيب الخانة فاضية لو المحافظة بتاخد السعر الافتراضي.</p>
+        <div class="table-wrap rates-wrap"><table class="lines"><thead><tr><th>المحافظة</th><th>الشحن علينا</th><th>مصاريف المرتجع</th><th>نحصّل من العميل</th></tr></thead><tbody>${row('')}${GOVERNORATES.map(row).join('')}</tbody></table></div>`,
+      onSubmit(f, fd) {
+        const read = (tr) => { const x = { fee: tr.querySelector('.r-fee').value, returnFee: tr.querySelector('.r-ret').value, charge: tr.querySelector('.r-charge').value }; return x.fee === '' && x.returnFee === '' && x.charge === '' ? null : { fee: num(x.fee), returnFee: num(x.returnFee), charge: x.charge === '' ? null : num(x.charge) }; };
+        const rates = {}; let def = null;
+        f.querySelectorAll('tr[data-gov]').forEach((tr) => { const x = read(tr); if (!x) return; if (tr.dataset.gov) rates[tr.dataset.gov] = x; else def = x; });
+        DB.upsert('couriers', { ...c, name: fd.get('name').trim(), rates, defaultRate: def }); UI.toast('تم الحفظ'); render();
+      } });
   }
   function importState(text) {
     try {
@@ -1076,7 +1269,7 @@
   // =====================================================================
   // التنبيهات
   // =====================================================================
-  const ALERT_TYPES = { pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
+  const ALERT_TYPES = { recurring: 'مصروفات ثابتة مستحقة', pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
   const alertList = () => OPS.alerts(S(), J(), today(), S().settings.alerts);
   const alertItems = (list) => `<ul class="alert-list">${list.map((a) => `<li class="al-${a.level}"><i aria-hidden="true"></i><div><b>${esc(a.title)}</b><small class="muted">${esc(a.detail)}</small></div>${a.action ? `<button type="button" class="link-btn" data-action="${a.action}" data-id="${esc(a.id || '')}">عرض</button>` : ''}</li>`).join('')}</ul>`;
   let alertFilter = '';
@@ -1145,7 +1338,69 @@
         ${kpi('صافي ربح الحملات', money0(tot.gp - tot.spend), 'بعد البضاعة والشحن والإعلان', tot.gp - tot.spend < 0 ? 'bad' : 'good')}
       </section>
       ${table(['الحملة', 'المنصة', '#الميزانية', '#الإنفاق', '#الطلبات', '#المرتجع', '#المبيعات', '#الربح قبل الإعلان', '#صافي الربح', '#CPA', '#ROAS', ''], body, { empty: 'لا توجد حملات بعد — أضف حملة واربط بيها الطلبات ومصروفات الإعلانات' })}
-      <p class="muted">غير مربوط بحملة في الفترة: ${fmt(unSpend)} ج.م مصروفات إعلانات${unPromo ? ` + ${fmt(unPromo)} ج.م قطع دعاية` : ''} · ${unOrders} طلب. الربح قبل الإعلان = قيمة الطلب − تكلفة البضاعة − مصاريف الشحن والمرتجع.</p>`;
+      <p class="muted">غير مربوط بحملة في الفترة: ${fmt(unSpend)} ج.م مصروفات إعلانات${unPromo ? ` + ${fmt(unPromo)} ج.م قطع دعاية` : ''} · ${unOrders} طلب. الربح قبل الإعلان = قيمة الطلب − تكلفة البضاعة − مصاريف الشحن والمرتجع.</p>
+      ${couponsSection()}`;
+  }
+
+  // ---------- أكواد الخصم والمؤثرين ----------
+  function couponStats() {
+    const j = J(), out = {};
+    S().coupons.forEach((c) => (out[c.id] = { uses: 0, revenue: 0, discount: 0, accrued: 0, paid: 0, balance: 0 }));
+    S().sales.forEach((x) => {
+      if (!x.couponId || !out[x.couponId] || !Acc.BOOKED.has(x.status) || !inPeriod(x.date)) return;
+      const r = out[x.couponId], p = Acc.saleProfit(x, j);
+      r.uses += 1; r.discount += num(x.discount);
+      if (!Acc.REVERSED.has(x.status)) r.revenue += p.keptTotal != null ? p.keptTotal : p.total;
+    });
+    // الرصيد المستحق من الدفاتر (كل الفترات)
+    j.entries.forEach((e) => e.lines.forEach((l) => { if (l.acc !== '2200' || !l.party || !out[l.party.id]) return; const r = out[l.party.id]; r.balance += l.cr - l.dr; if (e.source === 'commission') r.paid += l.dr; else r.accrued += l.cr - l.dr; }));
+    return out;
+  }
+  function couponsSection() {
+    const st = couponStats();
+    const rows = S().coupons.map((c) => { const r = st[c.id]; return `<tr>${td(`<b class="mono">${esc(c.code)}</b>${c.active === false ? ' ' + UI.pill('متوقف', 'mute') : c.validTo && c.validTo < today() ? ' ' + UI.pill('انتهى', 'mute') : ''}`)}${td(esc(c.influencer || '—'))}${td(`${c.type === 'fixed' ? fmt(c.value) + ' ج.م' : fmt(c.value) + '٪'}`)}${td(num(c.commission) ? `${c.commissionType === 'fixed' ? fmt(c.commission) + ' ج.م للطلب' : fmt(c.commission) + '٪ من الصافي'}` : '—')}${tdn(`${r.uses}${num(c.maxUses) ? ' / ' + c.maxUses : ''}`)}${tdn(fmt(r.revenue))}${tdn(fmt(r.discount))}${tdn(fmt(r.accrued))}${tdn(fmt(r.paid))}${tdn(`<b class="${r.balance > 0.005 ? 'warn-text' : ''}">${fmt(r.balance)}</b>`)}${actions(r.balance > 0.005 ? btn('سداد العمولة', 'payCommission', c.id) : '', btn('تعديل', 'editCoupon', c.id), btn('حذف', 'delCoupon', c.id, 'danger'))}</tr>`; });
+    return `<h2 class="section-title">أكواد الخصم والمؤثرين <button class="btn btn-small" data-action="newCoupon">+ كود جديد</button></h2>
+      ${table(['الكود', 'المؤثر / العرض', 'الخصم', 'العمولة', '#الاستخدام في الفترة', '#المبيعات', '#خصومات', '#عمولات مستحقة (كل الفترات)', '#اتدفع', '#الباقي', ''], rows, { empty: 'مفيش أكواد — اعمل كود لكل مؤثر عشان تعرف جاب كام طلب وتحسب عمولته' })}
+      <p class="muted">العمولة بتتسجل مصروف إعلانات على كل طلب خرج بالكود، وبتتلغي لو الطلب رجع. الباقي بيظهر في الميزانية «عمولات مستحقة للمؤثرين».</p>`;
+  }
+  function couponForm(c) {
+    const isNew = !c;
+    c = c || { id: uid(), code: '', influencer: '', phone: '', type: 'percent', value: 10, commissionType: 'percent', commission: 10, campaignId: '', validTo: '', maxUses: '', active: true };
+    UI.modal({ title: isNew ? 'كود خصم جديد' : 'تعديل الكود',
+      body: `<div class="form-grid">
+        ${UI.field('الكود', UI.input('code', c.code, 'required dir="ltr" placeholder="MARWA10"'), { req: true, hint: 'حروف وأرقام إنجليزي' })}
+        ${UI.field('المؤثر / اسم العرض', UI.input('influencer', c.influencer))}
+        ${UI.field('موبايل المؤثر', UI.input('phone', c.phone, 'inputmode="tel"'))}
+        ${UI.field('نوع الخصم', UI.select('type', { percent: 'نسبة ٪', fixed: 'مبلغ ثابت' }, c.type))}
+        ${UI.field('قيمة الخصم', UI.input('value', c.value, 'type="number" min="0" step="0.01"'))}
+        ${UI.field('نوع العمولة', UI.select('commissionType', { percent: 'نسبة ٪ من صافي الطلب', fixed: 'مبلغ ثابت لكل طلب' }, c.commissionType))}
+        ${UI.field('قيمة العمولة', UI.input('commission', c.commission, 'type="number" min="0" step="0.01"'), { hint: 'صفر لو من غير عمولة' })}
+        ${UI.field('الحملة', UI.select('campaignId', campaignOptions(), c.campaignId || ''))}
+        ${UI.field('ينتهي يوم', UI.input('validTo', c.validTo, 'type="date"'))}
+        ${UI.field('أقصى عدد استخدام', UI.input('maxUses', c.maxUses, 'type="number" min="0" step="1"'), { hint: 'فاضي = مفتوح' })}
+        ${UI.field('الحالة', `<label class="check"><input type="checkbox" name="active" ${c.active !== false ? 'checked' : ''}> شغال</label>`)}
+      </div>`,
+      onSubmit(f, fd) {
+        const code = fd.get('code').trim().toUpperCase();
+        if (!/^[A-Z0-9_-]{2,30}$/.test(code)) return fail('الكود لازم يكون حروف وأرقام إنجليزي (من 2 لـ 30)');
+        if (S().coupons.some((x) => x.id !== c.id && String(x.code).toUpperCase() === code)) return fail('الكود ده موجود قبل كده');
+        if (fd.get('type') === 'percent' && num(fd.get('value')) > 100) return fail('نسبة الخصم مينفعش تزيد عن 100٪');
+        DB.upsert('coupons', { ...c, code, influencer: fd.get('influencer').trim(), phone: fd.get('phone').trim(), type: fd.get('type'), value: num(fd.get('value')), commissionType: fd.get('commissionType'), commission: num(fd.get('commission')), campaignId: fd.get('campaignId'), validTo: fd.get('validTo'), maxUses: fd.get('maxUses') === '' ? '' : num(fd.get('maxUses')), active: !!fd.get('active') });
+        UI.toast('تم حفظ الكود'); render();
+      } });
+  }
+  function commissionPayForm(c) {
+    const bal = Acc.round2(couponStats()[c.id].balance);
+    const p = { id: uid(), date: today(), couponId: c.id, amount: bal, accountId: (S().accounts[0] || {}).id, notes: '' };
+    UI.modal({ title: `سداد عمولة ${esc(c.influencer || c.code)}`,
+      body: `<p class="muted">المستحق ليه دلوقتي: <b>${fmt(bal)} ج.م</b></p><div class="form-grid">${UI.field('التاريخ', UI.input('date', p.date, 'type="date" required'), { req: true })}${UI.field('المبلغ', UI.input('amount', p.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('من حساب', UI.select('accountId', accountOptions(), p.accountId))}${UI.field('ملاحظات', UI.input('notes', ''))}</div>`,
+      onSubmit(f, fd) {
+        const obj = { ...p, date: fd.get('date'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), notes: fd.get('notes') };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (obj.amount > bal + 0.01) return fail(`المبلغ أكبر من المستحق (${fmt(bal)})`);
+        if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'commissionPayments', obj))) return false;
+        DB.upsert('commissionPayments', obj); UI.toast('تم تسجيل السداد'); render();
+      } });
   }
   function campaignForm(c) {
     const isNew = !c;
@@ -1429,6 +1684,60 @@
         UI.toast(`تم تقسيم ${q} عبوة إلى ${rows.reduce((a, r) => a + r.qty, 0)} ديكانت`); render();
       } });
   }
+  // تجميع بوكس من قطع موجودة (عكس الفك): القطع تخرج والبوكس يدخل بمجموع تكلفتها + التغليف
+  function assembleForm() {
+    const s = S(), inv = J().inventory.products;
+    if (!s.products.length) { UI.toast('أضف المنتجات الأول', 'bad'); return; }
+    const boxes = [...s.products.filter((p) => p.boxItems && p.boxItems.length), ...s.products.filter((p) => !(p.boxItems && p.boxItems.length))];
+    const pieceRow = (it = {}) => `<tr class="line"><td>${UI.select('u-product', productOptions(), it.productId || '', 'class="u-product" aria-label="القطعة"')}<small class="l-stock muted"></small></td><td><input class="u-qty" type="number" min="1" step="1" value="${it.qty || 1}" aria-label="العدد في البوكس"></td><td class="num u-cost">0</td><td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
+    const rowsFor = (box) => (box.boxItems && box.boxItems.length ? box.boxItems : [{}, {}, {}]).map(pieceRow).join('');
+    UI.modal({ title: 'تجميع بوكسات من قطع', wide: true, submit: 'تجميع',
+      body: `<p class="muted">للمواسم والهدايا: القطع بتخرج من المخزون بمتوسط تكلفتها، والبوكس بيدخل بمجموع تكلفتها + تكلفة العلبة والتغليف.</p>
+        <div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', today(), 'type="date" required'), { req: true })}
+          ${UI.field('البوكس (منتج)', UI.select('sourceProductId', boxes.map((p) => ({ v: p.id, l: productLabel(p) })), boxes[0].id), { hint: 'لو البوكس مش موجود أضفه كمنتج الأول' })}
+          ${UI.field('عدد البوكسات', UI.input('sourceQty', 1, 'type="number" min="1" step="1" required'), { req: true })}
+          ${UI.field('تكلفة العلب والتغليف (للكل)', UI.input('materialsCost', 0, 'type="number" min="0" step="0.01"'))}
+          ${UI.field('دُفعت من', UI.select('accountId', accountOptions(), (s.accounts[0] || {}).id))}
+          ${UI.field('ملاحظات', UI.input('notes', ''))}
+        </div>
+        <h3 class="sub-title">قطع البوكس الواحد</h3>
+        <div class="table-wrap"><table class="lines"><thead><tr><th>القطعة</th><th>العدد في البوكس</th><th class="num">تكلفتها</th><th></th></tr></thead><tbody id="pieces">${rowsFor(boxes[0])}</tbody></table></div>
+        <button type="button" class="btn btn-small" id="add-piece">+ قطعة</button>
+        <label class="check"><input type="checkbox" name="remember" checked> احفظ القطع دي للبوكس ده</label>
+        <div class="summary" id="as-sum"></div>`,
+      onOpen(f) {
+        const body = f.querySelector('#pieces');
+        const recalc = () => {
+          const n = num(f.sourceQty.value) || 0;
+          let unit = 0;
+          body.querySelectorAll('.line').forEach((r) => { const st = inv[r.querySelector('.u-product').value]; const q = num(r.querySelector('.u-qty').value); const c = st ? st.avgCost * q : 0; unit += c; r.querySelector('.u-cost').textContent = fmt(c); r.querySelector('.l-stock').textContent = st ? `متاح ${fmt(st.available)} — محتاج ${fmt(q * n)}` : ''; });
+          const mat = num(f.materialsCost.value);
+          f.querySelector('#as-sum').innerHTML = `<div><span>تكلفة قطع البوكس الواحد</span><b>${fmt(unit)}</b></div><div><span>تغليف للبوكس</span><b>${fmt(n ? mat / n : 0)}</b></div><div class="strong"><span>تكلفة البوكس</span><b>${fmt(unit + (n ? mat / n : 0))} ج.م</b></div><div><span>سعر بيع البوكس</span><b>${fmt((productById(f.sourceProductId.value) || {}).price)}</b></div>`;
+        };
+        f.sourceProductId.addEventListener('change', () => { body.innerHTML = rowsFor(productById(f.sourceProductId.value)); recalc(); });
+        f.querySelector('#add-piece').addEventListener('click', () => { body.insertAdjacentHTML('beforeend', pieceRow()); recalc(); });
+        body.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && body.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
+        f.addEventListener('input', recalc); f.addEventListener('change', recalc);
+        recalc();
+      },
+      onSubmit(f, fd) {
+        const box = productById(fd.get('sourceProductId'));
+        const n = num(fd.get('sourceQty'));
+        const pieces = RULES.mergeLines([...f.querySelectorAll('#pieces .line')].map((r) => ({ productId: r.querySelector('.u-product').value, qty: num(r.querySelector('.u-qty').value), price: 0 })).filter((x) => x.productId && x.qty > 0)).items.map(({ productId, qty }) => ({ productId, qty }));
+        if (!pieces.length) return fail('اختار قطع البوكس');
+        if (pieces.some((x) => x.productId === box.id)) return fail('القطعة مينفعش تبقى نفس البوكس');
+        if (!dateOk(fd.get('date'))) return false;
+        const short = pieces.map((x) => RULES.checkStockOut(J(), x.productId, x.qty * n)).filter(Boolean);
+        if (short.length) return fail(stockMsg(short));
+        const obj = { id: uid(), kind: 'assemble', date: fd.get('date'), sourceProductId: box.id, sourceQty: n, inputs: pieces.map((x) => ({ productId: x.productId, qty: x.qty * n })), outputs: [], materialsCost: num(fd.get('materialsCost')), accountId: fd.get('accountId'), notes: fd.get('notes') };
+        if (!cashOk(f, RULES.withDoc(S(), 'decants', obj))) return false;
+        if (fd.get('remember')) box.boxItems = pieces;
+        DB.upsert('decants', obj);
+        UI.toast(`تم تجميع ${n} بوكس`); render();
+      } });
+  }
+
   // فك بوكس: البوكس يخرج من المخزون وقطعه تدخل، وتكلفته تتوزع على القطع بنسبة سعر بيعها
   function unboxForm() {
     const s = S(), inv = J().inventory.products;
@@ -1489,6 +1798,12 @@
 
   function viewDecant(d) {
     const c = J().inventory.decantCost[d.id] || { lines: [], sourceCost: 0, materials: 0, total: 0, costPerMl: 0 };
+    if (d.kind === 'assemble') {
+      UI.modal({ title: `تجميع ${esc(productLabel(productById(d.sourceProductId)))}`, wide: true, tools: { title: `تجميع بوكس — ${productLabel(productById(d.sourceProductId))}`, subtitle: fmtDate(d.date), file: 'assemble' },
+        body: `<div class="summary"><div><span>القطع</span><b>${fmt(c.sourceCost)}</b></div><div><span>التغليف</span><b>${fmt(c.materials)}</b></div><div class="strong"><span>تكلفة ${fmt(d.sourceQty)} بوكس</span><b>${fmt(c.total)}</b></div><div><span>البوكس الواحد</span><b>${fmt(num(d.sourceQty) ? c.total / num(d.sourceQty) : 0)}</b></div></div>
+          ${table(['القطعة', '#العدد', '#التكلفة'], (d.inputs || []).map((o, i) => `<tr>${td(esc(productLabel(productById(o.productId))))}${tdn(fmt(o.qty))}${tdn(fmt(c.lines[i] || 0))}</tr>`))}` });
+      return;
+    }
     const ub = d.kind === 'unbox';
     UI.modal({ title: `${ub ? 'فك' : 'تقسيم'} ${esc(productLabel(productById(d.sourceProductId)))}`, wide: true, tools: { title: `${ub ? 'فك بوكس' : 'تقسيم عبوة'} — ${productLabel(productById(d.sourceProductId))}`, subtitle: fmtDate(d.date), file: ub ? 'unbox' : 'decant' },
       body: `<div class="summary">${ub ? `<div class="strong"><span>تكلفة ${fmt(d.sourceQty)} بوكس</span><b>${fmt(c.total)}</b></div><div><span>التوزيع</span><b>بنسبة سعر بيع القطع</b></div>` : `<div><span>تكلفة العطر (${fmt(d.sourceQty)} عبوة)</span><b>${fmt(c.sourceCost)}</b></div><div><span>العبوات الفاضية</span><b>${fmt(c.materials)}</b></div><div class="strong"><span>الإجمالي</span><b>${fmt(c.total)}</b></div><div><span>تكلفة المللي</span><b>${fmt(c.costPerMl)}</b></div>`}</div>
@@ -1694,6 +2009,11 @@
     partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
     newDistribution: distributionForm, delDistribution: (id) => del('distributions', id, 'هذا التوزيع'),
     pickAlert: (id) => { alertFilter = id; render(); },
+    newCoupon: () => couponForm(), editCoupon: (id) => couponForm(DB.find('coupons', id)), payCommission: (id) => commissionPayForm(DB.find('coupons', id)),
+    delCoupon: (id) => del('coupons', id, 'هذا الكود', () => used(id, [['sales', (x, i) => x.couponId === i], ['commissionPayments', (x, i) => x.couponId === i]])),
+    assemble: assembleForm,
+    newRecurring: () => recurringForm(), editRecurring: (id) => recurringForm(DB.find('recurring', id)), delRecurring: (id) => del('recurring', id, 'هذا المصروف الثابت'),
+    postRecurring: (i) => postRecurring([OPS.dueRecurring(S(), today())[+i]].filter(Boolean)), postAllRecurring: () => postRecurring(OPS.dueRecurring(S(), today())),
     runAudit: () => { render(); UI.toast('تم الفحص'); },
     goto: (h) => { location.hash = h; },
     goTreasury: (id) => { treasuryAcc = id; period = { preset: 'all', from: '', to: '' }; savePeriod(); location.hash = 'treasury'; render(); },
@@ -1851,6 +2171,7 @@
       st.rates = { SAR: num(fd.get('rate_SAR')), AED: num(fd.get('rate_AED')), USD: num(fd.get('rate_USD')) };
       st.alerts = Object.fromEntries(Object.keys(OPS.ALERT_DEFAULTS).map((k) => [k, String(fd.get('al_' + k)).trim() === '' ? OPS.ALERT_DEFAULTS[k] : Math.max(0, num(fd.get('al_' + k)))]));
       st.waFooter = fd.get('waFooter').trim();
+      st.sampleProductId = fd.get('sampleProductId'); st.sampleQty = num(fd.get('sampleQty')) || 1;
       DB.save(); UI.toast('تم حفظ الإعدادات'); renderBrand(); render();
     });
   }
