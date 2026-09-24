@@ -17,7 +17,7 @@
     return out;
   };
   // حالات تسحب من المخزون: قيد التجهيز (حجز) أو خرجت مع الشحن
-  const CONSUMES = new Set(['pending', 'shipped', 'delivered']);
+  const CONSUMES = new Set(['pending', 'shipped', 'delivered', 'lost']);
 
   // كميات في شحنات لسه ما وصلتش (مطلوبة أو في الطريق)
   function incomingQty(state) {
@@ -33,8 +33,8 @@
   function checkSaleStock(state, journal, sale, before) {
     const res = { errors: [], preorder: false, preorderItems: [] };
     if (!CONSUMES.has(sale.status)) return res;
-    const need = sumItems(sale.items);
-    const back = before && CONSUMES.has(before.status) ? sumItems(before.items) : {};
+    const need = sumItems([...(sale.items || []), ...(sale.samples || [])]);
+    const back = before && CONSUMES.has(before.status) ? sumItems([...(before.items || []), ...(before.samples || [])]) : {};
     const inc = incomingQty(state);
     Object.entries(need).forEach(([pid, qty]) => {
       const available = num((journal.inventory.products[pid] || {}).available) + (back[pid] || 0);
@@ -86,6 +86,17 @@
     return { items: [...map.values()], merged, conflicts };
   }
 
+  // المرتجع الجزئي: الكمية مايصحش تزيد عن اللي اتباع ولسه ما رجعش
+  function partialReturnError(sale, ret) {
+    if (sale.status !== 'delivered') return 'المرتجع الجزئي بيتسجل على طلب «تم التسليم» بس';
+    if (!ret.date || ret.date < sale.date) return 'تاريخ المرتجع قبل تاريخ البيع';
+    const pr = Acc.partialReturns(sale);
+    const bad = (ret.items || []).find((x) => num(x.qty) < 0 || num(x.qty) > pr.remaining[x.line] + EPS);
+    if (bad) return `الكمية المرتجعة أكبر من الباقي في الطلب (${pr.remaining[bad.line]})`;
+    if (!(ret.items || []).some((x) => num(x.qty) > 0)) return 'حدد كمية مرتجعة';
+    return null;
+  }
+
   // 6) الخصم لا يزيد عن قيمة الأصناف
   function discountError(sale) {
     const gross = (sale.items || []).reduce((a, it) => a + num(it.qty) * num(it.price), 0);
@@ -96,6 +107,8 @@
   const beforeStart = (state, date) => !!(date && state.settings.startDate && date < state.settings.startDate);
   function saleDateError(sale) {
     if (sale.status === 'returned' && sale.returnDate && sale.returnDate < sale.date) return 'تاريخ المرتجع قبل تاريخ البيع';
+    if (sale.status === 'lost' && sale.lostDate && sale.lostDate < sale.date) return 'تاريخ ضياع الشحنة قبل تاريخ البيع';
+    if ((sale.returns || []).some((r) => r.date && r.date < sale.date)) return 'تاريخ مرتجع جزئي قبل تاريخ البيع';
     return null;
   }
   function shipmentDateError(sh) {
@@ -117,10 +130,10 @@
 
   // 8) الفواتير الداخلة في تسوية كشف شركة شحن مقفولة ماليًا
   const isReconciled = (state, saleId) => (state.reconciliations || []).some((r) => (r.lines || []).some((l) => l.saleId === saleId));
-  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', trackingNo: 'رقم البوليصة' };
+  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', trackingNo: 'رقم البوليصة', returns: 'المرتجعات الجزئية', samples: 'العينات', commission: 'عمولة المؤثر', payFee: 'عمولة الدفع', compensation: 'التعويض' };
   function lockedSaleChanges(state, before, after) {
     if (!before || !isReconciled(state, before.id)) return [];
-    const norm = (k, v) => (k === 'items' ? JSON.stringify((v || []).map((it) => [it.productId, num(it.qty), num(it.price)])) : ['discount', 'shippingCharged', 'courierFee', 'returnFee'].includes(k) ? num(v) : k === 'kind' ? v || 'sale' : v || '');
+    const norm = (k, v) => (k === 'items' ? JSON.stringify((v || []).map((it) => [it.productId, num(it.qty), num(it.price)])) : k === 'returns' || k === 'samples' ? JSON.stringify(v || []) : ['discount', 'shippingCharged', 'courierFee', 'returnFee', 'commission', 'payFee', 'compensation'].includes(k) ? num(v) : k === 'kind' ? v || 'sale' : v || '');
     return Object.keys(LOCKED).filter((k) => norm(k, before[k]) !== norm(k, after[k])).map((k) => LOCKED[k]);
   }
 
@@ -287,7 +300,7 @@
     return { checks, errors, notes, passed: checks.filter((c) => c.ok).length };
   }
 
-  const api = { audit, cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
+  const api = { audit, partialReturnError, cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RULES = api;
 })(typeof window !== 'undefined' ? window : globalThis);

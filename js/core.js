@@ -6,7 +6,8 @@
   const CURRENCIES = { EGP: 'جنيه مصري', SAR: 'ريال سعودي', AED: 'درهم إماراتي', USD: 'دولار أمريكي' };
   const COUNTRIES = { SA: 'السعودية', AE: 'الإمارات', EG: 'مصر', other: 'أخرى' };
   const CHANNELS = { instagram: 'إنستجرام', facebook: 'فيسبوك', whatsapp: 'واتساب', tiktok: 'تيك توك', website: 'الموقع', store: 'مباشر', other: 'أخرى' };
-  const STATUSES = { pending: 'قيد التجهيز', shipped: 'مع شركة الشحن', delivered: 'تم التسليم', returned: 'مرتجع', cancelled: 'ملغي' };
+  const STATUSES = { pending: 'قيد التجهيز', shipped: 'مع شركة الشحن', delivered: 'تم التسليم', returned: 'مرتجع', lost: 'ضاع مع الشحن', cancelled: 'ملغي' };
+  const GOVERNORATES = ['القاهرة', 'الجيزة', 'الإسكندرية', 'القليوبية', 'الشرقية', 'الدقهلية', 'الغربية', 'المنوفية', 'البحيرة', 'كفر الشيخ', 'دمياط', 'بورسعيد', 'الإسماعيلية', 'السويس', 'الفيوم', 'بني سويف', 'المنيا', 'أسيوط', 'سوهاج', 'قنا', 'الأقصر', 'أسوان', 'البحر الأحمر', 'الوادي الجديد', 'مطروح', 'شمال سيناء', 'جنوب سيناء'];
   const SHIP_STATUSES = { ordered: 'تم الطلب', transit: 'في الطريق', received: 'تم الاستلام', cancelled: 'ملغاة' };
   const ACCOUNT_TYPES = { cash: 'نقدي', bank: 'بنك', wallet: 'محفظة إلكترونية' };
   const GENDERS = { men: 'رجالي', women: 'حريمي', unisex: 'للجنسين' };
@@ -15,7 +16,9 @@
     version: 1,
     demo: false,
     settings: { businessName: 'Florume', startDate: today().slice(0, 8) + '01', rates: { SAR: 13.2, AED: 13.5, USD: 49.5 }, invoicePrefix: 'FL-', nextInvoiceNo: 1001, lowStock: 3,
-      alerts: { pendingDays: 2, shippedDays: 7, settleDays: 14, dueDays: 7, stagnantDays: 60 }, waFooter: 'شكرًا لطلبك من متجرنا 🌸' },
+      alerts: { pendingDays: 2, shippedDays: 7, settleDays: 14, dueDays: 7, stagnantDays: 60 }, waFooter: 'شكرًا لطلبك من متجرنا 🌸',
+      sampleProductId: '', sampleQty: 1, targetMargin: 30, leadDays: 14, safetyDays: 7, coverDays: 30, reorderAfterDays: 75,
+      waReorder: 'أهلًا {name} 🌸 عطرك {product} قرب يخلص؟ نورتنا المرة اللي فاتت، وعندنا ليك عرض خاص على الطلب الجاي 💛' },
     accounts: [
       { id: uid(), name: 'الخزينة (نقدي)', type: 'cash', opening: 0 },
       { id: uid(), name: 'حساب البنك', type: 'bank', opening: 0 },
@@ -26,6 +29,7 @@
     suppliers: [], products: [], customers: [], shipments: [], supplierPayments: [],
     sales: [], settlements: [], expenses: [], transfers: [], equity: [], adjustments: [],
     campaigns: [], partners: [], distributions: [], decants: [], reconciliations: [],
+    coupons: [], commissionPayments: [], recurring: [],
   });
 
   // ---------- أدوات ----------
@@ -45,14 +49,26 @@
     load() {
       let raw = null;
       try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* تخزين غير متاح */ }
-      if (raw) { try { this.state = migrate(JSON.parse(raw)); return 'stored'; } catch (e) { /* ملف تالف */ } }
+      if (raw) { try { this.state = migrate(JSON.parse(raw)); this.commit(); return 'stored'; } catch (e) { /* ملف تالف */ } }
       this.state = demoState();
+      this.commit();
       return 'demo';
     },
+    // آخر نسخة اتحفظت فعلًا: منها بنعرف الحفظ الجاي فيه تعديل ولا حذف، وليها بنرجع لو الباسورد اتلغى
+    commit(text) { this._committed = text || JSON.stringify(this.state); this._lockOn = !!(window.LOCK && LOCK.enabled(this.state.settings && this.state.settings.lock)); },
     save() {
+      if (Gate.check(this)) return true;
       this._journal = null;
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); return true; }
-      catch (e) { UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
+      const ok = this.saveLocal();
+      if (window.CLOUD) window.CLOUD.onSave();
+      return ok;
+    },
+    // نسخة الجهاز (بتفضل موجودة حتى في وضع السحابة عشان الفتح يبقى سريع)
+    saveLocal() {
+      const text = JSON.stringify(this.state);
+      this.commit(text);
+      try { localStorage.setItem(STORAGE_KEY, text); return true; }
+      catch (e) { if (!(window.CLOUD && window.CLOUD.mode === 'cloud')) UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
     },
     get journal() { return this._journal || (this._journal = Acc.buildJournal(this.state)); },
     replace(state) { this.state = migrate(state); this.save(); },
@@ -64,6 +80,42 @@
       this.save();
     },
     remove(list, id) { this.state[list] = this.state[list].filter((x) => x.id !== id); this.save(); },
+  };
+
+
+  // ---------- قفل التعديل والحذف بالباسورد ----------
+  // أي حفظ فيه تعديل أو حذف لسجل موجود (أو تغيير في الإعدادات) بيستنى الباسورد؛ الإضافة الجديدة لأ.
+  // الزراير المعروفة (تعديل/حذف/تغيير الحالة) بتسأل قبل ما تفتح، والحفظ نفسه شبكة أمان لأي مسار تاني.
+  const Gate = {
+    op: false, // عملية اتسمحت بالباسورد ولسه شغالة (لحد ما نافذتها تتقفل)
+    graceUntil: 0,
+    pending: false,
+    tries: {},
+    on() { return !!DB._lockOn; },
+    allowed() { return !this.on() || this.op || Date.now() < this.graceUntil; },
+    endOpSoon() { setTimeout(() => { if (document.getElementById('modal').hidden) this.op = false; }, 0); },
+    // تشغيل عملية محمية: يسأل الأول، وبعدين يشغلها
+    guard(fn, reason, onCancel) {
+      if (this.allowed()) { const was = this.op; this.op = true; try { fn(); } finally { if (!was) this.endOpSoon(); } return; }
+      UI.askPassword(reason).then((ok) => { if (!ok) { if (onCancel) onCancel(); return; } this.op = true; try { fn(); } finally { this.endOpSoon(); } });
+    },
+    check(db) {
+      if (this.pending) { this.dirty = true; return true; }
+      if (this.allowed() || !window.LOCK || !window.SYNC || !db._committed) return false;
+      const prev = JSON.parse(db._committed);
+      const changes = LOCK.guardedChanges(prev, db.state, SYNC);
+      if (!changes.length) return false;
+      this.pending = true;
+      const what = changes.slice(0, 3).map((c) => `${{ edit: 'تعديل', delete: 'حذف' }[c.action] || 'تعديل'} ${c.label}`).join('، ') + (changes.length > 3 ? ` و${changes.length - 3} غيرهم` : '');
+      UI.askPassword(`التغيير ده محتاج الباسورد: ${what}`).then((ok) => {
+        this.pending = false; this.dirty = false;
+        if (ok) { this.op = true; db.save(); this.endOpSoon(); return; }
+        db.state = migrate(prev); db._journal = null;
+        UI.toast('التعديل اتلغى — البيانات رجعت زي ما كانت', 'bad');
+        if (db.onRevert) db.onRevert();
+      });
+      return true;
+    },
   };
 
   function migrate(s) {
@@ -133,10 +185,60 @@
       bad.addEventListener('input', () => bad.classList.remove('invalid'), { once: true });
       return false;
     },
-    close() { const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll'); },
+    close() {
+      const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll');
+      Gate.endOpSoon();
+      // تعديلات وصلت من جهاز تاني والنافذة مفتوحة: نرسم بعد ما تتقفل
+      if (window.CLOUD && window.CLOUD.pendingRender) { window.CLOUD.pendingRender = false; if (window.CLOUD.onChange) window.CLOUD.onChange(); }
+    },
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
+    },
+    // نافذة الباسورد: فوق أي نافذة مفتوحة، وبترجع true لو الباسورد صح
+    askPassword(reason) {
+      return new Promise((resolve) => {
+        const lock = DB.state.settings.lock;
+        const old = document.getElementById('lock-layer'); if (old) old.remove();
+        const layer = document.createElement('div');
+        layer.id = 'lock-layer'; layer.className = 'lock-layer';
+        layer.innerHTML = `<div class="modal-backdrop"></div>
+          <form class="modal-card lock-card" novalidate autocomplete="off" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+            <header class="modal-head"><h2 id="lock-title">🔒 محتاج الباسورد</h2></header>
+            <div class="modal-body">
+              <p class="lock-reason">${esc(reason || 'العملية دي محتاجة الباسورد')}</p>
+              <label class="field lock-pw"><span>الباسورد</span><input id="lock-input" type="password" autocomplete="off" dir="auto"></label>
+              <label class="field lock-rc" hidden><span>كود الاسترجاع</span><input id="lock-code" autocomplete="off" dir="ltr" placeholder="XXXX-XXXX-XXXX"><small>الكود اللي ظهرلك لما عملت الباسورد. لو صح، الباسورد هيتشال وتعمل واحد جديد من الإعدادات.</small></label>
+              <p class="lock-err" role="alert" hidden></p>
+              <button type="button" class="link-btn lock-forgot">نسيت الباسورد؟</button>
+            </div>
+            <footer class="modal-foot"><button class="btn btn-primary" type="submit">تأكيد</button><button class="btn" type="button" data-lock-cancel>إلغاء</button></footer>
+          </form>`;
+        document.body.appendChild(layer);
+        const f = layer.querySelector('form'), pw = f.querySelector('#lock-input'), rc = f.querySelector('#lock-code'), err = f.querySelector('.lock-err');
+        let recovery = false;
+        const done = (ok) => { layer.remove(); document.removeEventListener('keydown', onKey, true); resolve(ok); };
+        const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(false); } };
+        document.addEventListener('keydown', onKey, true);
+        const show = (msg) => { err.textContent = msg; err.hidden = !msg; };
+        f.querySelector('[data-lock-cancel]').addEventListener('click', () => done(false));
+        f.querySelector('.lock-forgot').addEventListener('click', (e) => { recovery = true; f.querySelector('.lock-pw').hidden = true; f.querySelector('.lock-rc').hidden = false; e.target.hidden = true; show(''); rc.focus(); });
+        f.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const now = Date.now(), t = Gate.tries;
+          if (now < (t.until || 0)) { show(`محاولات غلط كتير — استنى ${Math.ceil((t.until - now) / 1000)} ثانية`); return; }
+          const ok = recovery ? LOCK.verifyRecovery(lock, rc.value) : LOCK.verify(lock, pw.value);
+          Gate.tries = LOCK.throttle(t, now, ok);
+          if (!ok) { show(recovery ? 'الكود مش صح' : 'الباسورد غلط'); (recovery ? rc : pw).select(); if (window.CLOUD && CLOUD.logDenied) CLOUD.logDenied(reason); return; }
+          if (recovery) {
+            // الكود صح: نشيل الباسورد (ده نفسه تعديل مسموح بالكود)
+            Gate.op = true; delete DB.state.settings.lock; DB.save(); Gate.endOpSoon();
+            UI.toast('الباسورد اتشال — اعمل واحد جديد من الإعدادات');
+          } else if (num(lock.graceMin) > 0) Gate.graceUntil = now + num(lock.graceMin) * 60000;
+          done(true);
+        });
+        setTimeout(() => pw.focus(), 30);
+      });
     },
     field(label, input, opts = {}) { return `<label class="field ${opts.cls || ''}"><span>${label}${opts.req ? ' <b class="req">*</b>' : ''}</span>${input}${opts.hint ? `<small>${opts.hint}</small>` : ''}</label>`; },
     input(name, value = '', attrs = '') { return `<input id="f-${name}" name="${name}" value="${esc(value)}" ${attrs}>`; },
@@ -252,6 +354,25 @@
       if (c && i % 3 !== 0) sale.campaignId = c.id;
       if (sale.courierId === bosta.id && sale.status !== 'pending') sale.trackingNo = `BST${String(40210 + sale.no).padStart(7, '0')}`;
     });
+    // أسعار الشحن حسب المحافظة، وعمولة فودافون كاش
+    bosta.defaultRate = { fee: 65, returnFee: 35, charge: 70 };
+    bosta.rates = { 'القاهرة': { fee: 55, returnFee: 30, charge: 60 }, 'الجيزة': { fee: 55, returnFee: 30, charge: 60 }, 'أسيوط': { fee: 80, returnFee: 45, charge: 90 } };
+    aramex.defaultRate = { fee: 70, returnFee: 40, charge: 75 };
+    voda.feePct = 1;
+    // كود خصم لمؤثرة: 10٪ خصم وعمولة 10٪ من صافي الطلب
+    const marwa = { id: uid(), code: 'MARWA10', influencer: 'مروة (بلوجر عطور)', phone: '01099887766', type: 'percent', value: 10, commissionType: 'percent', commission: 10, campaignId: campaigns[0].id, validTo: '', maxUses: '', active: true };
+    s.coupons.push(marwa);
+    s.sales.filter((x) => x.channel === 'instagram' && x.date >= '2026-06-20' && x.date <= '2026-07-31' && x.status !== 'cancelled').slice(0, 6).forEach((x) => {
+      const gross = x.items.reduce((a, it) => a + it.qty * it.price, 0);
+      x.couponId = marwa.id; x.campaignId = campaigns[0].id; x.discount = Math.round(gross * 0.1); x.commission = Math.round((gross - x.discount) * 0.1);
+    });
+    s.sales.forEach((x) => { if (x.payment === voda.id) x.payFee = Math.round((x.items.reduce((a, it) => a + it.qty * it.price, 0) - x.discount + x.shippingCharged) * 0.01 * 100) / 100; });
+    // مرتجع جزئي: العميلة رجّعت صنف من طلب فيه صنفين
+    const two = s.sales.find((x) => x.status === 'delivered' && x.payment === 'cod' && x.items.length === 2 && x.date >= '2026-07-01' && !x.couponId);
+    if (two) two.returns = [{ id: uid(), date: addDays(two.date, 3), items: [{ line: 1, qty: 1 }], fee: 35, note: 'الريحة ما عجبتهاش' }];
+    // شحنة ضاعت مع أرامكس واتعوضنا عنها
+    const lostOne = s.sales.find((x) => x.courierId === aramex.id && x.status === 'delivered' && x.payment === 'cod' && x.date >= '2026-08-01' && x.items.length === 1);
+    if (lostOne) Object.assign(lostOne, { status: 'lost', lostDate: addDays(lostOne.date, 9), compensation: 600, notes: 'الشحنة ضاعت في مخزن أرامكس' });
     // تقسيم زجاجة كلمات إلى ديكانت
     s.decants.push({ id: uid(), date: '2026-08-10', sourceProductId: products[5].id, sourceQty: 1, outputs: [{ productId: decant5.id, qty: 8 }, { productId: decant10.id, qty: 6 }], materialsCost: 180, accountId: cash.id, notes: 'عبوات 5 و10 مل مع ستيكر' });
     s.sales.push({
@@ -292,6 +413,12 @@
     X('2026-08-15', '5300', 3500, bank.id, 'تعاون مع مؤثرة');
     X('2026-07-20', '5300', 1500, voda.id, 'إعلانات تيك توك');
     X('2026-08-20', '5300', 1500, voda.id, 'إعلانات تيك توك');
+    // المرتبات والاشتراك مصروفات ثابتة شهرية (اشتراك سبتمبر لسه ما اتسجلش)
+    const salary = { id: uid(), category: '5500', amount: 5000, accountId: bank.id, day: 28, startMonth: '2026-06', notes: 'مرتب مسؤول الطلبات', active: true };
+    const subscription = { id: uid(), category: '5950', amount: 450, accountId: voda.id, day: 10, startMonth: '2026-06', notes: 'اشتراك المتجر الإلكتروني', active: true };
+    s.recurring.push(salary, subscription);
+    s.expenses = s.expenses.filter((e) => !(e.category === '5950' && e.date === '2026-09-10'));
+    s.expenses.forEach((e) => { const r = e.category === '5500' ? salary : e.category === '5950' ? subscription : null; if (r) { e.recurringId = r.id; e.period = e.date.slice(0, 7); } });
     // ربط مصروفات الإعلانات بالحملات
     s.expenses.forEach((e) => {
       if (e.category !== '5300') return;
@@ -306,6 +433,9 @@
     s.shipments[2].dueDate = '2026-09-28';
     s.adjustments.push({ id: uid(), date: '2026-07-15', productId: byId(2), qty: -1, reason: 'tester', notes: 'زجاجة تستر للتصوير' });
     s.adjustments.push({ id: uid(), date: '2026-08-20', productId: byId(0), qty: -1, reason: 'damage', notes: 'انكسرت أثناء التغليف' });
+    // عينة ديكانت هدية مع أول طلبين بعد التقسيم، وسداد جزء من عمولة المؤثرة
+    s.sales.filter((x) => x.date > '2026-08-12' && x.status === 'delivered' && !x.kind).slice(0, 2).forEach((x) => (x.samples = [{ productId: decant5.id, qty: 1 }]));
+    s.commissionPayments.push({ id: uid(), date: '2026-08-03', couponId: s.coupons[0].id, amount: 500, accountId: insta.id, notes: 'عمولة يوليو' });
     // توزيع أرباح يوليو على الشريكين (مع حجز ٢٠٪ في النشاط) ومسحوبات من الحساب الجاري
     const plan = Acc.distributionPlan(s, Acc.buildJournal(s), '2026-07-01', '2026-07-31', 20);
     if (plan.distributable > 0) s.distributions.push({ id: uid(), date: '2026-08-05', from: '2026-07-01', to: '2026-07-31', retainPct: 20, profit: plan.netProfit, allocations: plan.allocations, notes: 'أرباح يوليو' });
@@ -314,5 +444,5 @@
     return s;
   }
 
-  window.F = { STORAGE_KEY, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+  window.F = { migrateState: migrate, Gate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
 })();

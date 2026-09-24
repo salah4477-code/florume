@@ -18,6 +18,7 @@
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
+    { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
     { code: '3200', name: 'المسحوبات الشخصية', type: 'equity' },
     { code: '3400', name: 'أرباح موزعة على الشركاء', type: 'equity' },
@@ -28,6 +29,7 @@
     { code: '4200', name: 'إيراد الشحن المحصل من العملاء', type: 'revenue' },
     { code: '4300', name: 'أرباح فروق العملة', type: 'revenue', other: true },
     { code: '4900', name: 'إيرادات أخرى', type: 'revenue', other: true },
+    { code: '4910', name: 'تعويضات شركات الشحن', type: 'revenue', other: true },
     { code: '5100', name: 'تكلفة البضاعة المباعة', type: 'expense', cogs: true },
     { code: '5200', name: 'مصاريف شحن الطلبات', type: 'expense' },
     { code: '5210', name: 'مصاريف المرتجعات', type: 'expense' },
@@ -38,6 +40,7 @@
     { code: '5700', name: 'عمولات بنكية وتحويلات', type: 'expense' },
     { code: '5800', name: 'عجز وتوالف المخزون', type: 'expense' },
     { code: '5810', name: 'تسترات وعينات وهدايا', type: 'expense' },
+    { code: '5820', name: 'خسائر شحنات مفقودة', type: 'expense' },
     { code: '5900', name: 'خسائر فروق العملة', type: 'expense', other: true },
     { code: '5950', name: 'اشتراكات وبرامج', type: 'expense' },
     { code: '5990', name: 'مصروفات أخرى', type: 'expense' },
@@ -48,7 +51,9 @@
   const EXPENSE_CATEGORIES = ['5300', '5400', '5200', '5500', '5600', '5700', '5950', '5990'];
 
   // حالات الطلب التي تُحسب فيها المبيعات
-  const BOOKED = new Set(['shipped', 'delivered', 'returned']);
+  const BOOKED = new Set(['shipped', 'delivered', 'returned', 'lost']);
+  // حالات ما فيهاش إيراد في الآخر: مرتجع كامل أو ضاع مع الشحن
+  const REVERSED = new Set(['returned', 'lost']);
   // فاتورة دعاية: قطع مجانية تخرج من المخزون بتكلفتها وتُحمَّل على مصروف الإعلانات
   const isPromo = (sale) => !!sale && sale.kind === 'promo';
 
@@ -72,6 +77,25 @@
     const shipping = round2(num(sale.shippingCharged));
     const net = round2(gross - discount);
     return { gross, discount, net, shipping, total: round2(net + shipping) };
+  }
+  // المرتجعات الجزئية: كل مرتجع فيه سطور (رقم السطر والكمية)، وقيمته بعد توزيع الخصم على الأصناف
+  function partialReturns(sale) {
+    const t = saleTotals(sale);
+    const factor = t.gross ? t.net / t.gross : 1;
+    const qtyBack = (sale.items || []).map(() => 0);
+    const list = (sale.returns || []).map((r) => {
+      let value = 0;
+      const lines = (r.items || []).filter((x) => num(x.qty) > 0 && sale.items[x.line]).map((x) => {
+        const it = sale.items[x.line];
+        const q = Math.min(num(x.qty), num(it.qty) - qtyBack[x.line]);
+        qtyBack[x.line] += q;
+        value += q * num(it.price) * factor;
+        return { line: x.line, qty: q };
+      }).filter((x) => x.qty > 0);
+      return { ...r, lines, value: round2(value) };
+    });
+    const remaining = (sale.items || []).map((it, i) => num(it.qty) - qtyBack[i]);
+    return { list, qtyBack, remaining, value: round2(list.reduce((a, r) => a + r.value, 0)), fees: round2(list.reduce((a, r) => a + num(r.fee), 0)) };
   }
 
   // ---------- تكلفة الشحنة الواصلة ----------
@@ -138,20 +162,26 @@
       else if (qty < 0) events.push({ kind: 'outAdj', date: adj.date, seq: seq++, productId: adj.productId, qty: -qty, src: { type: 'adjustment', id: adj.id } });
     });
     (state.decants || []).forEach((d) => {
+      if (d.kind === 'assemble') { if (d.sourceProductId && num(d.sourceQty) > 0) events.push({ kind: 'assemble', date: d.date, seq: seq++, productId: d.sourceProductId, qty: num(d.sourceQty), decant: d, src: { type: 'decant', id: d.id } }); return; }
       if (d.sourceProductId && num(d.sourceQty) > 0) events.push({ kind: 'decant', date: d.date, seq: seq++, productId: d.sourceProductId, qty: num(d.sourceQty), decant: d, src: { type: 'decant', id: d.id } });
     });
     (state.sales || []).forEach((sale) => {
       if (!BOOKED.has(sale.status)) return;
       (sale.items || []).forEach((it, i) => events.push({ kind: 'sale', date: sale.date, seq: seq++, productId: it.productId, qty: num(it.qty), src: { type: 'sale', id: sale.id, line: i } }));
+      (sale.samples || []).forEach((it, i) => { if (it.productId && num(it.qty) > 0) events.push({ kind: 'sale', date: sale.date, seq: seq++, productId: it.productId, qty: num(it.qty), src: { type: 'sample', id: sale.id, line: i } }); });
+      const pr = partialReturns(sale);
+      pr.list.forEach((r) => r.lines.forEach((x) => events.push({ kind: 'return', date: r.date || sale.date, seq: seq++, productId: sale.items[x.line].productId, qty: x.qty, src: { type: 'sale', id: sale.id, line: x.line } })));
       if (sale.status === 'returned') {
-        (sale.items || []).forEach((it, i) => events.push({ kind: 'return', date: sale.returnDate || sale.date, seq: seq++, productId: it.productId, qty: num(it.qty), src: { type: 'sale', id: sale.id, line: i } }));
+        (sale.items || []).forEach((it, i) => { if (pr.remaining[i] > 0) events.push({ kind: 'return', date: sale.returnDate || sale.date, seq: seq++, productId: it.productId, qty: pr.remaining[i], src: { type: 'sale', id: sale.id, line: i } }); });
+        (sale.samples || []).forEach((it, i) => { if (it.productId && num(it.qty) > 0) events.push({ kind: 'return', date: sale.returnDate || sale.date, seq: seq++, productId: it.productId, qty: num(it.qty), src: { type: 'sample', id: sale.id, line: i } }); });
       }
     });
-    events.sort(byDateThen({ in: 0, return: 1, decant: 2, sale: 3, outAdj: 4 }));
+    events.sort(byDateThen({ in: 0, return: 1, decant: 2, assemble: 2, sale: 3, outAdj: 4 }));
     const sizeOf = (pid) => num(((state.products || []).find((p) => p.id === pid) || {}).sizeMl);
 
     const stock = {}; // productId -> {qty, value, lastCost}
     const saleCogs = {}; // saleId -> [cogs per line]
+    const sampleCogs = {}; // saleId -> [cost per sample line]
     const adjCost = {}; // adjustmentId -> total cost
     const decantCost = {}; // decantId -> {sourceCost, materials, total, lines}
     const movements = []; // لكل منتج
@@ -163,6 +193,27 @@
       const s = get(ev.productId);
       const avg = s.qty > EPS ? s.value / s.qty : s.lastCost;
       let cost;
+      if (ev.kind === 'assemble') {
+        // تجميع بوكس من قطع: القطع تخرج بمتوسط تكلفتها والبوكس يدخل بمجموعها + تكلفة التغليف
+        const inputs = (ev.decant.inputs || []).filter((x) => x.productId && num(x.qty) > 0);
+        const lines = inputs.map((x) => {
+          const t = get(x.productId);
+          const a = t.qty > EPS ? t.value / t.qty : t.lastCost;
+          if (t.qty + EPS < num(x.qty)) warnings.push({ productId: x.productId, date: ev.date, src: ev.src, message: 'رصيد غير كافٍ' });
+          const c = num(x.qty) * a;
+          t.qty -= num(x.qty); t.value -= c;
+          if (Math.abs(t.qty) < EPS) { t.qty = 0; t.value = 0; }
+          movements.push({ kind: 'decantOut', date: ev.date, seq: ev.seq, productId: x.productId, qty: num(x.qty), src: ev.src, cost: round2(c), balanceQty: t.qty, balanceValue: round2(t.value) });
+          return c;
+        });
+        const materials = num(ev.decant.materialsCost);
+        const inputCost = lines.reduce((a, c) => a + c, 0);
+        const total = inputCost + materials;
+        s.qty += ev.qty; s.value += total; if (ev.qty > 0) s.lastCost = total / ev.qty;
+        movements.push({ ...ev, kind: 'decantIn', cost: round2(total), balanceQty: s.qty, balanceValue: round2(s.value) });
+        decantCost[ev.src.id] = { sourceCost: round2(inputCost), materials: round2(materials), total: round2(total), lines: lines.map(round2), costPerMl: 0 };
+        continue;
+      }
       if (ev.kind === 'decant') {
         // تفريغ الزجاجة الأصلية ثم توزيع تكلفتها + تكلفة العبوات على العبوات الصغيرة بنسبة المللي
         if (s.qty + EPS < ev.qty) warnings.push({ productId: ev.productId, date: ev.date, src: ev.src, message: 'رصيد غير كافٍ' });
@@ -195,14 +246,19 @@
         if (ev.qty > 0) s.lastCost = cost / ev.qty;
         if (ev.src.type === 'adjustment') adjCost[ev.src.id] = cost;
       } else if (ev.kind === 'return') {
-        cost = (saleCogs[ev.src.id] || [])[ev.src.line] || ev.qty * avg;
+        // المرتجع يرجع بتكلفة خروجه (للقطعة) — ينفع للمرتجع الجزئي كمان
+        const map = ev.src.type === 'sample' ? sampleCogs : saleCogs;
+        const lineCost = (map[ev.src.id] || [])[ev.src.line];
+        const src = (state.sales || []).find((x) => x.id === ev.src.id) || {};
+        const lineQty = num(((ev.src.type === 'sample' ? src.samples : src.items) || [])[ev.src.line] ? ((ev.src.type === 'sample' ? src.samples : src.items)[ev.src.line]).qty : 0);
+        cost = lineCost != null && lineQty ? (lineCost / lineQty) * ev.qty : ev.qty * avg;
         s.qty += ev.qty; s.value += cost;
       } else {
         if (s.qty + EPS < ev.qty) warnings.push({ productId: ev.productId, date: ev.date, src: ev.src, message: 'رصيد غير كافٍ' });
         cost = ev.qty * avg;
         s.qty -= ev.qty; s.value -= cost;
         if (Math.abs(s.qty) < EPS) { s.qty = 0; s.value = 0; }
-        if (ev.kind === 'sale') (saleCogs[ev.src.id] = saleCogs[ev.src.id] || [])[ev.src.line] = cost;
+        if (ev.kind === 'sale') ((ev.src.type === 'sample' ? sampleCogs : saleCogs)[ev.src.id] = (ev.src.type === 'sample' ? sampleCogs : saleCogs)[ev.src.id] || [])[ev.src.line] = cost;
         else adjCost[ev.src.id] = cost;
       }
       movements.push({ ...ev, cost: round2(cost), balanceQty: s.qty, balanceValue: round2(s.value) });
@@ -211,7 +267,7 @@
     const reserved = {};
     (state.sales || []).forEach((sale) => {
       if (sale.status !== 'pending') return;
-      (sale.items || []).forEach((it) => (reserved[it.productId] = (reserved[it.productId] || 0) + num(it.qty)));
+      [...(sale.items || []), ...(sale.samples || [])].forEach((it) => { if (it.productId) reserved[it.productId] = (reserved[it.productId] || 0) + num(it.qty); });
     });
     const products = {};
     (state.products || []).forEach((p) => {
@@ -222,7 +278,7 @@
         reserved: reserved[p.id] || 0, available: round2(qty - (reserved[p.id] || 0)),
       };
     });
-    return { products, saleCogs, adjCost, decantCost, movements, warnings };
+    return { products, saleCogs, sampleCogs, adjCost, decantCost, movements, warnings };
   }
 
   // ---------- أرصدة الموردين بالعملة الأجنبية وفروق العملة ----------
@@ -371,21 +427,69 @@
         ]);
         return;
       }
+      const samplesCost = round2((inv.sampleCogs[sale.id] || []).reduce((a, c) => a + (c || 0), 0));
+      const payFee = prepaid ? num(sale.payFee) : 0;
+      const commission = num(sale.commission);
+      const influencer = sale.couponId ? { type: 'influencer', id: sale.couponId } : undefined;
       add(sale.date, 'sale', ref, `فاتورة ${sale.no || ''} — ${cust}`, [
         { acc: debitAcc, dr: t.total, cr: 0, party: prepaid ? undefined : courier },
         { acc: '4110', dr: t.discount, cr: 0 },
         { acc: '4100', dr: 0, cr: t.gross }, { acc: '4200', dr: 0, cr: t.shipping },
         { acc: '5100', dr: cogs, cr: 0 }, { acc: '1300', dr: 0, cr: cogs },
         { acc: '5200', dr: num(sale.courierFee), cr: 0 }, { acc: '1200', dr: 0, cr: num(sale.courierFee), party: courier },
+        // عمولة بوابة الدفع على المدفوع مقدمًا
+        { acc: '5700', dr: payFee, cr: 0 }, ...(payFee ? [{ acc: debitAcc, dr: 0, cr: payFee }] : []),
+        // عينات هدية مع الطلب
+        { acc: '5810', dr: samplesCost, cr: 0 }, { acc: '1300', dr: 0, cr: samplesCost },
+        // عمولة المؤثر صاحب كود الخصم
+        { acc: '5300', dr: commission, cr: 0 }, { acc: '2200', dr: 0, cr: commission, party: influencer },
       ]);
-      if (sale.status === 'returned') {
-        add(sale.returnDate || sale.date, 'saleReturn', ref, `مرتجع فاتورة ${sale.no || ''} — ${cust}`, [
-          { acc: '4120', dr: t.net, cr: 0 }, { acc: '4200', dr: t.shipping, cr: 0 },
-          { acc: debitAcc, dr: 0, cr: t.total, party: prepaid ? undefined : courier },
-          { acc: '1300', dr: cogs, cr: 0 }, { acc: '5100', dr: 0, cr: cogs },
-          { acc: '5210', dr: num(sale.returnFee), cr: 0 }, { acc: '1200', dr: 0, cr: num(sale.returnFee), party: courier },
+      // المرتجعات الجزئية
+      const pr = partialReturns(sale);
+      const lineCost = (line, q) => { const c = (inv.saleCogs[sale.id] || [])[line] || 0; const lq = num(sale.items[line].qty); return lq ? (c / lq) * q : 0; };
+      const netTotal = t.net || 1;
+      pr.list.forEach((r) => {
+        const c = round2(r.lines.reduce((a, x) => a + lineCost(x.line, x.qty), 0));
+        // استبدال: قيمة المرتجع بتتخصم من اللي المندوب هيحصّله في طلب البديل
+        const toCourier = !prepaid || r.refundTo === 'courier';
+        const refundAcc = toCourier ? '1200' : cashCode(r.refundAccountId || sale.payment);
+        const comm = round2(commission * (r.value / netTotal));
+        add(r.date || sale.date, 'saleReturn', ref, `مرتجع جزئي فاتورة ${sale.no || ''} — ${cust}`, [
+          { acc: '4120', dr: r.value, cr: 0 }, { acc: refundAcc, dr: 0, cr: r.value, party: toCourier ? { type: 'courier', id: r.courierId || sale.courierId } : undefined },
+          { acc: '1300', dr: c, cr: 0 }, { acc: '5100', dr: 0, cr: c },
+          { acc: '5210', dr: num(r.fee), cr: 0 }, { acc: '1200', dr: 0, cr: num(r.fee), party: courier },
+          { acc: '2200', dr: comm, cr: 0, party: influencer }, { acc: '5300', dr: 0, cr: comm },
+        ]);
+      });
+      // مرتجع كامل أو شحنة ضاعت: يتعكس الإيراد اللي فاضل بعد المرتجعات الجزئية
+      if (REVERSED.has(sale.status)) {
+        const lost = sale.status === 'lost';
+        const remainingNet = round2(t.net - pr.value);
+        const remainingTotal = round2(remainingNet + t.shipping);
+        const remainingCost = round2(pr.remaining.reduce((a, q, i) => a + lineCost(i, q), 0));
+        const commLeft = round2(commission - pr.list.reduce((a, r) => a + round2(commission * (r.value / netTotal)), 0));
+        const creditAcc = prepaid ? cashCode((lost ? sale.lostRefundAccountId : sale.refundAccountId) || sale.payment) : '1200';
+        const date = lost ? sale.lostDate || sale.date : sale.returnDate || sale.date;
+        add(date, 'saleReturn', ref, `${lost ? 'شحنة ضاعت' : 'مرتجع'} فاتورة ${sale.no || ''} — ${cust}`, [
+          { acc: '4120', dr: remainingNet, cr: 0 }, { acc: '4200', dr: t.shipping, cr: 0 },
+          { acc: creditAcc, dr: 0, cr: remainingTotal, party: prepaid ? undefined : courier },
+          // المرتجع يرجع المخزن، اللي ضاع تكلفته خسارة
+          { acc: lost ? '5820' : '1300', dr: remainingCost, cr: 0 }, { acc: '5100', dr: 0, cr: remainingCost },
+          ...(lost ? [] : [{ acc: '1300', dr: samplesCost, cr: 0 }, { acc: '5810', dr: 0, cr: samplesCost }]),
+          { acc: '5210', dr: lost ? 0 : num(sale.returnFee), cr: 0 }, { acc: '1200', dr: 0, cr: lost ? 0 : num(sale.returnFee), party: courier },
+          { acc: '2200', dr: commLeft, cr: 0, party: influencer }, { acc: '5300', dr: 0, cr: commLeft },
+        ]);
+        if (lost && num(sale.compensation)) add(sale.compensationDate || date, 'saleReturn', ref, `تعويض شحنة ضاعت — فاتورة ${sale.no || ''}`, [
+          { acc: '1200', dr: num(sale.compensation), cr: 0, party: courier }, { acc: '4910', dr: 0, cr: num(sale.compensation) },
         ]);
       }
+    });
+
+    // سداد عمولات المؤثرين
+    (state.commissionPayments || []).forEach((p) => {
+      add(p.date, 'commission', { type: 'commissionPayment', id: p.id }, `سداد عمولة ${name('coupons', p.couponId) || ((state.coupons || []).find((c) => c.id === p.couponId) || {}).code || ''}${p.notes ? ' — ' + p.notes : ''}`, [
+        { acc: '2200', dr: num(p.amount), cr: 0, party: { type: 'influencer', id: p.couponId } }, { acc: cashCode(p.accountId), dr: 0, cr: num(p.amount) },
+      ]);
     });
 
     // تسويات شركات الشحن (تحصيل صافي الدفع عند الاستلام)
@@ -434,7 +538,7 @@
     (state.decants || []).forEach((d) => {
       const c = inv.decantCost[d.id];
       if (!c) return;
-      add(d.date, 'decant', { type: 'decant', id: d.id }, d.kind === 'unbox' ? `فك ${num(d.sourceQty)} بوكس ${productName(d.sourceProductId)} إلى قطع` : `تقسيم ${num(d.sourceQty)} عبوة ${productName(d.sourceProductId)} إلى ديكانت`, [
+      add(d.date, 'decant', { type: 'decant', id: d.id }, d.kind === 'assemble' ? `تجميع ${num(d.sourceQty)} بوكس ${productName(d.sourceProductId)}` : d.kind === 'unbox' ? `فك ${num(d.sourceQty)} بوكس ${productName(d.sourceProductId)} إلى قطع` : `تقسيم ${num(d.sourceQty)} عبوة ${productName(d.sourceProductId)} إلى ديكانت`, [
         { acc: '1300', dr: c.total, cr: 0 }, { acc: '1300', dr: 0, cr: c.sourceCost },
         ...(c.materials ? [{ acc: cashCode(d.accountId), dr: 0, cr: c.materials }] : []),
       ]);
@@ -515,6 +619,7 @@
     ];
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
+    if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
     let earnings = 0;
     Object.keys(map).forEach((k) => {
       const a = COA_MAP[baseCode(k)];
@@ -567,16 +672,32 @@
     return out;
   }
 
+  // ربح الطلب بعد التكلفة والشحن وعمولة الدفع والعينات وعمولة المؤثر والمرتجعات
   function saleProfit(sale, journal) {
     const t = saleTotals(sale);
-    const cogs = round2((journal.inventory.saleCogs[sale.id] || []).reduce((s, c) => s + (c || 0), 0));
-    if (!BOOKED.has(sale.status)) return { ...t, cogs: 0, profit: 0 };
+    const cogsLines = journal.inventory.saleCogs[sale.id] || [];
+    const cogs = round2(cogsLines.reduce((s, c) => s + (c || 0), 0));
+    if (!BOOKED.has(sale.status)) return { ...t, cogs: 0, profit: 0, extras: 0 };
     if (isPromo(sale)) {
       const cost = sale.status === 'returned' ? num(sale.courierFee) + num(sale.returnFee) : cogs + num(sale.courierFee);
-      return { ...t, cogs, profit: round2(-cost), promoCost: round2(cost) };
+      return { ...t, cogs, profit: round2(-cost), promoCost: round2(cost), extras: 0 };
     }
-    if (sale.status === 'returned') return { ...t, cogs, profit: round2(-num(sale.courierFee) - num(sale.returnFee)) };
-    return { ...t, cogs, profit: round2(t.total - cogs - num(sale.courierFee)) };
+    const prepaid = sale.payment && sale.payment !== 'cod';
+    const payFee = prepaid ? num(sale.payFee) : 0;
+    const samples = round2((journal.inventory.sampleCogs[sale.id] || []).reduce((s, c) => s + (c || 0), 0));
+    const pr = partialReturns(sale);
+    const lineUnit = (i) => (num(sale.items[i].qty) ? (cogsLines[i] || 0) / num(sale.items[i].qty) : 0);
+    const backCost = round2(pr.list.reduce((a, r) => a + r.lines.reduce((b, x) => b + lineUnit(x.line) * x.qty, 0), 0));
+    const commission = num(sale.commission) * (t.net ? Math.max(0, 1 - pr.value / t.net) : 1);
+    if (sale.status === 'returned') return { ...t, cogs, returned: t.total, samples: 0, payFee, profit: round2(-num(sale.courierFee) - num(sale.returnFee) - pr.fees - payFee), extras: payFee };
+    if (sale.status === 'lost') {
+      const lossCost = round2(cogs - backCost);
+      return { ...t, cogs, returned: t.total, samples, payFee, profit: round2(-num(sale.courierFee) - lossCost - samples - pr.fees - payFee + num(sale.compensation)), extras: payFee + samples };
+    }
+    const kept = round2(t.total - pr.value);
+    const keptCogs = round2(cogs - backCost);
+    const extras = round2(payFee + samples + commission + pr.fees);
+    return { ...t, cogs: keptCogs, returned: pr.value, samples, payFee, commission: round2(commission), keptTotal: kept, profit: round2(kept - keptCogs - num(sale.courierFee) - extras), extras };
   }
 
   function productPerformance(state, journal, from, to) {
@@ -585,14 +706,18 @@
       if (!BOOKED.has(sale.status) || !inRange(sale.date, from, to)) return;
       const t = saleTotals(sale);
       const cogsLines = journal.inventory.saleCogs[sale.id] || [];
-      const returned = sale.status === 'returned';
+      const returned = REVERSED.has(sale.status);
+      const pr = partialReturns(sale);
       (sale.items || []).forEach((it, i) => {
         const r = (rows[it.productId] = rows[it.productId] || { productId: it.productId, qty: 0, returnedQty: 0, promoQty: 0, promoCost: 0, revenue: 0, cogs: 0 });
         if (isPromo(sale)) { if (!returned) { r.promoQty += num(it.qty); r.promoCost += cogsLines[i] || 0; } return; }
         const lineGross = num(it.qty) * num(it.price);
         const lineNet = t.gross ? lineGross - (t.discount * lineGross) / t.gross : lineGross;
         if (returned) { r.returnedQty += num(it.qty); return; }
-        r.qty += num(it.qty); r.revenue += lineNet; r.cogs += cogsLines[i] || 0;
+        const keptQty = num(it.qty) - pr.qtyBack[i];
+        const keep = num(it.qty) ? keptQty / num(it.qty) : 0;
+        r.returnedQty += pr.qtyBack[i];
+        r.qty += keptQty; r.revenue += lineNet * keep; r.cogs += (cogsLines[i] || 0) * keep;
       });
     });
     return Object.values(rows).map((r) => ({ ...r, promoCost: round2(r.promoCost), revenue: round2(r.revenue), cogs: round2(r.cogs), profit: round2(r.revenue - r.cogs), margin: r.revenue ? (r.revenue - r.cogs) / r.revenue : 0 })).sort((a, b) => b.profit - a.profit);
@@ -605,7 +730,7 @@
       const r = (rows[sale.channel || 'other'] = rows[sale.channel || 'other'] || { channel: sale.channel || 'other', orders: 0, returned: 0, revenue: 0, profit: 0 });
       const p = saleProfit(sale, journal);
       r.orders += 1;
-      if (sale.status === 'returned') r.returned += 1; else r.revenue += p.total;
+      if (REVERSED.has(sale.status)) r.returned += 1; else r.revenue += p.keptTotal != null ? p.keptTotal : p.total;
       r.profit += p.profit;
     });
     return Object.values(rows).map((r) => ({ ...r, revenue: round2(r.revenue), profit: round2(r.profit) })).sort((a, b) => b.revenue - a.revenue);
@@ -645,7 +770,7 @@
       if (!BOOKED.has(sale.status)) return;
       const p = saleProfit(sale, journal);
       r.orders += 1;
-      if (sale.status === 'returned') r.returned += 1; else { r.revenue += p.total; if (sale.status === 'delivered') r.delivered += 1; }
+      if (REVERSED.has(sale.status)) r.returned += 1; else { r.revenue += p.keptTotal != null ? p.keptTotal : p.total; if (sale.status === 'delivered') r.delivered += 1; }
       r.grossProfit += p.profit;
     });
     return Object.values(rows).map((r) => {
@@ -694,7 +819,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

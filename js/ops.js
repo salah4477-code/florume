@@ -68,8 +68,11 @@
   function expectedFor(sale) {
     const t = Acc.saleTotals(sale);
     const returned = sale.status === 'returned';
-    const cod = sale.payment === 'cod' && !returned ? t.total : 0;
-    const fee = round2(num(sale.courierFee) + (returned ? num(sale.returnFee) : 0));
+    const gone = Acc.REVERSED.has(sale.status);
+    const pr = Acc.partialReturns(sale);
+    // المرتجع الجزئي: المندوب بيحصّل تمن اللي العميل خده بس
+    const cod = sale.payment === 'cod' && !gone ? Math.max(0, t.total - pr.value - num(sale.exchangeCredit)) : 0;
+    const fee = round2(num(sale.courierFee) + (returned ? num(sale.returnFee) : 0) + pr.fees);
     return { cod: round2(cod), fee, net: round2(cod - fee) };
   }
 
@@ -210,8 +213,33 @@
       push({ type: 'negative', level: 'bad', days: 0, title: `رصيد ${productName(w.productId)} ما كانش يكفي يوم ${w.date}`, detail: 'فيه بيع أو تسوية أكتر من الرصيد — راجع كارت الصنف أو سجّل الوارد', action: 'productMoves', id: w.productId });
     });
 
+    const dueRec = dueRecurring(state, today);
+    if (dueRec.length) push({ type: 'recurring', level: 'warn', days: 0, title: `${dueRec.length} مصروف ثابت ميعاده جه ولسه ما اتسجلش`, detail: dueRec.slice(0, 3).map((d) => `${d.notes || d.category} (${d.period})`).join('، '), action: 'goto', id: 'expenses' });
+
     const rank = { bad: 0, warn: 1, info: 2 };
     return list.sort((a, b) => rank[a.level] - rank[b.level] || b.days - a.days);
+  }
+
+  // =====================================================================
+  // المصروفات الثابتة الشهرية: الشهور اللي فات ميعادها ولسه ما اتسجلتش
+  // =====================================================================
+  const lastDay = (ym) => new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate();
+  function dueRecurring(state, today) {
+    const out = [];
+    const nowYm = today.slice(0, 7);
+    (state.recurring || []).forEach((r) => {
+      if (r.active === false || !r.startMonth) return;
+      const posted = new Set((state.expenses || []).filter((e) => e.recurringId === r.id).map((e) => e.period));
+      let ym = r.startMonth;
+      for (let guard = 0; ym <= nowYm && guard < 36; guard++) {
+        const day = Math.min(Math.max(1, num(r.day) || 1), lastDay(ym));
+        const date = `${ym}-${String(day).padStart(2, '0')}`;
+        if (date <= today && !posted.has(ym)) out.push({ recurringId: r.id, period: ym, date, amount: num(r.amount), category: r.category, accountId: r.accountId, notes: r.notes || '' });
+        const [y, m] = ym.split('-').map(Number);
+        ym = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+      }
+    });
+    return out.sort((a, b) => (a.date < b.date ? -1 : 1));
   }
 
   // =====================================================================
@@ -262,7 +290,7 @@
   }
   const productCode = (p) => (validBarcode(str(p.barcode)) ? str(p.barcode) : validBarcode(str(p.sku)) ? str(p.sku) : '');
 
-  const api = { STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  const api = { dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);

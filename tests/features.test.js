@@ -211,3 +211,12 @@ test('supplier due alert only for the shipment still unpaid (payments settle old
   assert.equal(due.length, 1);
   assert.match(due[0].title, /NEW/);
 });
+
+test('recurring monthly expenses: due months that are not posted yet', () => {
+  const s = baseState();
+  s.recurring = [{ id: 'rent', category: '5600', amount: 5000, accountId: 'bank', day: 31, startMonth: '2026-01', notes: 'إيجار' }, { id: 'off', active: false, amount: 1, startMonth: '2026-01' }];
+  s.expenses.push({ id: 'e1', date: '2026-01-31', category: '5600', amount: 5000, accountId: 'bank', recurringId: 'rent', period: '2026-01' });
+  const due = OPS.dueRecurring(s, '2026-03-15');
+  assert.deepEqual(due.map((d) => d.date), ['2026-02-28']); // فبراير آخره 28، ومارس لسه ما جاش يوم 31
+  assert.equal(OPS.dueRecurring(s, '2026-03-31').length, 2);
+});
