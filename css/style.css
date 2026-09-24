@@ -442,8 +442,37 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
   .tb-time { flex: none; }
   .tb-date span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42vw; display: block; }
   .tb-new { display: none; }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .sync-chip { display: none; }
   .hero-value { font-size: 2.3rem; }
 }
+
+
+/* ---------- السحابة والأدوار ---------- */
+.sync-chip { font-size: .78rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.sync-chip[data-kind="ok"] { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--line)); }
+.sync-chip[data-kind="busy"] { color: var(--info); }
+.sync-chip[data-kind="bad"] { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.topbar { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.backup-banner { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+body[data-role="orders"] .sens, body[data-role="orders"] .internal { display: none !important; }
+body[data-role="viewer"] [data-action^="new"], body[data-role="viewer"] [data-action^="edit"], body[data-role="viewer"] [data-action^="del"], body[data-role="viewer"] .tb-new, body[data-role="viewer"] #modal-form button[type="submit"] { display: none !important; }
+table.hide-c1 tr > :nth-child(1) { display: none; }
+table.hide-c2 tr > :nth-child(2) { display: none; }
+table.hide-c3 tr > :nth-child(3) { display: none; }
+table.hide-c4 tr > :nth-child(4) { display: none; }
+table.hide-c5 tr > :nth-child(5) { display: none; }
+table.hide-c6 tr > :nth-child(6) { display: none; }
+table.hide-c7 tr > :nth-child(7) { display: none; }
+table.hide-c8 tr > :nth-child(8) { display: none; }
+table.hide-c9 tr > :nth-child(9) { display: none; }
+table.hide-c10 tr > :nth-child(10) { display: none; }
+table.hide-c11 tr > :nth-child(11) { display: none; }
+table.hide-c12 tr > :nth-child(12) { display: none; }
+table.hide-c13 tr > :nth-child(13) { display: none; }
+table.hide-c14 tr > :nth-child(14) { display: none; }
+table.hide-c15 tr > :nth-child(15) { display: none; }
+table.hide-c16 tr > :nth-child(16) { display: none; }
 
 /* ---------- الهاتف ---------- */
 @media (max-width: 860px) {

@@ -55,8 +55,14 @@
     },
     save() {
       this._journal = null;
+      const ok = this.saveLocal();
+      if (window.CLOUD) window.CLOUD.onSave();
+      return ok;
+    },
+    // نسخة الجهاز (بتفضل موجودة حتى في وضع السحابة عشان الفتح يبقى سريع)
+    saveLocal() {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); return true; }
-      catch (e) { UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
+      catch (e) { if (!(window.CLOUD && window.CLOUD.mode === 'cloud')) UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
     },
     get journal() { return this._journal || (this._journal = Acc.buildJournal(this.state)); },
     replace(state) { this.state = migrate(state); this.save(); },
@@ -137,7 +143,11 @@
       bad.addEventListener('input', () => bad.classList.remove('invalid'), { once: true });
       return false;
     },
-    close() { const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll'); },
+    close() {
+      const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll');
+      // تعديلات وصلت من جهاز تاني والنافذة مفتوحة: نرسم بعد ما تتقفل
+      if (window.CLOUD && window.CLOUD.pendingRender) { window.CLOUD.pendingRender = false; if (window.CLOUD.onChange) window.CLOUD.onChange(); }
+    },
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
@@ -346,5 +356,5 @@
     return s;
   }
 
-  window.F = { STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+  window.F = { migrateState: migrate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
 })();

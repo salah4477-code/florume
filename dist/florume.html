@@ -452,8 +452,37 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
   .tb-time { flex: none; }
   .tb-date span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42vw; display: block; }
   .tb-new { display: none; }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .sync-chip { display: none; }
   .hero-value { font-size: 2.3rem; }
 }
+
+
+/* ---------- السحابة والأدوار ---------- */
+.sync-chip { font-size: .78rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.sync-chip[data-kind="ok"] { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--line)); }
+.sync-chip[data-kind="busy"] { color: var(--info); }
+.sync-chip[data-kind="bad"] { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.topbar { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.backup-banner { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+body[data-role="orders"] .sens, body[data-role="orders"] .internal { display: none !important; }
+body[data-role="viewer"] [data-action^="new"], body[data-role="viewer"] [data-action^="edit"], body[data-role="viewer"] [data-action^="del"], body[data-role="viewer"] .tb-new, body[data-role="viewer"] #modal-form button[type="submit"] { display: none !important; }
+table.hide-c1 tr > :nth-child(1) { display: none; }
+table.hide-c2 tr > :nth-child(2) { display: none; }
+table.hide-c3 tr > :nth-child(3) { display: none; }
+table.hide-c4 tr > :nth-child(4) { display: none; }
+table.hide-c5 tr > :nth-child(5) { display: none; }
+table.hide-c6 tr > :nth-child(6) { display: none; }
+table.hide-c7 tr > :nth-child(7) { display: none; }
+table.hide-c8 tr > :nth-child(8) { display: none; }
+table.hide-c9 tr > :nth-child(9) { display: none; }
+table.hide-c10 tr > :nth-child(10) { display: none; }
+table.hide-c11 tr > :nth-child(11) { display: none; }
+table.hide-c12 tr > :nth-child(12) { display: none; }
+table.hide-c13 tr > :nth-child(13) { display: none; }
+table.hide-c14 tr > :nth-child(14) { display: none; }
+table.hide-c15 tr > :nth-child(15) { display: none; }
+table.hide-c16 tr > :nth-child(16) { display: none; }
 
 /* ---------- الهاتف ---------- */
 @media (max-width: 860px) {
@@ -507,6 +536,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
       <a href="#partners">الشركاء والأرباح</a>
       <a href="#alerts">التنبيهات <b class="nav-badge" id="alert-badge" hidden></b></a>
       <a href="#health">فحص البيانات</a>
+      <a href="#audit">سجل التعديلات</a>
       <a href="#planning">التخطيط</a>
       <a href="#reports">التقارير</a>
       <a href="#settings">الإعدادات</a>
@@ -520,12 +550,17 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
         <span class="tb-date"><span id="tb-date"></span><small id="tb-hijri"></small></span>
         <b class="tb-time" id="tb-time" dir="ltr"></b>
       </div>
+      <span class="sync-chip" id="sync-chip" hidden></span>
       <div class="tb-actions">
         <button class="btn btn-primary btn-small tb-new" data-action="newSale">+ طلب جديد</button>
         <a class="icon-btn tb-icon" href="#alerts" aria-label="التنبيهات" title="التنبيهات"><span data-icon="bell"></span><b class="nav-badge tb-badge" id="tb-badge" hidden></b></a>
         <button class="icon-btn tb-icon" type="button" id="theme-toggle" aria-label="تبديل الوضع الليلي" title="الوضع الليلي / النهاري"><span data-icon="moon"></span></button>
       </div>
     </header>
+    <div class="demo-banner backup-banner" id="backup-banner" hidden>
+      <span id="backup-text"></span>
+      <button class="btn btn-small" data-action="exportBackup">صدّر نسخة دلوقتي</button>
+    </div>
     <div class="demo-banner" id="demo-banner" hidden>
       <span><b>بيانات تجريبية.</b> الأرقام المعروضة مثال لمتجر عطور وهمي حتى تجرب النظام.</span>
       <button class="btn btn-small" data-action="clearDemo">امسحها وابدأ ببياناتي</button>
@@ -3056,6 +3091,109 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /*
+ * المزامنة — Florume
+ * الجزء النقي (مغطى بالاختبارات): تقسيم البيانات على مستندات سحابية صغيرة (حزمة لكل قائمة وشهر)،
+ * وحساب الفرق بين نسختين سجل بسجل، وإعادة بناء البيانات من المستندات.
+ * كل سجل بيتحفظ نص JSON تحت رقمه، فالتعديل بيكتب السجل ده بس (دمج) ومايمسحش تعديل حد تاني في نفس الحزمة.
+ */
+(function (root) {
+  'use strict';
+  // القوائم اللي ليها تاريخ بتتقسم بالشهر، والمبيعات كمان على 8 حزم في الشهر
+  const DATED = { sales: 'date', expenses: 'date', settlements: 'date', transfers: 'date', equity: 'date', adjustments: 'date', decants: 'date', distributions: 'date', supplierPayments: 'date', commissionPayments: 'date', reconciliations: 'date', shipments: 'orderDate' };
+  const SPLIT = { sales: 8, customers: 8, products: 4 }; // لحد ~2000 طلب في الشهر من غير ما مستند يعدّي 256KB
+  const LISTS = ['accounts', 'couriers', 'suppliers', 'products', 'customers', 'shipments', 'supplierPayments', 'sales', 'settlements', 'expenses', 'transfers', 'equity', 'adjustments', 'campaigns', 'partners', 'distributions', 'decants', 'reconciliations', 'coupons', 'commissionPayments', 'recurring'];
+  const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+  const cleanSeg = (s) => String(s || 'x').replace(/[^A-Za-z0-9_\-.~:@+]/g, '_').slice(0, 60) || 'x';
+
+  function docIdFor(list, rec) {
+    const field = DATED[list];
+    const month = field && /^\d{4}-\d{2}/.test(rec[field] || '') ? rec[field].slice(0, 7) : field ? 'nodate' : 'all';
+    return `${list}.${month}.${hash(rec.id) % (SPLIT[list] || 1)}`;
+  }
+
+  // البيانات ← مستندات: {docId: {list, items: {recordId: json}}} + مستند الإعدادات
+  function encode(state) {
+    const docs = { meta: { kind: 'meta', settings: JSON.stringify(state.settings || {}), version: state.version || 1 } };
+    LISTS.forEach((list) => (state[list] || []).forEach((rec, o) => {
+      if (!rec || !rec.id) return;
+      const id = docIdFor(list, rec);
+      const d = (docs[id] = docs[id] || { kind: 'list', list, items: {} });
+      d.items[cleanSeg(rec.id)] = JSON.stringify({ r: rec, o });
+    }));
+    return docs;
+  }
+
+  // الفرق سجل بسجل: كل مستند فيه إيه اتضاف/اتعدل (نص) وإيه اتمسح (null)
+  function diff(prev, next) {
+    const out = [];
+    const ids = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]);
+    ids.forEach((docId) => {
+      const a = (prev || {})[docId], b = (next || {})[docId];
+      if (docId === 'meta') { if (!a || !b || a.settings !== b.settings) out.push({ docId, meta: b }); return; }
+      const changes = {};
+      const ai = (a && a.items) || {}, bi = (b && b.items) || {};
+      Object.keys(bi).forEach((k) => { if (ai[k] !== bi[k]) changes[k] = bi[k]; });
+      Object.keys(ai).forEach((k) => { if (!(k in bi) && ai[k] != null) changes[k] = null; });
+      if (Object.keys(changes).length) out.push({ docId, list: (b || a).list, changes, exists: !!a });
+    });
+    return out;
+  }
+
+  // المستندات ← البيانات (بترتيب الحفظ، والسجلات الممسوحة null بتتخطى)
+  function decode(docs, base) {
+    const out = { ...(base || {}) };
+    const meta = docs.meta;
+    if (meta && meta.settings) { try { out.settings = JSON.parse(meta.settings); } catch (e) { /* يفضل الموجود */ } }
+    LISTS.forEach((list) => (out[list] = []));
+    const tmp = {};
+    Object.entries(docs).forEach(([id, d]) => {
+      if (!d || d.kind !== 'list' || !LISTS.includes(d.list)) return;
+      Object.values(d.items || {}).forEach((v) => {
+        if (v == null) return;
+        try { const x = JSON.parse(v); (tmp[d.list] = tmp[d.list] || []).push(x); } catch (e) { /* سجل تالف */ }
+      });
+    });
+    Object.entries(tmp).forEach(([list, arr]) => (out[list] = arr.sort((a, b) => (a.o ?? 0) - (b.o ?? 0)).map((x) => x.r)));
+    out.demo = false;
+    return out;
+  }
+
+  // وصف تعديل لسجل التعديلات
+  const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
+  function describe(list, rec, prefix) {
+    if (!rec) return LIST_LABEL[list] || list;
+    const name = list === 'sales' ? `${prefix || ''}${rec.no || ''}` : rec.name || rec.code || rec.ref || rec.notes || rec.date || '';
+    return `${LIST_LABEL[list] || list} ${name}`.trim();
+  }
+  function changesForLog(prev, next, prefix) {
+    const log = [];
+    diff(prev, next).forEach((d) => {
+      if (d.meta) { log.push({ list: 'settings', id: 'settings', action: 'edit', label: 'الإعدادات' }); return; }
+      Object.entries(d.changes).forEach(([k, v]) => {
+        const before = prev && prev[d.docId] && prev[d.docId].items && prev[d.docId].items[k];
+        const recB = v ? JSON.parse(v).r : null, recA = before ? JSON.parse(before).r : null;
+        log.push({ list: d.list, id: k, action: !recA ? 'add' : !recB ? 'delete' : 'edit', label: describe(d.list, recB || recA, prefix) });
+      });
+    });
+    return log;
+  }
+
+  // الأدوار: المالك كل حاجة، المدير كل حاجة ماعدا الفريق، مسؤول الطلبات من غير تكاليف وأرباح، والعرض بس
+  const ROLES = { owner: 'المالك', manager: 'مدير', orders: 'مسؤول طلبات', viewer: 'عرض بس' };
+  const PAGES_BY_ROLE = {
+    orders: ['sales', 'customers', 'products', 'alerts', 'reconcile'],
+    viewer: null, manager: null, owner: null,
+  };
+  const canSeePage = (role, page) => !PAGES_BY_ROLE[role] || PAGES_BY_ROLE[role].includes(page);
+  const canWrite = (role) => role !== 'viewer';
+  const seesCosts = (role) => role !== 'orders';
+
+  const api = { DATED, LISTS, hash, docIdFor, encode, diff, decode, describe, changesForLog, ROLES, canSeePage, canWrite, seesCosts };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.SYNC = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+/*
  * رسوم لوحة التحكم — Florume
  * SVG/HTML بسيط بدون مكتبات: خط مصغر (sparkline)، أعمدة شهرية، منحنى يومي بخط متتبع،
  * أشرطة أفقية، وشريط مكدّس لحالات الطلبات. الألوان من متغيرات CSS (--chart-*) فتتبدل مع الوضع الداكن.
@@ -3244,8 +3382,14 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     },
     save() {
       this._journal = null;
+      const ok = this.saveLocal();
+      if (window.CLOUD) window.CLOUD.onSave();
+      return ok;
+    },
+    // نسخة الجهاز (بتفضل موجودة حتى في وضع السحابة عشان الفتح يبقى سريع)
+    saveLocal() {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); return true; }
-      catch (e) { UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
+      catch (e) { if (!(window.CLOUD && window.CLOUD.mode === 'cloud')) UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
     },
     get journal() { return this._journal || (this._journal = Acc.buildJournal(this.state)); },
     replace(state) { this.state = migrate(state); this.save(); },
@@ -3326,7 +3470,11 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
       bad.addEventListener('input', () => bad.classList.remove('invalid'), { once: true });
       return false;
     },
-    close() { const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll'); },
+    close() {
+      const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll');
+      // تعديلات وصلت من جهاز تاني والنافذة مفتوحة: نرسم بعد ما تتقفل
+      if (window.CLOUD && window.CLOUD.pendingRender) { window.CLOUD.pendingRender = false; if (window.CLOUD.onChange) window.CLOUD.onChange(); }
+    },
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
@@ -3535,7 +3683,268 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     return s;
   }
 
-  window.F = { STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+  window.F = { migrateState: migrate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+})();
+
+/*
+ * السحابة والفريق والنسخ الاحتياطي — Florume
+ * - لما النظام يتفتح كصفحة على claude.ai: البيانات بتتحفظ في قاعدة بيانات سحابية وتتزامن لحظيًا بين الأجهزة والفريق.
+ * - الأدوار: المالك، مدير، مسؤول طلبات (من غير تكاليف وأرباح)، عرض بس.
+ * - سجل التعديلات: مين عمل إيه وإمتى.
+ * - لما يتفتح كملف على الجهاز: تذكير بالنسخة الاحتياطية، ونسخ تلقائي لفولدر تختاره (Chrome على الكمبيوتر).
+ */
+(function () {
+  'use strict';
+  const COL = 'florume';
+  const LOCAL_AUDIT = 'florume.audit';
+  const LAST_BACKUP = 'florume.lastBackup';
+  const today = () => F.today();
+  const safeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* لا شيء */ } };
+
+  const C = {
+    mode: 'local', // local | connecting | cloud
+    status: '', // نص الحالة في الشريط العلوي
+    role: 'owner',
+    uid: null,
+    db: null, user: null,
+    remote: {}, // مستندات السحابة كما وصلت
+    synced: null, // آخر نسخة متزامنة (بشكل المستندات)
+    timer: null, busy: false, again: false, remoteDirty: false, readOnly: false,
+    members: [], team: {},
+    onChange: null, // يترسم من جديد لما تيجي بيانات من حد تاني
+    pendingRender: false,
+  };
+
+  const setStatus = (s, kind) => { C.status = s; C.statusKind = kind || ''; const el = document.getElementById('sync-chip'); if (el) { el.textContent = s; el.dataset.kind = kind || ''; el.hidden = !s; } };
+
+  // ---------- سجل التعديلات ----------
+  let lastLocal = null;
+  function logLocal(entries) {
+    if (!entries.length) return;
+    let arr = [];
+    try { arr = JSON.parse(safeGet(LOCAL_AUDIT) || '[]'); } catch (e) { arr = []; }
+    arr.push(...entries);
+    safeSet(LOCAL_AUDIT, JSON.stringify(arr.slice(-500)));
+  }
+  async function logCloud(entries) {
+    if (!entries.length || !C.db) return;
+    const ref = C.db.collection('audit').doc(today());
+    const body = {};
+    entries.forEach((e) => (body[`${Date.now()}_${Math.random().toString(36).slice(2, 7)}`] = JSON.stringify(e)));
+    try { await ref.update({ entries: body }); }
+    catch (err) { try { const snap = await ref.get(); if (!snap.exists) await ref.set({ entries: body }); else await ref.update({ entries: body }); } catch (e) { /* السجل مش بيوقف الحفظ */ } }
+  }
+  async function readAudit(days = 14) {
+    if (C.mode !== 'cloud') { try { return JSON.parse(safeGet(LOCAL_AUDIT) || '[]').reverse(); } catch (e) { return []; } }
+    const out = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const id = d.toISOString().slice(0, 10);
+      try { const snap = await C.db.collection('audit').doc(id).get(); if (snap.exists) Object.values((snap.data() || {}).entries || {}).forEach((v) => { try { out.push(JSON.parse(v)); } catch (e) { /* لا شيء */ } }); } catch (e) { /* لا شيء */ }
+    }
+    return out.sort((a, b) => (a.at < b.at ? 1 : -1));
+  }
+
+  // ---------- الحفظ ----------
+  // بيتنادي من DB.save: محلي يسجل التعديل، وسحابي يبعت التغييرات بعد لحظة
+  function onSave() {
+    const st = F.DB.state;
+    if (C.mode !== 'cloud') {
+      const enc = SYNC.encode(st);
+      if (lastLocal && !st.demo) logLocal(SYNC.changesForLog(lastLocal, enc, st.settings.invoicePrefix).map((e) => ({ ...e, at: new Date().toISOString(), uid: 'local' })));
+      lastLocal = enc;
+      scheduleFolderBackup();
+      return;
+    }
+    if (st.demo || C.readOnly) return;
+    clearTimeout(C.timer);
+    setStatus('بيحفظ…', 'busy');
+    C.timer = setTimeout(flush, 400);
+  }
+  async function flush() {
+    if (C.busy) { C.again = true; return; }
+    C.busy = true;
+    try {
+      const next = SYNC.encode(F.DB.state);
+      const changes = SYNC.diff(C.synced, next);
+      const log = SYNC.changesForLog(C.synced, next, F.DB.state.settings.invoicePrefix).map((e) => ({ ...e, at: new Date().toISOString(), uid: C.uid }));
+      for (const d of changes) {
+        const ref = C.db.collection(COL).doc(d.docId);
+        if (d.meta) { await ref.set(d.meta); C.synced.meta = d.meta; C.remote.meta = { ...d.meta }; continue; }
+        const known = C.remote[d.docId] || (C.synced && C.synced[d.docId]);
+        if (known) {
+          try { await ref.update({ items: d.changes }); }
+          catch (e) { if (e && e.code === 'invalid_argument') await ref.set({ kind: 'list', list: d.list, items: d.changes }); else throw e; }
+        } else {
+          // مستند جديد: قفل قصير عشان لو جهازين بيعملوه في نفس اللحظة
+          try { await ref.acquire({ holder: C.uid || 'me', ttlMs: 5000 }); } catch (e) { /* القفل اختياري */ }
+          const snap = await ref.get();
+          if (snap.exists) await ref.update({ items: d.changes }); else await ref.set({ kind: 'list', list: d.list, items: d.changes });
+        }
+        // اللي اتكتب يتسجل في النسختين، عشان رجوع التعديل من السحابة مايتقرأش كأنه كل البيانات
+        [C.synced, C.remote].forEach((m) => { const cur = (m[d.docId] = m[d.docId] || { kind: 'list', list: d.list, items: {} }); cur.items = { ...cur.items, ...d.changes }; });
+      }
+      logCloud(log);
+      setStatus('☁ متزامن', 'ok');
+    } catch (e) {
+      const code = e && e.code;
+      if (code === 'invalid_argument' || code === 'not_granted' || code === 'revoked') { C.readOnly = true; setStatus('عرض بس — التعديلات مش بتتحفظ', 'bad'); F.UI.toast('صلاحيتك عرض بس — التعديل مش هيتحفظ', 'bad'); }
+      else if (code === 'quota_exceeded') { setStatus('المساحة السحابية اتملت', 'bad'); F.UI.toast('المساحة السحابية اتملت — كلمنا عشان نقسم البيانات', 'bad'); }
+      else { setStatus('مش متزامن — هيحاول تاني', 'bad'); setTimeout(() => onSave(), 5000); }
+    } finally {
+      C.busy = false;
+      if (C.again) { C.again = false; flush(); }
+      else if (C.remoteDirty) { C.remoteDirty = false; applyRemote(); }
+    }
+  }
+
+  // ---------- استلام تعديلات الآخرين ----------
+  function applyRemote() {
+    if (C.busy || C.timer && C.status === 'بيحفظ…') { C.remoteDirty = true; return; }
+    const hasData = Object.keys(C.remote).some((k) => k !== 'meta');
+    if (!hasData) return;
+    const local = SYNC.encode(F.DB.state);
+    if (!SYNC.diff(local, C.remote).length && !F.DB.state.demo) return;
+    F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+    F.DB._journal = null;
+    F.DB.saveLocal();
+    C.synced = JSON.parse(JSON.stringify(C.remote));
+    if (document.getElementById('modal').hidden) { if (C.onChange) C.onChange(); }
+    else C.pendingRender = true;
+  }
+
+  // ---------- الاتصال ----------
+  async function connect() {
+    if (!window.claude || typeof window.claude.use !== 'function') { localMode(); return; }
+    C.mode = 'connecting';
+    const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+    if (!db) { localMode(); return; }
+    C.db = db; C.user = user;
+    C.uid = user ? await user.id() : null;
+    await resolveRole();
+    setStatus('بيتصل…', 'busy');
+    let snap;
+    try { snap = await db.collection(COL).get(); }
+    catch (e) { setStatus('السحابة مش متاحة — شغال على الجهاز', 'bad'); localMode(); return; }
+    snap.docs.forEach((d) => (C.remote[d.id] = JSON.parse(JSON.stringify(d.data()))));
+    C.mode = 'cloud';
+    document.body.dataset.mode = 'cloud';
+    const cloudHasData = Object.keys(C.remote).some((k) => k !== 'meta');
+    if (cloudHasData) {
+      // نحتفظ بنسخة من اللي كان على الجهاز قبل ما السحابة تحل محله
+      if (!F.DB.state.demo && !safeGet('florume.preCloud')) safeSet('florume.preCloud', JSON.stringify(F.DB.state));
+      C.synced = JSON.parse(JSON.stringify(C.remote));
+      F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+      F.DB._journal = null; F.DB.saveLocal();
+      setStatus('☁ متزامن', 'ok');
+    } else {
+      C.synced = {};
+      if (!F.DB.state.demo) {
+        if (C.role === 'owner') { setStatus('بيرفع بياناتك…', 'busy'); await flush(); F.UI.toast('بياناتك اترفعت على السحابة ☁'); }
+        else setStatus('السحابة فاضية — المالك يرفع البيانات', 'bad');
+      } else setStatus('☁ جاهز — ابدأ ببياناتك', 'ok');
+    }
+    // التعديلات الجاية من أي جهاز تاني
+    db.collection(COL).onSnapshot((s) => {
+      s.docChanges().forEach((ch) => { if (ch.type === 'removed') delete C.remote[ch.doc.id]; else C.remote[ch.doc.id] = JSON.parse(JSON.stringify(ch.doc.data())); });
+      if (s.metadata.hasPendingWrites) return;
+      applyRemote();
+    }, () => setStatus('الاتصال بالسحابة وقف — اعمل تحديث للصفحة', 'bad'));
+    // تسجيل وجود العضو (المالك بيشوف الفريق من هنا)
+    if (C.uid) { try { const m = C.db.collection('members').doc(C.uid); const s0 = await m.get(); if (!s0.exists || (s0.data() || {}).seen !== today()) await m.set({ seen: today() }); } catch (e) { /* لا شيء */ } }
+    if (C.onChange) C.onChange();
+  }
+  async function resolveRole() {
+    const u = C.user;
+    if (!u) { C.role = 'owner'; return; }
+    if (await u.isOwner()) { C.role = 'owner'; }
+    else {
+      try { const t = await C.db.collection('roles').doc('team').get(); C.team = (t.exists && t.data().members) || {}; } catch (e) { C.team = {}; }
+      C.role = (C.uid && C.team[C.uid]) || 'orders';
+      const w = await u.can('data.write');
+      if (w === false) { C.role = 'viewer'; C.readOnly = true; }
+    }
+    applyRole();
+  }
+  function applyRole() {
+    document.body.dataset.role = C.role;
+    document.querySelectorAll('.nav a').forEach((a) => (a.hidden = !SYNC.canSeePage(C.role, a.getAttribute('href').slice(1)) || (a.getAttribute('href') === '#audit' && !['owner', 'manager'].includes(C.role))));
+  }
+  async function loadMembers() {
+    if (!C.db) return [];
+    const snap = await C.db.collection('members').get();
+    const ids = snap.docs.map((d) => d.id).filter((id) => id !== C.uid);
+    const t = await C.db.collection('roles').doc('team').get();
+    C.team = (t.exists && t.data().members) || {};
+    const ps = C.user && ids.length ? await C.user.profiles(ids) : {};
+    C.members = ids.map((id) => ({ id, name: (ps[id] && ps[id].name) || 'عضو', avatar: ps[id] && ps[id].avatarUrl, seen: (snap.docs.find((d) => d.id === id).data() || {}).seen, role: C.team[id] || 'orders' }));
+    return C.members;
+  }
+  async function setRole(id, role) {
+    const team = { ...C.team, [id]: role };
+    await C.db.collection('roles').doc('team').set({ members: team });
+    C.team = team;
+  }
+  async function names(ids) { if (!C.user || !ids.length) return {}; const ps = await C.user.profiles(ids); return Object.fromEntries(Object.entries(ps).map(([k, v]) => [k, v.name || 'عضو'])); }
+
+  function localMode() {
+    C.mode = 'local';
+    document.body.dataset.mode = 'local';
+    lastLocal = SYNC.encode(F.DB.state);
+    setStatus('', '');
+    restoreFolder();
+    if (C.onChange) C.onChange();
+  }
+
+  // ---------- النسخ الاحتياطي على الجهاز ----------
+  const backupAgeDays = () => { const t = safeGet(LAST_BACKUP); return t ? Math.floor((Date.now() - Date.parse(t)) / 86400000) : null; };
+  const markBackup = () => safeSet(LAST_BACKUP, new Date().toISOString());
+  const folderSupported = () => 'showDirectoryPicker' in window && !F.inFrame;
+  let dirHandle = null, folderReady = false, folderTimer = null;
+  const idb = (fn) => new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('florume', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('kv');
+      req.onsuccess = () => { const tx = req.result.transaction('kv', 'readwrite'); const r = fn(tx.objectStore('kv')); tx.oncomplete = () => resolve(r && r.result); tx.onerror = () => resolve(null); };
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+  async function restoreFolder() {
+    if (!folderSupported()) return;
+    const h = await idb((s) => s.get('backupDir'));
+    if (!h) return;
+    dirHandle = h;
+    try { folderReady = (await h.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch (e) { folderReady = false; }
+  }
+  async function chooseFolder() {
+    if (!folderSupported()) { F.UI.toast('المتصفح ده مش بيدعم النسخ لفولدر — استخدم Chrome أو Edge على الكمبيوتر', 'bad'); return false; }
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      await idb((s) => s.put(dirHandle, 'backupDir'));
+      folderReady = true;
+      await writeFolderBackup();
+      return true;
+    } catch (e) { return false; }
+  }
+  async function reenableFolder() {
+    if (!dirHandle) return chooseFolder();
+    try { folderReady = (await dirHandle.requestPermission({ mode: 'readwrite' })) === 'granted'; if (folderReady) await writeFolderBackup(); } catch (e) { folderReady = false; }
+    return folderReady;
+  }
+  async function writeFolderBackup() {
+    if (!dirHandle || !folderReady || F.DB.state.demo) return;
+    try {
+      const f = await dirHandle.getFileHandle(`florume-backup-${today()}.json`, { create: true });
+      const w = await f.createWritable();
+      await w.write(JSON.stringify(F.DB.state));
+      await w.close();
+      markBackup();
+    } catch (e) { folderReady = false; }
+  }
+  function scheduleFolderBackup() { if (!folderReady) return; clearTimeout(folderTimer); folderTimer = setTimeout(writeFolderBackup, 5000); }
+
+  window.CLOUD = Object.assign(C, { connect, onSave, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
 })();
 
 /* Florume — الشاشات */
@@ -3582,7 +3991,10 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
   const productOptions = () => [{ v: '', l: 'اختر المنتج…' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))];
   const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', lost: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
   const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '—');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
+  const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
+  const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
+  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
@@ -3951,7 +4363,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
           const sampleCost = sp ? sp.avgCost * (num(f.sampleQty.value) || 1) : 0;
           const profit = total - cost - fee - payFee - commission - sampleCost;
           const extra = [payFee ? `<div><span>عمولة الدفع</span><b>${fmt(payFee)}</b></div>` : '', commission ? `<div><span>عمولة المؤثر</span><b>${fmt(commission)}</b></div>` : '', sampleCost ? `<div><span>العينة</span><b>${fmt(sampleCost)}</b></div>` : ''].join('');
-          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div>${extra}<div class="${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
+          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div class="sens"><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div>${extra.replace(/<div>/g, '<div class="sens">')}<div class="sens ${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
         };
         const addProduct = (p) => {
           const rows = [...lines.querySelectorAll('.line')];
@@ -4771,6 +5183,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
           ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
+      ${cloudSection()}
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
         <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP، أو <b>تصدير طلبات Shopify أو WooCommerce</b> (Orders → Export). هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
@@ -4873,6 +5286,55 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
         ${good.length ? `<ul class="check-list">${good.map((c) => `<li>✔ ${esc(c.label)}</li>`).join('')}</ul>` : UI.empty('كل الفحوصات فيها ملاحظات')}
       </section>
       <p class="muted">افحص بعد أي استيراد من Excel أو استرجاع نسخة احتياطية، وآخر كل شهر قبل مراجعة التقارير.</p>`;
+  }
+
+  // =====================================================================
+  // سجل التعديلات
+  // =====================================================================
+  let auditCache = null;
+  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف' };
+  function auditPage() {
+    if (!auditCache) {
+      CLOUD.readAudit(14).then(async (list) => { const ids = [...new Set(list.map((e) => e.uid).filter((u) => u && u !== 'local'))]; const nm = await CLOUD.names(ids); auditCache = { list, nm }; render(); });
+      return `${header('سجل التعديلات', 'بيحمّل…')}`;
+    }
+    const { list, nm } = auditCache;
+    auditCache = null; // يتحمّل من جديد المرة الجاية
+    const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
+    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
+    return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
+      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
+  }
+  // قسم السحابة والفريق في الإعدادات
+  function cloudSection() {
+    if (CLOUD.mode === 'cloud') {
+      const owner = CLOUD.role === 'owner';
+      return `<section class="panel" id="cloud-panel">
+        <h2 class="section-title">☁ السحابة والفريق</h2>
+        <p>بياناتك محفوظة على السحابة وبتتزامن لحظيًا بين كل الأجهزة وكل اللي معاهم الصفحة. الحالة: <b>${esc(CLOUD.status || '—')}</b> · دورك: <b>${esc(SYNC.ROLES[CLOUD.role])}</b></p>
+        ${owner ? `<p class="muted">عشان حد يشتغل معاك: شارك الصفحة معاه من زرار المشاركة في claude.ai («Can interact» عشان يقدر يسجل، أو «Can view» للعرض بس). بعد ما يفتحها مرة هيظهر هنا وتختار دوره.</p>
+          <div id="team-box">${table(['العضو', 'آخر ظهور', 'الدور'], [], { empty: 'بيحمّل الفريق…' })}</div>
+          <p class="muted"><b>مدير:</b> كل حاجة ماعدا الفريق · <b>مسؤول طلبات:</b> المبيعات والعملاء والمنتجات والتنبيهات وتسوية الشحن، من غير تكاليف ولا أرباح · <b>عرض بس:</b> يشوف ومايعدّلش (وللحماية الكاملة شاركه «Can view»).</p>` : ''}
+        <div class="btn-row"><a class="btn" href="#audit">سجل التعديلات</a></div>
+      </section>`;
+    }
+    const f = CLOUD.folderState();
+    const age = CLOUD.backupAgeDays();
+    return `<section class="panel">
+      <h2 class="section-title">النسخ الاحتياطي التلقائي</h2>
+      <p class="muted">بياناتك على الجهاز ده بس. آخر نسخة احتياطية: <b>${age == null ? 'مفيش' : age === 0 ? 'النهارده' : `من ${age} يوم`}</b>.</p>
+      ${f.supported ? `<p class="muted">اختار فولدر (مثلًا فولدر Google Drive على الكمبيوتر) والنظام هيحفظ فيه نسخة كل يوم لوحده بعد أي تعديل.</p>
+        <div class="btn-row">${f.chosen ? `<span>الفولدر: <b>${esc(f.name)}</b> — ${f.ready ? '<span class="good-text">شغال ✔</span>' : '<span class="warn-text">محتاج تأكيد</span>'}</span>${f.ready ? '' : '<button class="btn btn-primary" data-action="reenableFolder">فعّل النسخ التلقائي</button>'}<button class="btn" data-action="chooseFolder">غيّر الفولدر</button>` : '<button class="btn btn-primary" data-action="chooseFolder">اختار فولدر للنسخ التلقائي</button>'}</div>`
+        : '<p class="muted">النسخ التلقائي لفولدر محتاج Chrome أو Edge على الكمبيوتر وإن الملف يتفتح من الجهاز. غير كده صدّر نسخة كل أسبوع.</p>'}
+      <p class="muted">عشان تشتغل من أكتر من جهاز أو مع فريق، افتح النظام كصفحة على claude.ai وبياناتك هتتحفظ على السحابة.</p>
+    </section>`;
+  }
+  async function renderTeam() {
+    const box = document.getElementById('team-box');
+    if (!box || CLOUD.role !== 'owner') return;
+    const list = await CLOUD.loadMembers();
+    const b2 = document.getElementById('team-box'); if (!b2) return;
+    b2.innerHTML = table(['العضو', 'آخر ظهور', 'الدور'], list.map((m) => `<tr>${td(esc(m.name))}${td(fmtDate(m.seen))}${td(UI.select('role-' + m.id, Object.fromEntries(Object.entries(SYNC.ROLES).filter(([k]) => k !== 'owner')), m.role, `data-change="setRole" data-id="${esc(m.id)}" aria-label="الدور"`))}</tr>`), { empty: 'مفيش حد فتح الصفحة غيرك لسه' });
   }
 
   // =====================================================================
@@ -5689,7 +6151,9 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
         renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
       }, 'تراجع');
     },
-    exportBackup: () => UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json'),
+    exportBackup: () => { CLOUD.markBackup(); UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json').then(() => render()); },
+    chooseFolder: () => CLOUD.chooseFolder().then((ok) => { if (ok) UI.toast('النسخ التلقائي شغال ✔'); render(); }),
+    reenableFolder: () => CLOUD.reenableFolder().then((ok) => { UI.toast(ok ? 'النسخ التلقائي شغال ✔' : 'ما اتفعّلش', ok ? 'good' : 'bad'); render(); }),
     pasteBackup: () => UI.modal({ title: 'استيراد نسخة احتياطية', submit: 'استيراد', body: `<p class="muted">سيتم استبدال كل البيانات الحالية بالنسخة التي تلصقها.</p><textarea id="f-paste" name="paste" class="export-box" required></textarea>`, onSubmit: (f, fd) => { importState(fd.get('paste')); } }),
     loadDemo: () => UI.confirm('سيتم استبدال بياناتك الحالية بالبيانات التجريبية. صدّر نسخة احتياطية أولًا إن احتجت.', () => { DB.replace(F.demoState()); UI.toast('تم تحميل البيانات التجريبية'); render(); }, 'تحميل'),
     resetAll: () => UI.confirm('سيتم مسح كل البيانات (المنتجات، الطلبات، الشحنات، الحسابات). تأكد أن لديك نسخة احتياطية.', () => { DB.replace(F.emptyState()); UI.toast('تم مسح البيانات — ابدأ بإضافة الموردين والمنتجات'); location.hash = 'settings'; render(); }, 'مسح الكل'),
@@ -5702,6 +6166,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     saleStatusFilter: (el) => { saleFilter.status = el.value; render(); },
     saleChannelFilter: (el) => { saleFilter.channel = el.value; render(); },
     saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
+    setRole: (el) => CLOUD.setRole(el.dataset.id, el.value).then(() => UI.toast('تم تغيير الدور')).catch(() => UI.toast('تعذر تغيير الدور', 'bad')),
     ledgerAcc: (el) => { ledgerAcc = el.value; render(); },
     saleStatus: (el) => {
       const sale = DB.find('sales', el.dataset.id);
@@ -5746,6 +6211,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     alerts: { title: 'التنبيهات', render: alertsPage },
     health: { title: 'فحص سلامة البيانات', render: healthPage },
     planning: { title: 'التخطيط', render: planningPage },
+    audit: { title: 'سجل التعديلات', render: auditPage },
     reports: { title: 'التقارير', render: reports, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
@@ -5779,9 +6245,20 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     return { name: 'تفاصيل الأصناف المباعة', header: ['الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الموبايل', 'المدينة', 'القناة', 'الحالة', 'البوليصة', 'الحملة', 'الصنف', 'الكمية', 'السعر', 'الإجمالي', 'التكلفة'], rows };
   }
   function render() {
-    const key = currentPage();
+    let key = currentPage();
+    // مسؤول الطلبات بيبدأ من المبيعات، ومايفتحش الصفحات اللي فيها تكاليف وأرباح
+    if (!SYNC.canSeePage(CLOUD.role, key)) key = SYNC.canSeePage(CLOUD.role, 'sales') ? 'sales' : key;
+    if (key === 'audit' && !['owner', 'manager'].includes(CLOUD.role)) key = 'sales';
     document.querySelectorAll('.nav a').forEach((a) => a.setAttribute('aria-current', a.getAttribute('href') === '#' + key ? 'page' : 'false'));
     document.getElementById('demo-banner').hidden = !S().demo;
+    // تذكير بالنسخة الاحتياطية لما البيانات على الجهاز بس
+    const bb = document.getElementById('backup-banner');
+    if (bb) {
+      const age = CLOUD.backupAgeDays();
+      const need = CLOUD.mode === 'local' && !S().demo && S().sales.length && (age == null || age >= 7) && !CLOUD.folderState().ready;
+      bb.hidden = !need;
+      if (need) document.getElementById('backup-text').innerHTML = age == null ? '<b>ماعملتش نسخة احتياطية لسه.</b> بياناتك على المتصفح ده بس — لو اتمسح هتضيع.' : `<b>آخر نسخة احتياطية من ${age} يوم.</b> صدّر نسخة جديدة أو فعّل النسخ التلقائي من الإعدادات.`;
+    }
     const m = main();
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
@@ -5789,6 +6266,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
     CH.bindLines(m, document.getElementById('tip'));
+    if (key === 'settings') renderTeam();
     const pa = m.querySelector('.page-head .page-actions');
     if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
@@ -5828,6 +6306,7 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     partners: '<path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.9-3.9a3 3 0 0 0-4.2 0l-.9.9a1 1 0 1 1-3-3l2.8-2.8a5.8 5.8 0 0 1 7.1-.9l.5.3a2 2 0 0 0 1.4.2L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/>',
     alerts: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
     health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
+    audit: '<path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 4v5h5"/>',
     planning: '<path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
     reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
@@ -5894,7 +6373,9 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
     document.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('[data-tip]'); if (!g) return; const r = g.getBoundingClientRect(); tip.textContent = g.dataset.tip; tip.hidden = false; tip.style.left = r.left + r.width / 2 + 'px'; tip.style.top = r.top - 6 + 'px'; });
     document.addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) tip.hidden = true; });
     window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+    CLOUD.onChange = () => { renderBrand(); CLOUD.applyRole(); render(); };
     render();
+    CLOUD.connect();
   }
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
 })();

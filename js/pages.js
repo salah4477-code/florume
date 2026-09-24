@@ -42,7 +42,10 @@
   const productOptions = () => [{ v: '', l: 'اختر المنتج…' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))];
   const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', lost: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
   const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '—');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
+  const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
+  const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
+  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
@@ -411,7 +414,7 @@
           const sampleCost = sp ? sp.avgCost * (num(f.sampleQty.value) || 1) : 0;
           const profit = total - cost - fee - payFee - commission - sampleCost;
           const extra = [payFee ? `<div><span>عمولة الدفع</span><b>${fmt(payFee)}</b></div>` : '', commission ? `<div><span>عمولة المؤثر</span><b>${fmt(commission)}</b></div>` : '', sampleCost ? `<div><span>العينة</span><b>${fmt(sampleCost)}</b></div>` : ''].join('');
-          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div>${extra}<div class="${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
+          f.querySelector('#sale-summary').innerHTML = `<div><span>إجمالي الأصناف</span><b>${fmt(gross)}</b></div><div><span>الخصم</span><b>${fmt(disc)}</b></div><div><span>شحن محصل</span><b>${fmt(ship)}</b></div><div class="strong"><span>المطلوب من العميل</span><b>${fmt(total)} ج.م</b></div><div class="sens"><span>التكلفة المتوقعة</span><b>${fmt(cost)}</b></div>${extra.replace(/<div>/g, '<div class="sens">')}<div class="sens ${profit < 0 ? 'bad-text' : 'good-text'}"><span>الربح المتوقع</span><b>${fmt(profit)}</b></div>`;
         };
         const addProduct = (p) => {
           const rows = [...lines.querySelectorAll('.line')];
@@ -1231,6 +1234,7 @@
           ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
+      ${cloudSection()}
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
         <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP، أو <b>تصدير طلبات Shopify أو WooCommerce</b> (Orders → Export). هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
@@ -1333,6 +1337,55 @@
         ${good.length ? `<ul class="check-list">${good.map((c) => `<li>✔ ${esc(c.label)}</li>`).join('')}</ul>` : UI.empty('كل الفحوصات فيها ملاحظات')}
       </section>
       <p class="muted">افحص بعد أي استيراد من Excel أو استرجاع نسخة احتياطية، وآخر كل شهر قبل مراجعة التقارير.</p>`;
+  }
+
+  // =====================================================================
+  // سجل التعديلات
+  // =====================================================================
+  let auditCache = null;
+  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف' };
+  function auditPage() {
+    if (!auditCache) {
+      CLOUD.readAudit(14).then(async (list) => { const ids = [...new Set(list.map((e) => e.uid).filter((u) => u && u !== 'local'))]; const nm = await CLOUD.names(ids); auditCache = { list, nm }; render(); });
+      return `${header('سجل التعديلات', 'بيحمّل…')}`;
+    }
+    const { list, nm } = auditCache;
+    auditCache = null; // يتحمّل من جديد المرة الجاية
+    const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
+    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
+    return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
+      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
+  }
+  // قسم السحابة والفريق في الإعدادات
+  function cloudSection() {
+    if (CLOUD.mode === 'cloud') {
+      const owner = CLOUD.role === 'owner';
+      return `<section class="panel" id="cloud-panel">
+        <h2 class="section-title">☁ السحابة والفريق</h2>
+        <p>بياناتك محفوظة على السحابة وبتتزامن لحظيًا بين كل الأجهزة وكل اللي معاهم الصفحة. الحالة: <b>${esc(CLOUD.status || '—')}</b> · دورك: <b>${esc(SYNC.ROLES[CLOUD.role])}</b></p>
+        ${owner ? `<p class="muted">عشان حد يشتغل معاك: شارك الصفحة معاه من زرار المشاركة في claude.ai («Can interact» عشان يقدر يسجل، أو «Can view» للعرض بس). بعد ما يفتحها مرة هيظهر هنا وتختار دوره.</p>
+          <div id="team-box">${table(['العضو', 'آخر ظهور', 'الدور'], [], { empty: 'بيحمّل الفريق…' })}</div>
+          <p class="muted"><b>مدير:</b> كل حاجة ماعدا الفريق · <b>مسؤول طلبات:</b> المبيعات والعملاء والمنتجات والتنبيهات وتسوية الشحن، من غير تكاليف ولا أرباح · <b>عرض بس:</b> يشوف ومايعدّلش (وللحماية الكاملة شاركه «Can view»).</p>` : ''}
+        <div class="btn-row"><a class="btn" href="#audit">سجل التعديلات</a></div>
+      </section>`;
+    }
+    const f = CLOUD.folderState();
+    const age = CLOUD.backupAgeDays();
+    return `<section class="panel">
+      <h2 class="section-title">النسخ الاحتياطي التلقائي</h2>
+      <p class="muted">بياناتك على الجهاز ده بس. آخر نسخة احتياطية: <b>${age == null ? 'مفيش' : age === 0 ? 'النهارده' : `من ${age} يوم`}</b>.</p>
+      ${f.supported ? `<p class="muted">اختار فولدر (مثلًا فولدر Google Drive على الكمبيوتر) والنظام هيحفظ فيه نسخة كل يوم لوحده بعد أي تعديل.</p>
+        <div class="btn-row">${f.chosen ? `<span>الفولدر: <b>${esc(f.name)}</b> — ${f.ready ? '<span class="good-text">شغال ✔</span>' : '<span class="warn-text">محتاج تأكيد</span>'}</span>${f.ready ? '' : '<button class="btn btn-primary" data-action="reenableFolder">فعّل النسخ التلقائي</button>'}<button class="btn" data-action="chooseFolder">غيّر الفولدر</button>` : '<button class="btn btn-primary" data-action="chooseFolder">اختار فولدر للنسخ التلقائي</button>'}</div>`
+        : '<p class="muted">النسخ التلقائي لفولدر محتاج Chrome أو Edge على الكمبيوتر وإن الملف يتفتح من الجهاز. غير كده صدّر نسخة كل أسبوع.</p>'}
+      <p class="muted">عشان تشتغل من أكتر من جهاز أو مع فريق، افتح النظام كصفحة على claude.ai وبياناتك هتتحفظ على السحابة.</p>
+    </section>`;
+  }
+  async function renderTeam() {
+    const box = document.getElementById('team-box');
+    if (!box || CLOUD.role !== 'owner') return;
+    const list = await CLOUD.loadMembers();
+    const b2 = document.getElementById('team-box'); if (!b2) return;
+    b2.innerHTML = table(['العضو', 'آخر ظهور', 'الدور'], list.map((m) => `<tr>${td(esc(m.name))}${td(fmtDate(m.seen))}${td(UI.select('role-' + m.id, Object.fromEntries(Object.entries(SYNC.ROLES).filter(([k]) => k !== 'owner')), m.role, `data-change="setRole" data-id="${esc(m.id)}" aria-label="الدور"`))}</tr>`), { empty: 'مفيش حد فتح الصفحة غيرك لسه' });
   }
 
   // =====================================================================
@@ -2149,7 +2202,9 @@
         renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
       }, 'تراجع');
     },
-    exportBackup: () => UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json'),
+    exportBackup: () => { CLOUD.markBackup(); UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json').then(() => render()); },
+    chooseFolder: () => CLOUD.chooseFolder().then((ok) => { if (ok) UI.toast('النسخ التلقائي شغال ✔'); render(); }),
+    reenableFolder: () => CLOUD.reenableFolder().then((ok) => { UI.toast(ok ? 'النسخ التلقائي شغال ✔' : 'ما اتفعّلش', ok ? 'good' : 'bad'); render(); }),
     pasteBackup: () => UI.modal({ title: 'استيراد نسخة احتياطية', submit: 'استيراد', body: `<p class="muted">سيتم استبدال كل البيانات الحالية بالنسخة التي تلصقها.</p><textarea id="f-paste" name="paste" class="export-box" required></textarea>`, onSubmit: (f, fd) => { importState(fd.get('paste')); } }),
     loadDemo: () => UI.confirm('سيتم استبدال بياناتك الحالية بالبيانات التجريبية. صدّر نسخة احتياطية أولًا إن احتجت.', () => { DB.replace(F.demoState()); UI.toast('تم تحميل البيانات التجريبية'); render(); }, 'تحميل'),
     resetAll: () => UI.confirm('سيتم مسح كل البيانات (المنتجات، الطلبات، الشحنات، الحسابات). تأكد أن لديك نسخة احتياطية.', () => { DB.replace(F.emptyState()); UI.toast('تم مسح البيانات — ابدأ بإضافة الموردين والمنتجات'); location.hash = 'settings'; render(); }, 'مسح الكل'),
@@ -2162,6 +2217,7 @@
     saleStatusFilter: (el) => { saleFilter.status = el.value; render(); },
     saleChannelFilter: (el) => { saleFilter.channel = el.value; render(); },
     saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
+    setRole: (el) => CLOUD.setRole(el.dataset.id, el.value).then(() => UI.toast('تم تغيير الدور')).catch(() => UI.toast('تعذر تغيير الدور', 'bad')),
     ledgerAcc: (el) => { ledgerAcc = el.value; render(); },
     saleStatus: (el) => {
       const sale = DB.find('sales', el.dataset.id);
@@ -2206,6 +2262,7 @@
     alerts: { title: 'التنبيهات', render: alertsPage },
     health: { title: 'فحص سلامة البيانات', render: healthPage },
     planning: { title: 'التخطيط', render: planningPage },
+    audit: { title: 'سجل التعديلات', render: auditPage },
     reports: { title: 'التقارير', render: reports, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
@@ -2239,9 +2296,20 @@
     return { name: 'تفاصيل الأصناف المباعة', header: ['الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الموبايل', 'المدينة', 'القناة', 'الحالة', 'البوليصة', 'الحملة', 'الصنف', 'الكمية', 'السعر', 'الإجمالي', 'التكلفة'], rows };
   }
   function render() {
-    const key = currentPage();
+    let key = currentPage();
+    // مسؤول الطلبات بيبدأ من المبيعات، ومايفتحش الصفحات اللي فيها تكاليف وأرباح
+    if (!SYNC.canSeePage(CLOUD.role, key)) key = SYNC.canSeePage(CLOUD.role, 'sales') ? 'sales' : key;
+    if (key === 'audit' && !['owner', 'manager'].includes(CLOUD.role)) key = 'sales';
     document.querySelectorAll('.nav a').forEach((a) => a.setAttribute('aria-current', a.getAttribute('href') === '#' + key ? 'page' : 'false'));
     document.getElementById('demo-banner').hidden = !S().demo;
+    // تذكير بالنسخة الاحتياطية لما البيانات على الجهاز بس
+    const bb = document.getElementById('backup-banner');
+    if (bb) {
+      const age = CLOUD.backupAgeDays();
+      const need = CLOUD.mode === 'local' && !S().demo && S().sales.length && (age == null || age >= 7) && !CLOUD.folderState().ready;
+      bb.hidden = !need;
+      if (need) document.getElementById('backup-text').innerHTML = age == null ? '<b>ماعملتش نسخة احتياطية لسه.</b> بياناتك على المتصفح ده بس — لو اتمسح هتضيع.' : `<b>آخر نسخة احتياطية من ${age} يوم.</b> صدّر نسخة جديدة أو فعّل النسخ التلقائي من الإعدادات.`;
+    }
     const m = main();
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
@@ -2249,6 +2317,7 @@
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
     CH.bindLines(m, document.getElementById('tip'));
+    if (key === 'settings') renderTeam();
     const pa = m.querySelector('.page-head .page-actions');
     if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
     const sf = document.getElementById('settings-form');
@@ -2288,6 +2357,7 @@
     partners: '<path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.9-3.9a3 3 0 0 0-4.2 0l-.9.9a1 1 0 1 1-3-3l2.8-2.8a5.8 5.8 0 0 1 7.1-.9l.5.3a2 2 0 0 0 1.4.2L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/>',
     alerts: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
     health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
+    audit: '<path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 4v5h5"/>',
     planning: '<path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
     reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
@@ -2354,7 +2424,9 @@
     document.addEventListener('focusin', (e) => { const g = e.target.closest && e.target.closest('[data-tip]'); if (!g) return; const r = g.getBoundingClientRect(); tip.textContent = g.dataset.tip; tip.hidden = false; tip.style.left = r.left + r.width / 2 + 'px'; tip.style.top = r.top - 6 + 'px'; });
     document.addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) tip.hidden = true; });
     window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+    CLOUD.onChange = () => { renderBrand(); CLOUD.applyRole(); render(); };
     render();
+    CLOUD.connect();
   }
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
 })();

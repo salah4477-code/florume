@@ -30,6 +30,7 @@
       <a href="#partners">الشركاء والأرباح</a>
       <a href="#alerts">التنبيهات <b class="nav-badge" id="alert-badge" hidden></b></a>
       <a href="#health">فحص البيانات</a>
+      <a href="#audit">سجل التعديلات</a>
       <a href="#planning">التخطيط</a>
       <a href="#reports">التقارير</a>
       <a href="#settings">الإعدادات</a>
@@ -43,12 +44,17 @@
         <span class="tb-date"><span id="tb-date"></span><small id="tb-hijri"></small></span>
         <b class="tb-time" id="tb-time" dir="ltr"></b>
       </div>
+      <span class="sync-chip" id="sync-chip" hidden></span>
       <div class="tb-actions">
         <button class="btn btn-primary btn-small tb-new" data-action="newSale">+ طلب جديد</button>
         <a class="icon-btn tb-icon" href="#alerts" aria-label="التنبيهات" title="التنبيهات"><span data-icon="bell"></span><b class="nav-badge tb-badge" id="tb-badge" hidden></b></a>
         <button class="icon-btn tb-icon" type="button" id="theme-toggle" aria-label="تبديل الوضع الليلي" title="الوضع الليلي / النهاري"><span data-icon="moon"></span></button>
       </div>
     </header>
+    <div class="demo-banner backup-banner" id="backup-banner" hidden>
+      <span id="backup-text"></span>
+      <button class="btn btn-small" data-action="exportBackup">صدّر نسخة دلوقتي</button>
+    </div>
     <div class="demo-banner" id="demo-banner" hidden>
       <span><b>بيانات تجريبية.</b> الأرقام المعروضة مثال لمتجر عطور وهمي حتى تجرب النظام.</span>
       <button class="btn btn-small" data-action="clearDemo">امسحها وابدأ ببياناتي</button>
@@ -66,8 +72,10 @@
 <script src="js/ops.js"></script>
 <script src="js/planning.js"></script>
 <script src="js/rules.js"></script>
+<script src="js/sync.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/core.js"></script>
+<script src="js/cloud.js"></script>
 <script src="js/pages.js"></script>
 </body>
 </html>
