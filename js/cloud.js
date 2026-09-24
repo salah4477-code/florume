@@ -39,6 +39,11 @@
     arr.push(...entries);
     safeSet(LOCAL_AUDIT, JSON.stringify(arr.slice(-500)));
   }
+  // محاولة باسورد غلط بتتسجل في السجل
+  function logDenied(reason) {
+    const e = [{ list: 'lock', id: 'lock', action: 'denied', label: String(reason || '').slice(0, 120), at: new Date().toISOString(), uid: C.mode === 'cloud' ? C.uid : 'local' }];
+    if (C.mode === 'cloud') logCloud(e); else logLocal(e);
+  }
   async function logCloud(entries) {
     if (!entries.length || !C.db) return;
     const ref = C.db.collection('audit').doc(today());
@@ -256,5 +261,5 @@
   }
   function scheduleFolderBackup() { if (!folderReady) return; clearTimeout(folderTimer); folderTimer = setTimeout(writeFolderBackup, 5000); }
 
-  window.CLOUD = Object.assign(C, { connect, onSave, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
+  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
 })();

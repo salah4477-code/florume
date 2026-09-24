@@ -49,11 +49,15 @@
     load() {
       let raw = null;
       try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* تخزين غير متاح */ }
-      if (raw) { try { this.state = migrate(JSON.parse(raw)); return 'stored'; } catch (e) { /* ملف تالف */ } }
+      if (raw) { try { this.state = migrate(JSON.parse(raw)); this.commit(); return 'stored'; } catch (e) { /* ملف تالف */ } }
       this.state = demoState();
+      this.commit();
       return 'demo';
     },
+    // آخر نسخة اتحفظت فعلًا: منها بنعرف الحفظ الجاي فيه تعديل ولا حذف، وليها بنرجع لو الباسورد اتلغى
+    commit(text) { this._committed = text || JSON.stringify(this.state); this._lockOn = !!(window.LOCK && LOCK.enabled(this.state.settings && this.state.settings.lock)); },
     save() {
+      if (Gate.check(this)) return true;
       this._journal = null;
       const ok = this.saveLocal();
       if (window.CLOUD) window.CLOUD.onSave();
@@ -61,7 +65,9 @@
     },
     // نسخة الجهاز (بتفضل موجودة حتى في وضع السحابة عشان الفتح يبقى سريع)
     saveLocal() {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); return true; }
+      const text = JSON.stringify(this.state);
+      this.commit(text);
+      try { localStorage.setItem(STORAGE_KEY, text); return true; }
       catch (e) { if (!(window.CLOUD && window.CLOUD.mode === 'cloud')) UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
     },
     get journal() { return this._journal || (this._journal = Acc.buildJournal(this.state)); },
@@ -74,6 +80,42 @@
       this.save();
     },
     remove(list, id) { this.state[list] = this.state[list].filter((x) => x.id !== id); this.save(); },
+  };
+
+
+  // ---------- قفل التعديل والحذف بالباسورد ----------
+  // أي حفظ فيه تعديل أو حذف لسجل موجود (أو تغيير في الإعدادات) بيستنى الباسورد؛ الإضافة الجديدة لأ.
+  // الزراير المعروفة (تعديل/حذف/تغيير الحالة) بتسأل قبل ما تفتح، والحفظ نفسه شبكة أمان لأي مسار تاني.
+  const Gate = {
+    op: false, // عملية اتسمحت بالباسورد ولسه شغالة (لحد ما نافذتها تتقفل)
+    graceUntil: 0,
+    pending: false,
+    tries: {},
+    on() { return !!DB._lockOn; },
+    allowed() { return !this.on() || this.op || Date.now() < this.graceUntil; },
+    endOpSoon() { setTimeout(() => { if (document.getElementById('modal').hidden) this.op = false; }, 0); },
+    // تشغيل عملية محمية: يسأل الأول، وبعدين يشغلها
+    guard(fn, reason, onCancel) {
+      if (this.allowed()) { const was = this.op; this.op = true; try { fn(); } finally { if (!was) this.endOpSoon(); } return; }
+      UI.askPassword(reason).then((ok) => { if (!ok) { if (onCancel) onCancel(); return; } this.op = true; try { fn(); } finally { this.endOpSoon(); } });
+    },
+    check(db) {
+      if (this.pending) { this.dirty = true; return true; }
+      if (this.allowed() || !window.LOCK || !window.SYNC || !db._committed) return false;
+      const prev = JSON.parse(db._committed);
+      const changes = LOCK.guardedChanges(prev, db.state, SYNC);
+      if (!changes.length) return false;
+      this.pending = true;
+      const what = changes.slice(0, 3).map((c) => `${{ edit: 'تعديل', delete: 'حذف' }[c.action] || 'تعديل'} ${c.label}`).join('، ') + (changes.length > 3 ? ` و${changes.length - 3} غيرهم` : '');
+      UI.askPassword(`التغيير ده محتاج الباسورد: ${what}`).then((ok) => {
+        this.pending = false; this.dirty = false;
+        if (ok) { this.op = true; db.save(); this.endOpSoon(); return; }
+        db.state = migrate(prev); db._journal = null;
+        UI.toast('التعديل اتلغى — البيانات رجعت زي ما كانت', 'bad');
+        if (db.onRevert) db.onRevert();
+      });
+      return true;
+    },
   };
 
   function migrate(s) {
@@ -145,12 +187,58 @@
     },
     close() {
       const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll');
+      Gate.endOpSoon();
       // تعديلات وصلت من جهاز تاني والنافذة مفتوحة: نرسم بعد ما تتقفل
       if (window.CLOUD && window.CLOUD.pendingRender) { window.CLOUD.pendingRender = false; if (window.CLOUD.onChange) window.CLOUD.onChange(); }
     },
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
+    },
+    // نافذة الباسورد: فوق أي نافذة مفتوحة، وبترجع true لو الباسورد صح
+    askPassword(reason) {
+      return new Promise((resolve) => {
+        const lock = DB.state.settings.lock;
+        const old = document.getElementById('lock-layer'); if (old) old.remove();
+        const layer = document.createElement('div');
+        layer.id = 'lock-layer'; layer.className = 'lock-layer';
+        layer.innerHTML = `<div class="modal-backdrop"></div>
+          <form class="modal-card lock-card" novalidate autocomplete="off" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+            <header class="modal-head"><h2 id="lock-title">🔒 محتاج الباسورد</h2></header>
+            <div class="modal-body">
+              <p class="lock-reason">${esc(reason || 'العملية دي محتاجة الباسورد')}</p>
+              <label class="field lock-pw"><span>الباسورد</span><input id="lock-input" type="password" autocomplete="off" dir="auto"></label>
+              <label class="field lock-rc" hidden><span>كود الاسترجاع</span><input id="lock-code" autocomplete="off" dir="ltr" placeholder="XXXX-XXXX-XXXX"><small>الكود اللي ظهرلك لما عملت الباسورد. لو صح، الباسورد هيتشال وتعمل واحد جديد من الإعدادات.</small></label>
+              <p class="lock-err" role="alert" hidden></p>
+              <button type="button" class="link-btn lock-forgot">نسيت الباسورد؟</button>
+            </div>
+            <footer class="modal-foot"><button class="btn btn-primary" type="submit">تأكيد</button><button class="btn" type="button" data-lock-cancel>إلغاء</button></footer>
+          </form>`;
+        document.body.appendChild(layer);
+        const f = layer.querySelector('form'), pw = f.querySelector('#lock-input'), rc = f.querySelector('#lock-code'), err = f.querySelector('.lock-err');
+        let recovery = false;
+        const done = (ok) => { layer.remove(); document.removeEventListener('keydown', onKey, true); resolve(ok); };
+        const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(false); } };
+        document.addEventListener('keydown', onKey, true);
+        const show = (msg) => { err.textContent = msg; err.hidden = !msg; };
+        f.querySelector('[data-lock-cancel]').addEventListener('click', () => done(false));
+        f.querySelector('.lock-forgot').addEventListener('click', (e) => { recovery = true; f.querySelector('.lock-pw').hidden = true; f.querySelector('.lock-rc').hidden = false; e.target.hidden = true; show(''); rc.focus(); });
+        f.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const now = Date.now(), t = Gate.tries;
+          if (now < (t.until || 0)) { show(`محاولات غلط كتير — استنى ${Math.ceil((t.until - now) / 1000)} ثانية`); return; }
+          const ok = recovery ? LOCK.verifyRecovery(lock, rc.value) : LOCK.verify(lock, pw.value);
+          Gate.tries = LOCK.throttle(t, now, ok);
+          if (!ok) { show(recovery ? 'الكود مش صح' : 'الباسورد غلط'); (recovery ? rc : pw).select(); if (window.CLOUD && CLOUD.logDenied) CLOUD.logDenied(reason); return; }
+          if (recovery) {
+            // الكود صح: نشيل الباسورد (ده نفسه تعديل مسموح بالكود)
+            Gate.op = true; delete DB.state.settings.lock; DB.save(); Gate.endOpSoon();
+            UI.toast('الباسورد اتشال — اعمل واحد جديد من الإعدادات');
+          } else if (num(lock.graceMin) > 0) Gate.graceUntil = now + num(lock.graceMin) * 60000;
+          done(true);
+        });
+        setTimeout(() => pw.focus(), 30);
+      });
     },
     field(label, input, opts = {}) { return `<label class="field ${opts.cls || ''}"><span>${label}${opts.req ? ' <b class="req">*</b>' : ''}</span>${input}${opts.hint ? `<small>${opts.hint}</small>` : ''}</label>`; },
     input(name, value = '', attrs = '') { return `<input id="f-${name}" name="${name}" value="${esc(value)}" ${attrs}>`; },
@@ -356,5 +444,5 @@
     return s;
   }
 
-  window.F = { migrateState: migrate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+  window.F = { migrateState: migrate, Gate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
 })();

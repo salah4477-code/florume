@@ -590,7 +590,7 @@
       footer: `${waButton(sale, 'btn btn-wa') || '<span class="muted small-note">سجّل موبايل العميل لإرسال الفاتورة على واتساب</span>'}${!promo && sale.status === 'delivered' && !RULES.isReconciled(s, sale.id) ? '<button type="button" class="btn" id="ret-btn">مرتجع جزئي / استبدال</button>' : ''}<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
       onOpen(f) {
         f.querySelector('#edit-btn').addEventListener('click', () => saleForm(sale));
-        const rb = f.querySelector('#ret-btn'); if (rb) rb.addEventListener('click', () => partialReturnForm(sale));
+        const rb = f.querySelector('#ret-btn'); if (rb) rb.addEventListener('click', () => F.Gate.guard(() => partialReturnForm(sale), 'المرتجع والاستبدال تعديل على الفاتورة'));
       } });
   }
 
@@ -1234,6 +1234,7 @@
           ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
+      ${lockSection()}
       ${cloudSection()}
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
@@ -1343,7 +1344,7 @@
   // سجل التعديلات
   // =====================================================================
   let auditCache = null;
-  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف' };
+  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف', denied: 'باسورد غلط' };
   function auditPage() {
     if (!auditCache) {
       CLOUD.readAudit(14).then(async (list) => { const ids = [...new Set(list.map((e) => e.uid).filter((u) => u && u !== 'local'))]; const nm = await CLOUD.names(ids); auditCache = { list, nm }; render(); });
@@ -1352,11 +1353,52 @@
     const { list, nm } = auditCache;
     auditCache = null; // يتحمّل من جديد المرة الجاية
     const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
-    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
+    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' || e.action === 'denied' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
     return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
       ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
   }
   // قسم السحابة والفريق في الإعدادات
+  // ---------- حماية بالباسورد ----------
+  const GRACE = [{ v: 0, l: 'كل مرة' }, { v: 5, l: 'مرة كل 5 دقايق' }, { v: 15, l: 'مرة كل 15 دقيقة' }, { v: 30, l: 'مرة كل نص ساعة' }];
+  function lockSection() {
+    const lk = S().settings.lock;
+    const on = LOCK.enabled(lk);
+    return `<section class="panel" id="lock-panel">
+      <h2 class="section-title">🔒 حماية التعديل والحذف بالباسورد</h2>
+      ${on ? `<p>الحماية <b class="good-text">شغالة</b>${lk.setAt ? ` من ${fmtDate(lk.setAt)}` : ''}. أي تعديل أو حذف أو تغيير حالة طلب أو تغيير في الإعدادات بيطلب الباسورد — <b>${esc((GRACE.find((g) => g.v === num(lk.graceMin)) || GRACE[0]).l)}</b>. الإضافة الجديدة (طلب، مصروف، منتج…) من غير باسورد.</p>
+        <div class="btn-row"><button class="btn" data-action="changePassword">تغيير الباسورد أو مدة السماح</button><button class="btn btn-danger" data-action="removePassword">إلغاء الباسورد</button></div>`
+      : `<p class="muted">لما تفعّلها، أي تعديل أو حذف في السيستم (فاتورة، منتج، مصروف، شحنة، الإعدادات…) مش هيتم غير بالباسورد. الإضافة الجديدة هتفضل من غير باسورد.</p>
+        <div class="btn-row"><button class="btn btn-primary" data-action="setPassword">عمل باسورد</button></div>`}
+      <p class="muted">محاولات الباسورد الغلط بتتسجل في <a href="#audit">سجل التعديلات</a>، وبعد 5 محاولات غلط السيستم بيستنى 30 ثانية.</p>
+    </section>`;
+  }
+  function passwordForm(isChange) {
+    const lk = S().settings.lock || {};
+    UI.modal({ title: isChange ? 'تغيير الباسورد' : 'عمل باسورد للتعديل والحذف', submit: 'حفظ الباسورد',
+      body: `<div class="form-grid">
+          ${UI.field(isChange ? 'الباسورد الجديد' : 'الباسورد', '<input id="f-pw1" name="pw1" type="password" autocomplete="new-password" dir="auto" required>', { req: true, hint: `${LOCK.MIN_LEN} حروف أو أرقام على الأقل` })}
+          ${UI.field('اكتبه تاني', '<input id="f-pw2" name="pw2" type="password" autocomplete="new-password" dir="auto" required>', { req: true })}
+          ${UI.field('يسأل عن الباسورد', UI.select('graceMin', GRACE, num(lk.graceMin)), { hint: 'بعد ما تكتبه صح يسيبك تعدّل المدة دي من غير ما يسأل تاني' })}
+        </div>
+        <p class="muted">هيظهرلك <b>كود استرجاع</b> مرة واحدة بس. احفظه في مكان آمن — لو نسيت الباسورد، الكود ده هو الطريقة الوحيدة تشيله.</p>`,
+      onSubmit(f, fd) {
+        const err = LOCK.passwordError(fd.get('pw1'), fd.get('pw2'));
+        if (err) { fail(err); return false; }
+        const { lock, code } = LOCK.create(fd.get('pw1'), { graceMin: num(fd.get('graceMin')), today: today() });
+        S().settings.lock = lock;
+        F.Gate.graceUntil = 0;
+        DB.save();
+        setTimeout(() => showRecoveryCode(code), 0);
+        render();
+      } });
+  }
+  function showRecoveryCode(code) {
+    UI.modal({ title: 'كود الاسترجاع — احفظه دلوقتي', footer: '<button class="btn btn-primary" type="button" id="copy-code">نسخ الكود</button><button class="btn" type="button" data-close>حفظته، اقفل</button>',
+      body: `<p>الباسورد اتعمل ✔. ده <b>كود الاسترجاع</b>، وهيظهر المرة دي بس:</p><p class="recovery-code" dir="ltr">${esc(code)}</p>
+        <p class="muted">اكتبه في ورقة أو احفظه في مكان آمن بعيد عن الجهاز. لو نسيت الباسورد، اضغط «نسيت الباسورد؟» في نافذة الباسورد واكتب الكود ده.</p>`,
+      onOpen: (f) => f.querySelector('#copy-code').addEventListener('click', () => { try { navigator.clipboard.writeText(code).then(() => UI.toast('تم نسخ الكود'), () => UI.toast('انسخ الكود من الشاشة', 'bad')); } catch (e) { UI.toast('انسخ الكود من الشاشة', 'bad'); } }) });
+  }
+
   function cloudSection() {
     if (CLOUD.mode === 'cloud') {
       const owner = CLOUD.role === 'owner';
@@ -2202,6 +2244,9 @@
         renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
       }, 'تراجع');
     },
+    setPassword: () => passwordForm(false),
+    changePassword: () => passwordForm(true),
+    removePassword: () => UI.confirm('هيتشال الباسورد وأي حد يفتح السيستم هيقدر يعدّل ويحذف من غير باسورد.', () => { delete S().settings.lock; DB.save(); UI.toast('الباسورد اتشال'); render(); }, 'إلغاء الباسورد'),
     exportBackup: () => { CLOUD.markBackup(); UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json').then(() => render()); },
     chooseFolder: () => CLOUD.chooseFolder().then((ok) => { if (ok) UI.toast('النسخ التلقائي شغال ✔'); render(); }),
     reenableFolder: () => CLOUD.reenableFolder().then((ok) => { UI.toast(ok ? 'النسخ التلقائي شغال ✔' : 'ما اتفعّلش', ok ? 'good' : 'bad'); render(); }),
@@ -2210,6 +2255,14 @@
     resetAll: () => UI.confirm('سيتم مسح كل البيانات (المنتجات، الطلبات، الشحنات، الحسابات). تأكد أن لديك نسخة احتياطية.', () => { DB.replace(F.emptyState()); UI.toast('تم مسح البيانات — ابدأ بإضافة الموردين والمنتجات'); location.hash = 'settings'; render(); }, 'مسح الكل'),
     clearDemo: () => UI.confirm('سيتم مسح البيانات التجريبية والبدء بحسابات فارغة.', () => { DB.replace(F.emptyState()); UI.toast('جاهز لبياناتك — ابدأ من الإعدادات'); location.hash = 'settings'; render(); }, 'ابدأ ببياناتي'),
   };
+  // العمليات اللي بتسأل عن الباسورد قبل ما تبدأ (والحفظ نفسه بيتأكد تاني لأي مسار تاني)
+  const LOCKED_ACTIONS = { changePassword: 'تغيير الباسورد محتاج الباسورد الحالي', removePassword: 'إلغاء الباسورد محتاج الباسورد الحالي', receiveShipment: 'استلام الشحنة بيعدّلها', undoImport: 'التراجع عن الاستيراد بيمسح بيانات', resetAll: 'مسح كل البيانات', loadDemo: 'تحميل البيانات التجريبية بيمسح بياناتك', clearDemo: 'مسح البيانات', pasteBackup: 'استيراد نسخة احتياطية بيستبدل بياناتك' };
+  const LOCKED_CHANGES = { saleStatus: 'تغيير حالة الطلب تعديل — محتاج الباسورد', setRole: 'تغيير دور عضو في الفريق', importFile: 'استيراد نسخة احتياطية بيستبدل بياناتك' };
+  function lockReason(a) {
+    if (/^edit[A-Z]/.test(a)) return 'فتح التعديل محتاج الباسورد';
+    if (/^del[A-Z]/.test(a)) return 'الحذف محتاج الباسورد';
+    return LOCKED_ACTIONS[a] || '';
+  }
   const CHANGES = {
     period: (el) => { period = el.value === 'custom' ? { ...period, preset: 'custom' } : { preset: el.value, ...presetRange(el.value) }; savePeriod(); render(); },
     periodFrom: (el) => { period = { ...period, preset: 'custom', from: el.value }; savePeriod(); render(); },
@@ -2405,14 +2458,22 @@
     tickClock();
     setInterval(tickClock, 1000);
     DB.load();
+    DB.onRevert = () => { renderBrand(); render(); };
     renderBrand();
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-action]');
       if (!el || !ACTIONS[el.dataset.action]) return;
       e.preventDefault();
-      ACTIONS[el.dataset.action](el.dataset.id);
+      const a = el.dataset.action, reason = lockReason(a);
+      if (reason) F.Gate.guard(() => ACTIONS[a](el.dataset.id), reason);
+      else ACTIONS[a](el.dataset.id);
     });
-    document.addEventListener('change', (e) => { const el = e.target.closest('[data-change]'); if (el && CHANGES[el.dataset.change]) CHANGES[el.dataset.change](el); });
+    document.addEventListener('change', (e) => {
+      const el = e.target.closest('[data-change]'); if (!el || !CHANGES[el.dataset.change]) return;
+      const reason = LOCKED_CHANGES[el.dataset.change];
+      if (reason) F.Gate.guard(() => CHANGES[el.dataset.change](el), reason, render);
+      else CHANGES[el.dataset.change](el);
+    });
     document.addEventListener('input', (e) => { const el = e.target.closest('[data-input]'); if (el && INPUTS[el.dataset.input]) INPUTS[el.dataset.input](el); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.getElementById('modal').hidden) UI.close(); });
     // تلميح الرسوم البيانية

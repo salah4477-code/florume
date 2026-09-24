@@ -284,6 +284,13 @@ table.fin tr.grand.neg td { background: var(--bad-soft); color: var(--bad); }
 .modal-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); justify-content: flex-start; flex-wrap: wrap; }
 .confirm-text { margin: 0; font-size: 1rem; }
+/* نافذة الباسورد: فوق أي نافذة مفتوحة */
+.lock-layer { position: fixed; inset: 0; z-index: 65; display: grid; place-items: center; padding: 16px; }
+.lock-card { width: min(400px, 100%); }
+.lock-reason { margin: 0; color: var(--ink-2); }
+.lock-err { margin: 0; color: var(--bad); font-weight: 600; }
+.lock-forgot { align-self: flex-start; }
+.recovery-code { margin: 0; padding: 14px; text-align: center; font-family: var(--mono); font-size: 1.5rem; letter-spacing: .12em; font-weight: 700; background: var(--accent-soft); color: var(--accent-strong); border: 1px dashed var(--accent); border-radius: 10px; }
 .export-box { width: 100%; min-height: 260px; font-family: var(--mono); font-size: .8rem; direction: ltr; text-align: left; }
 .toasts { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 16px; z-index: 70; display: flex; flex-direction: column; gap: 8px; }
 .toast { background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; box-shadow: var(--shadow); transition: opacity .3s, transform .3s; max-width: min(420px, calc(100vw - 32px)); }
@@ -501,7 +508,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   .span-2 { grid-column: auto; }
   .kpis, .kpis-3 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
   .kpi-value { font-size: 1.25rem; }
-  .modal { padding: 0; place-items: end stretch; }
+  .modal, .lock-layer { padding: 0; place-items: end stretch; }
   .modal-card, .modal-card.wide { width: 100%; max-height: 92vh; border-radius: 14px 14px 0 0; }
   .modal-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
   .hbars li { grid-template-columns: 1fr auto; }
@@ -511,7 +518,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
 
 /* ---------- الطباعة المباشرة من المتصفح (Ctrl+P) — زر الطباعة يولّد مستندًا خاصًا ---------- */
 @media print {
-  .side, .demo-banner, .page-actions, .filters, .tabs, .row-actions, .toasts, .modal { display: none !important; }
+  .side, .demo-banner, .page-actions, .filters, .tabs, .row-actions, .toasts, .modal, .lock-layer { display: none !important; }
   .app { display: block; }
   body { background: #fff; }
 }
@@ -3194,6 +3201,99 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /*
+ * قفل التعديل والحذف — Florume
+ * الجزء النقي (مغطى بالاختبارات): تشفير الباسورد (SHA-256 مع ملح وتكرار)، كود الاسترجاع،
+ * وتحديد إذا كان الحفظ فيه تعديل أو حذف لسجل موجود (الإضافة الجديدة مش محتاجة باسورد).
+ * الباسورد نفسه مابيتحفظش — بيتحفظ «بصمته» بس في الإعدادات.
+ */
+(function (root) {
+  'use strict';
+  const K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+  const utf8 = (s) => { const out = []; for (const ch of String(s)) { let c = ch.codePointAt(0); if (c < 0x80) out.push(c); else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63)); else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); } return out; };
+
+  function sha256(str) {
+    const bytes = utf8(str);
+    const bitLen = bytes.length * 8;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    for (let i = 7; i >= 0; i--) bytes.push(i > 3 ? 0 : (bitLen >>> (i * 8)) & 255);
+    const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const W = new Array(64);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    for (let o = 0; o < bytes.length; o += 64) {
+      for (let i = 0; i < 16; i++) W[i] = (bytes[o + i * 4] << 24) | (bytes[o + i * 4 + 1] << 16) | (bytes[o + i * 4 + 2] << 8) | bytes[o + i * 4 + 3];
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+        const s1 = rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+        W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+      }
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i]) | 0;
+        const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+    return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+
+  const ROUNDS = 2000; // تكرار بيبطّأ تخمين الباسورد من غير ما يحس بيه المستخدم
+  function hashSecret(secret, salt) { let h = sha256(`${salt}|${secret}`); for (let i = 1; i < ROUNDS; i++) h = sha256(h + salt); return h; }
+  const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  function randomString(n, alphabet, rng) {
+    const r = rng || ((k) => { const a = new Uint32Array(k); (root.crypto || globalThis.crypto).getRandomValues(a); return [...a]; });
+    return r(n).map((x) => alphabet[x % alphabet.length]).join('');
+  }
+  const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // من غير الحروف اللي بتتلخبط (O و0، I و1)
+
+  // باسورد جديد → إعدادات القفل + كود استرجاع بيظهر مرة واحدة
+  function create(password, opts = {}) {
+    const salt = randomString(16, CODE_ABC, opts.rng);
+    const code = randomString(12, CODE_ABC, opts.rng);
+    const lock = { salt, hash: hashSecret(password, salt), recovery: hashSecret(normCode(code), salt), graceMin: num(opts.graceMin), setAt: opts.today || '' };
+    return { lock, code: code.match(/.{4}/g).join('-') };
+  }
+  const num = (n) => Number(n) || 0;
+  const enabled = (lock) => !!(lock && lock.hash && lock.salt);
+  const verify = (lock, password) => enabled(lock) && hashSecret(password, lock.salt) === lock.hash;
+  const verifyRecovery = (lock, code) => enabled(lock) && !!lock.recovery && hashSecret(normCode(code), lock.salt) === lock.recovery;
+  const MIN_LEN = 4;
+  function passwordError(pw, again) {
+    if (String(pw || '').length < MIN_LEN) return `الباسورد لازم يكون ${MIN_LEN} حروف أو أرقام على الأقل`;
+    if (again != null && pw !== again) return 'الباسورد والتأكيد مش زي بعض';
+    return null;
+  }
+
+  // حقول في الإعدادات بتتغير لوحدها مع الإضافة (زي رقم الفاتورة الجاية) — مش تعديل
+  const AUTO_SETTINGS = ['nextInvoiceNo'];
+  const cleanSettings = (st) => { const o = { ...(st || {}) }; AUTO_SETTINGS.forEach((k) => delete o[k]); return JSON.stringify(o); };
+
+  // الحفظ ده فيه إيه محتاج باسورد؟ تعديل أو حذف لسجل كان موجود، أو تغيير في الإعدادات
+  function guardedChanges(prev, next, SYNC) {
+    const out = SYNC.changesForLog(SYNC.encode(prev), SYNC.encode(next)).filter((c) => c.list !== 'settings' && c.action !== 'add');
+    if (cleanSettings(prev.settings) !== cleanSettings(next.settings)) out.unshift({ list: 'settings', id: 'settings', action: 'edit', label: 'الإعدادات' });
+    return out;
+  }
+
+  // بعد كذا محاولة غلط بيستنى شوية قبل ما يسمح بمحاولة تانية
+  const MAX_TRIES = 5, WAIT_MS = 30000;
+  function throttle(state, now, ok) {
+    const s = { fails: state.fails || 0, until: state.until || 0 };
+    if (ok) return { fails: 0, until: 0 };
+    s.fails += 1;
+    if (s.fails >= MAX_TRIES) { s.until = now + WAIT_MS; s.fails = 0; }
+    return s;
+  }
+
+  const api = { sha256, hashSecret, create, enabled, verify, verifyRecovery, passwordError, guardedChanges, throttle, normCode, AUTO_SETTINGS, MAX_TRIES, WAIT_MS, MIN_LEN };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.LOCK = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+/*
  * رسوم لوحة التحكم — Florume
  * SVG/HTML بسيط بدون مكتبات: خط مصغر (sparkline)، أعمدة شهرية، منحنى يومي بخط متتبع،
  * أشرطة أفقية، وشريط مكدّس لحالات الطلبات. الألوان من متغيرات CSS (--chart-*) فتتبدل مع الوضع الداكن.
@@ -3376,11 +3476,15 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     load() {
       let raw = null;
       try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* تخزين غير متاح */ }
-      if (raw) { try { this.state = migrate(JSON.parse(raw)); return 'stored'; } catch (e) { /* ملف تالف */ } }
+      if (raw) { try { this.state = migrate(JSON.parse(raw)); this.commit(); return 'stored'; } catch (e) { /* ملف تالف */ } }
       this.state = demoState();
+      this.commit();
       return 'demo';
     },
+    // آخر نسخة اتحفظت فعلًا: منها بنعرف الحفظ الجاي فيه تعديل ولا حذف، وليها بنرجع لو الباسورد اتلغى
+    commit(text) { this._committed = text || JSON.stringify(this.state); this._lockOn = !!(window.LOCK && LOCK.enabled(this.state.settings && this.state.settings.lock)); },
     save() {
+      if (Gate.check(this)) return true;
       this._journal = null;
       const ok = this.saveLocal();
       if (window.CLOUD) window.CLOUD.onSave();
@@ -3388,7 +3492,9 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     },
     // نسخة الجهاز (بتفضل موجودة حتى في وضع السحابة عشان الفتح يبقى سريع)
     saveLocal() {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); return true; }
+      const text = JSON.stringify(this.state);
+      this.commit(text);
+      try { localStorage.setItem(STORAGE_KEY, text); return true; }
       catch (e) { if (!(window.CLOUD && window.CLOUD.mode === 'cloud')) UI.toast('تعذّر الحفظ في المتصفح — صدّر نسخة احتياطية الآن', 'bad'); return false; }
     },
     get journal() { return this._journal || (this._journal = Acc.buildJournal(this.state)); },
@@ -3401,6 +3507,42 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
       this.save();
     },
     remove(list, id) { this.state[list] = this.state[list].filter((x) => x.id !== id); this.save(); },
+  };
+
+
+  // ---------- قفل التعديل والحذف بالباسورد ----------
+  // أي حفظ فيه تعديل أو حذف لسجل موجود (أو تغيير في الإعدادات) بيستنى الباسورد؛ الإضافة الجديدة لأ.
+  // الزراير المعروفة (تعديل/حذف/تغيير الحالة) بتسأل قبل ما تفتح، والحفظ نفسه شبكة أمان لأي مسار تاني.
+  const Gate = {
+    op: false, // عملية اتسمحت بالباسورد ولسه شغالة (لحد ما نافذتها تتقفل)
+    graceUntil: 0,
+    pending: false,
+    tries: {},
+    on() { return !!DB._lockOn; },
+    allowed() { return !this.on() || this.op || Date.now() < this.graceUntil; },
+    endOpSoon() { setTimeout(() => { if (document.getElementById('modal').hidden) this.op = false; }, 0); },
+    // تشغيل عملية محمية: يسأل الأول، وبعدين يشغلها
+    guard(fn, reason, onCancel) {
+      if (this.allowed()) { const was = this.op; this.op = true; try { fn(); } finally { if (!was) this.endOpSoon(); } return; }
+      UI.askPassword(reason).then((ok) => { if (!ok) { if (onCancel) onCancel(); return; } this.op = true; try { fn(); } finally { this.endOpSoon(); } });
+    },
+    check(db) {
+      if (this.pending) { this.dirty = true; return true; }
+      if (this.allowed() || !window.LOCK || !window.SYNC || !db._committed) return false;
+      const prev = JSON.parse(db._committed);
+      const changes = LOCK.guardedChanges(prev, db.state, SYNC);
+      if (!changes.length) return false;
+      this.pending = true;
+      const what = changes.slice(0, 3).map((c) => `${{ edit: 'تعديل', delete: 'حذف' }[c.action] || 'تعديل'} ${c.label}`).join('، ') + (changes.length > 3 ? ` و${changes.length - 3} غيرهم` : '');
+      UI.askPassword(`التغيير ده محتاج الباسورد: ${what}`).then((ok) => {
+        this.pending = false; this.dirty = false;
+        if (ok) { this.op = true; db.save(); this.endOpSoon(); return; }
+        db.state = migrate(prev); db._journal = null;
+        UI.toast('التعديل اتلغى — البيانات رجعت زي ما كانت', 'bad');
+        if (db.onRevert) db.onRevert();
+      });
+      return true;
+    },
   };
 
   function migrate(s) {
@@ -3472,12 +3614,58 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     },
     close() {
       const w = document.getElementById('modal'); w.hidden = true; w.innerHTML = ''; document.body.classList.remove('no-scroll');
+      Gate.endOpSoon();
       // تعديلات وصلت من جهاز تاني والنافذة مفتوحة: نرسم بعد ما تتقفل
       if (window.CLOUD && window.CLOUD.pendingRender) { window.CLOUD.pendingRender = false; if (window.CLOUD.onChange) window.CLOUD.onChange(); }
     },
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
+    },
+    // نافذة الباسورد: فوق أي نافذة مفتوحة، وبترجع true لو الباسورد صح
+    askPassword(reason) {
+      return new Promise((resolve) => {
+        const lock = DB.state.settings.lock;
+        const old = document.getElementById('lock-layer'); if (old) old.remove();
+        const layer = document.createElement('div');
+        layer.id = 'lock-layer'; layer.className = 'lock-layer';
+        layer.innerHTML = `<div class="modal-backdrop"></div>
+          <form class="modal-card lock-card" novalidate autocomplete="off" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+            <header class="modal-head"><h2 id="lock-title">🔒 محتاج الباسورد</h2></header>
+            <div class="modal-body">
+              <p class="lock-reason">${esc(reason || 'العملية دي محتاجة الباسورد')}</p>
+              <label class="field lock-pw"><span>الباسورد</span><input id="lock-input" type="password" autocomplete="off" dir="auto"></label>
+              <label class="field lock-rc" hidden><span>كود الاسترجاع</span><input id="lock-code" autocomplete="off" dir="ltr" placeholder="XXXX-XXXX-XXXX"><small>الكود اللي ظهرلك لما عملت الباسورد. لو صح، الباسورد هيتشال وتعمل واحد جديد من الإعدادات.</small></label>
+              <p class="lock-err" role="alert" hidden></p>
+              <button type="button" class="link-btn lock-forgot">نسيت الباسورد؟</button>
+            </div>
+            <footer class="modal-foot"><button class="btn btn-primary" type="submit">تأكيد</button><button class="btn" type="button" data-lock-cancel>إلغاء</button></footer>
+          </form>`;
+        document.body.appendChild(layer);
+        const f = layer.querySelector('form'), pw = f.querySelector('#lock-input'), rc = f.querySelector('#lock-code'), err = f.querySelector('.lock-err');
+        let recovery = false;
+        const done = (ok) => { layer.remove(); document.removeEventListener('keydown', onKey, true); resolve(ok); };
+        const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(false); } };
+        document.addEventListener('keydown', onKey, true);
+        const show = (msg) => { err.textContent = msg; err.hidden = !msg; };
+        f.querySelector('[data-lock-cancel]').addEventListener('click', () => done(false));
+        f.querySelector('.lock-forgot').addEventListener('click', (e) => { recovery = true; f.querySelector('.lock-pw').hidden = true; f.querySelector('.lock-rc').hidden = false; e.target.hidden = true; show(''); rc.focus(); });
+        f.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const now = Date.now(), t = Gate.tries;
+          if (now < (t.until || 0)) { show(`محاولات غلط كتير — استنى ${Math.ceil((t.until - now) / 1000)} ثانية`); return; }
+          const ok = recovery ? LOCK.verifyRecovery(lock, rc.value) : LOCK.verify(lock, pw.value);
+          Gate.tries = LOCK.throttle(t, now, ok);
+          if (!ok) { show(recovery ? 'الكود مش صح' : 'الباسورد غلط'); (recovery ? rc : pw).select(); if (window.CLOUD && CLOUD.logDenied) CLOUD.logDenied(reason); return; }
+          if (recovery) {
+            // الكود صح: نشيل الباسورد (ده نفسه تعديل مسموح بالكود)
+            Gate.op = true; delete DB.state.settings.lock; DB.save(); Gate.endOpSoon();
+            UI.toast('الباسورد اتشال — اعمل واحد جديد من الإعدادات');
+          } else if (num(lock.graceMin) > 0) Gate.graceUntil = now + num(lock.graceMin) * 60000;
+          done(true);
+        });
+        setTimeout(() => pw.focus(), 30);
+      });
     },
     field(label, input, opts = {}) { return `<label class="field ${opts.cls || ''}"><span>${label}${opts.req ? ' <b class="req">*</b>' : ''}</span>${input}${opts.hint ? `<small>${opts.hint}</small>` : ''}</label>`; },
     input(name, value = '', attrs = '') { return `<input id="f-${name}" name="${name}" value="${esc(value)}" ${attrs}>`; },
@@ -3683,7 +3871,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     return s;
   }
 
-  window.F = { migrateState: migrate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
+  window.F = { migrateState: migrate, Gate, STORAGE_KEY, GOVERNORATES, CURRENCIES, COUNTRIES, CHANNELS, STATUSES, SHIP_STATUSES, ACCOUNT_TYPES, GENDERS, DB, UI, uid, today, esc, num, fmt, money, pct, inFrame, emptyState, demoState };
 })();
 
 /*
@@ -3726,6 +3914,11 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     try { arr = JSON.parse(safeGet(LOCAL_AUDIT) || '[]'); } catch (e) { arr = []; }
     arr.push(...entries);
     safeSet(LOCAL_AUDIT, JSON.stringify(arr.slice(-500)));
+  }
+  // محاولة باسورد غلط بتتسجل في السجل
+  function logDenied(reason) {
+    const e = [{ list: 'lock', id: 'lock', action: 'denied', label: String(reason || '').slice(0, 120), at: new Date().toISOString(), uid: C.mode === 'cloud' ? C.uid : 'local' }];
+    if (C.mode === 'cloud') logCloud(e); else logLocal(e);
   }
   async function logCloud(entries) {
     if (!entries.length || !C.db) return;
@@ -3944,7 +4137,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   }
   function scheduleFolderBackup() { if (!folderReady) return; clearTimeout(folderTimer); folderTimer = setTimeout(writeFolderBackup, 5000); }
 
-  window.CLOUD = Object.assign(C, { connect, onSave, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
+  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
 })();
 
 /* Florume — الشاشات */
@@ -4539,7 +4732,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
       footer: `${waButton(sale, 'btn btn-wa') || '<span class="muted small-note">سجّل موبايل العميل لإرسال الفاتورة على واتساب</span>'}${!promo && sale.status === 'delivered' && !RULES.isReconciled(s, sale.id) ? '<button type="button" class="btn" id="ret-btn">مرتجع جزئي / استبدال</button>' : ''}<button type="button" class="btn" id="edit-btn">تعديل</button><button type="button" class="btn" data-close>إغلاق</button>`,
       onOpen(f) {
         f.querySelector('#edit-btn').addEventListener('click', () => saleForm(sale));
-        const rb = f.querySelector('#ret-btn'); if (rb) rb.addEventListener('click', () => partialReturnForm(sale));
+        const rb = f.querySelector('#ret-btn'); if (rb) rb.addEventListener('click', () => F.Gate.guard(() => partialReturnForm(sale), 'المرتجع والاستبدال تعديل على الفاتورة'));
       } });
   }
 
@@ -5183,6 +5376,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
           ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
+      ${lockSection()}
       ${cloudSection()}
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
@@ -5292,7 +5486,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   // سجل التعديلات
   // =====================================================================
   let auditCache = null;
-  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف' };
+  const ACTION_LABEL = { add: 'أضاف', edit: 'عدّل', delete: 'حذف', denied: 'باسورد غلط' };
   function auditPage() {
     if (!auditCache) {
       CLOUD.readAudit(14).then(async (list) => { const ids = [...new Set(list.map((e) => e.uid).filter((u) => u && u !== 'local'))]; const nm = await CLOUD.names(ids); auditCache = { list, nm }; render(); });
@@ -5301,11 +5495,52 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     const { list, nm } = auditCache;
     auditCache = null; // يتحمّل من جديد المرة الجاية
     const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
-    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
+    const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' || e.action === 'denied' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
     return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
       ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
   }
   // قسم السحابة والفريق في الإعدادات
+  // ---------- حماية بالباسورد ----------
+  const GRACE = [{ v: 0, l: 'كل مرة' }, { v: 5, l: 'مرة كل 5 دقايق' }, { v: 15, l: 'مرة كل 15 دقيقة' }, { v: 30, l: 'مرة كل نص ساعة' }];
+  function lockSection() {
+    const lk = S().settings.lock;
+    const on = LOCK.enabled(lk);
+    return `<section class="panel" id="lock-panel">
+      <h2 class="section-title">🔒 حماية التعديل والحذف بالباسورد</h2>
+      ${on ? `<p>الحماية <b class="good-text">شغالة</b>${lk.setAt ? ` من ${fmtDate(lk.setAt)}` : ''}. أي تعديل أو حذف أو تغيير حالة طلب أو تغيير في الإعدادات بيطلب الباسورد — <b>${esc((GRACE.find((g) => g.v === num(lk.graceMin)) || GRACE[0]).l)}</b>. الإضافة الجديدة (طلب، مصروف، منتج…) من غير باسورد.</p>
+        <div class="btn-row"><button class="btn" data-action="changePassword">تغيير الباسورد أو مدة السماح</button><button class="btn btn-danger" data-action="removePassword">إلغاء الباسورد</button></div>`
+      : `<p class="muted">لما تفعّلها، أي تعديل أو حذف في السيستم (فاتورة، منتج، مصروف، شحنة، الإعدادات…) مش هيتم غير بالباسورد. الإضافة الجديدة هتفضل من غير باسورد.</p>
+        <div class="btn-row"><button class="btn btn-primary" data-action="setPassword">عمل باسورد</button></div>`}
+      <p class="muted">محاولات الباسورد الغلط بتتسجل في <a href="#audit">سجل التعديلات</a>، وبعد 5 محاولات غلط السيستم بيستنى 30 ثانية.</p>
+    </section>`;
+  }
+  function passwordForm(isChange) {
+    const lk = S().settings.lock || {};
+    UI.modal({ title: isChange ? 'تغيير الباسورد' : 'عمل باسورد للتعديل والحذف', submit: 'حفظ الباسورد',
+      body: `<div class="form-grid">
+          ${UI.field(isChange ? 'الباسورد الجديد' : 'الباسورد', '<input id="f-pw1" name="pw1" type="password" autocomplete="new-password" dir="auto" required>', { req: true, hint: `${LOCK.MIN_LEN} حروف أو أرقام على الأقل` })}
+          ${UI.field('اكتبه تاني', '<input id="f-pw2" name="pw2" type="password" autocomplete="new-password" dir="auto" required>', { req: true })}
+          ${UI.field('يسأل عن الباسورد', UI.select('graceMin', GRACE, num(lk.graceMin)), { hint: 'بعد ما تكتبه صح يسيبك تعدّل المدة دي من غير ما يسأل تاني' })}
+        </div>
+        <p class="muted">هيظهرلك <b>كود استرجاع</b> مرة واحدة بس. احفظه في مكان آمن — لو نسيت الباسورد، الكود ده هو الطريقة الوحيدة تشيله.</p>`,
+      onSubmit(f, fd) {
+        const err = LOCK.passwordError(fd.get('pw1'), fd.get('pw2'));
+        if (err) { fail(err); return false; }
+        const { lock, code } = LOCK.create(fd.get('pw1'), { graceMin: num(fd.get('graceMin')), today: today() });
+        S().settings.lock = lock;
+        F.Gate.graceUntil = 0;
+        DB.save();
+        setTimeout(() => showRecoveryCode(code), 0);
+        render();
+      } });
+  }
+  function showRecoveryCode(code) {
+    UI.modal({ title: 'كود الاسترجاع — احفظه دلوقتي', footer: '<button class="btn btn-primary" type="button" id="copy-code">نسخ الكود</button><button class="btn" type="button" data-close>حفظته، اقفل</button>',
+      body: `<p>الباسورد اتعمل ✔. ده <b>كود الاسترجاع</b>، وهيظهر المرة دي بس:</p><p class="recovery-code" dir="ltr">${esc(code)}</p>
+        <p class="muted">اكتبه في ورقة أو احفظه في مكان آمن بعيد عن الجهاز. لو نسيت الباسورد، اضغط «نسيت الباسورد؟» في نافذة الباسورد واكتب الكود ده.</p>`,
+      onOpen: (f) => f.querySelector('#copy-code').addEventListener('click', () => { try { navigator.clipboard.writeText(code).then(() => UI.toast('تم نسخ الكود'), () => UI.toast('انسخ الكود من الشاشة', 'bad')); } catch (e) { UI.toast('انسخ الكود من الشاشة', 'bad'); } }) });
+  }
+
   function cloudSection() {
     if (CLOUD.mode === 'cloud') {
       const owner = CLOUD.role === 'owner';
@@ -6151,6 +6386,9 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
         renderBrand(); UI.toast('تم التراجع عن الاستيراد'); render();
       }, 'تراجع');
     },
+    setPassword: () => passwordForm(false),
+    changePassword: () => passwordForm(true),
+    removePassword: () => UI.confirm('هيتشال الباسورد وأي حد يفتح السيستم هيقدر يعدّل ويحذف من غير باسورد.', () => { delete S().settings.lock; DB.save(); UI.toast('الباسورد اتشال'); render(); }, 'إلغاء الباسورد'),
     exportBackup: () => { CLOUD.markBackup(); UI.offerFile(`florume-backup-${today()}.json`, JSON.stringify(S(), null, 1), 'application/json').then(() => render()); },
     chooseFolder: () => CLOUD.chooseFolder().then((ok) => { if (ok) UI.toast('النسخ التلقائي شغال ✔'); render(); }),
     reenableFolder: () => CLOUD.reenableFolder().then((ok) => { UI.toast(ok ? 'النسخ التلقائي شغال ✔' : 'ما اتفعّلش', ok ? 'good' : 'bad'); render(); }),
@@ -6159,6 +6397,14 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     resetAll: () => UI.confirm('سيتم مسح كل البيانات (المنتجات، الطلبات، الشحنات، الحسابات). تأكد أن لديك نسخة احتياطية.', () => { DB.replace(F.emptyState()); UI.toast('تم مسح البيانات — ابدأ بإضافة الموردين والمنتجات'); location.hash = 'settings'; render(); }, 'مسح الكل'),
     clearDemo: () => UI.confirm('سيتم مسح البيانات التجريبية والبدء بحسابات فارغة.', () => { DB.replace(F.emptyState()); UI.toast('جاهز لبياناتك — ابدأ من الإعدادات'); location.hash = 'settings'; render(); }, 'ابدأ ببياناتي'),
   };
+  // العمليات اللي بتسأل عن الباسورد قبل ما تبدأ (والحفظ نفسه بيتأكد تاني لأي مسار تاني)
+  const LOCKED_ACTIONS = { changePassword: 'تغيير الباسورد محتاج الباسورد الحالي', removePassword: 'إلغاء الباسورد محتاج الباسورد الحالي', receiveShipment: 'استلام الشحنة بيعدّلها', undoImport: 'التراجع عن الاستيراد بيمسح بيانات', resetAll: 'مسح كل البيانات', loadDemo: 'تحميل البيانات التجريبية بيمسح بياناتك', clearDemo: 'مسح البيانات', pasteBackup: 'استيراد نسخة احتياطية بيستبدل بياناتك' };
+  const LOCKED_CHANGES = { saleStatus: 'تغيير حالة الطلب تعديل — محتاج الباسورد', setRole: 'تغيير دور عضو في الفريق', importFile: 'استيراد نسخة احتياطية بيستبدل بياناتك' };
+  function lockReason(a) {
+    if (/^edit[A-Z]/.test(a)) return 'فتح التعديل محتاج الباسورد';
+    if (/^del[A-Z]/.test(a)) return 'الحذف محتاج الباسورد';
+    return LOCKED_ACTIONS[a] || '';
+  }
   const CHANGES = {
     period: (el) => { period = el.value === 'custom' ? { ...period, preset: 'custom' } : { preset: el.value, ...presetRange(el.value) }; savePeriod(); render(); },
     periodFrom: (el) => { period = { ...period, preset: 'custom', from: el.value }; savePeriod(); render(); },
@@ -6354,14 +6600,22 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     tickClock();
     setInterval(tickClock, 1000);
     DB.load();
+    DB.onRevert = () => { renderBrand(); render(); };
     renderBrand();
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-action]');
       if (!el || !ACTIONS[el.dataset.action]) return;
       e.preventDefault();
-      ACTIONS[el.dataset.action](el.dataset.id);
+      const a = el.dataset.action, reason = lockReason(a);
+      if (reason) F.Gate.guard(() => ACTIONS[a](el.dataset.id), reason);
+      else ACTIONS[a](el.dataset.id);
     });
-    document.addEventListener('change', (e) => { const el = e.target.closest('[data-change]'); if (el && CHANGES[el.dataset.change]) CHANGES[el.dataset.change](el); });
+    document.addEventListener('change', (e) => {
+      const el = e.target.closest('[data-change]'); if (!el || !CHANGES[el.dataset.change]) return;
+      const reason = LOCKED_CHANGES[el.dataset.change];
+      if (reason) F.Gate.guard(() => CHANGES[el.dataset.change](el), reason, render);
+      else CHANGES[el.dataset.change](el);
+    });
     document.addEventListener('input', (e) => { const el = e.target.closest('[data-input]'); if (el && INPUTS[el.dataset.input]) INPUTS[el.dataset.input](el); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.getElementById('modal').hidden) UI.close(); });
     // تلميح الرسوم البيانية
