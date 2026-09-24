@@ -364,7 +364,7 @@
         groups.set(importRef, {
           id: makeId(), date, customerId, channel: 'other', status: opts.status || 'delivered',
           items: [], discount: 0, shippingCharged: 0, courierId: isCod ? pay.slice(4) : ((state.couriers || [])[0] || {}).id || '', courierFee: 0,
-          payment: isCod ? 'cod' : pay, returnDate: '', returnFee: 0,
+          payment: isCod ? 'cod' : pay, returnDate: '', returnFee: 0, trackingNo: ref,
           notes: `مستورد من الملف${ref ? ' — بوليصة ' + ref : ''} — بند ${str(r.orderNo) || r._row}`, importRef, _rows: [r._row],
         });
       } else {
@@ -431,7 +431,7 @@
     return s;
   }
 
-  const api = { readWorkbook, parseCsv, detectSheets, defaultMappings, planImport, applyImport, toDate, toNumber, phoneKey, normName };
+  const api = { readWorkbook, parseCsv, detectSheets, defaultMappings, planImport, applyImport, toDate, toNumber, phoneKey, normName, normKey, latinDigits };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.IMP = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -14,7 +14,8 @@
   const emptyState = () => ({
     version: 1,
     demo: false,
-    settings: { businessName: 'Florume', startDate: today().slice(0, 8) + '01', rates: { SAR: 13.2, AED: 13.5, USD: 49.5 }, invoicePrefix: 'FL-', nextInvoiceNo: 1001, lowStock: 3 },
+    settings: { businessName: 'Florume', startDate: today().slice(0, 8) + '01', rates: { SAR: 13.2, AED: 13.5, USD: 49.5 }, invoicePrefix: 'FL-', nextInvoiceNo: 1001, lowStock: 3,
+      alerts: { pendingDays: 2, shippedDays: 7, settleDays: 14, dueDays: 7, stagnantDays: 60 }, waFooter: 'شكرًا لطلبك من متجرنا 🌸' },
     accounts: [
       { id: uid(), name: 'الخزينة (نقدي)', type: 'cash', opening: 0 },
       { id: uid(), name: 'حساب البنك', type: 'bank', opening: 0 },
@@ -24,6 +25,7 @@
     couriers: [{ id: uid(), name: 'بوسطة' }, { id: uid(), name: 'أرامكس' }],
     suppliers: [], products: [], customers: [], shipments: [], supplierPayments: [],
     sales: [], settlements: [], expenses: [], transfers: [], equity: [], adjustments: [],
+    campaigns: [], partners: [], distributions: [], decants: [], reconciliations: [],
   });
 
   // ---------- أدوات ----------
@@ -66,7 +68,8 @@
 
   function migrate(s) {
     const base = emptyState();
-    const out = { ...base, ...s, settings: { ...base.settings, ...(s.settings || {}), rates: { ...base.settings.rates, ...((s.settings || {}).rates || {}) } } };
+    const st = s.settings || {};
+    const out = { ...base, ...s, settings: { ...base.settings, ...st, rates: { ...base.settings.rates, ...(st.rates || {}) }, alerts: { ...base.settings.alerts, ...(st.alerts || {}) } } };
     Object.keys(base).forEach((k) => { if (Array.isArray(base[k]) && !Array.isArray(out[k])) out[k] = []; });
     return out;
   }
@@ -187,6 +190,15 @@
       { id: uid(), date: '2026-07-01', supplierId: dubai.id, amount: 10380, rate: 13.4, accountId: bank.id, fee: 150, notes: 'دفع كامل قبل الشحن' },
       { id: uid(), date: '2026-09-14', supplierId: riyadh.id, amount: 1500, rate: 13.25, accountId: bank.id, fee: 100, notes: 'دفعة مقدمة شحنة سبتمبر' },
     );
+    const P2 = (sku, brand, name, sizeMl, gender, price, decantOf) => ({ id: uid(), sku, brand, name, sizeMl, gender, price, minStock: 10, decantOf });
+    const decant5 = P2('AO-KL100-D5', 'العربية للعود', 'كلمات (ديكانت)', 5, 'unisex', 260, products[5].id);
+    const decant10 = P2('AO-KL100-D10', 'العربية للعود', 'كلمات (ديكانت)', 10, 'unisex', 450, products[5].id);
+    s.products.push(decant5, decant10);
+    const camp = (name, platform, startDate, endDate, budget) => ({ id: uid(), name, platform, startDate, endDate, budget, notes: '' });
+    const campaigns = [camp('إطلاق لطافة — صيف', 'instagram', '2026-06-15', '2026-07-31', 12000), camp('فيديوهات تيك توك', 'tiktok', '2026-07-15', '2026-09-30', 9000), camp('عروض الفيسبوك', 'facebook', '2026-08-01', '2026-09-30', 8000)];
+    s.campaigns.push(...campaigns);
+    const pa = { id: uid(), name: 'الشريك الأول', share: 60, notes: 'مدير التشغيل' }, pb = { id: uid(), name: 'الشريك الثاني', share: 40, notes: 'ممول' };
+    s.partners.push(pa, pb);
     const names = [['محمد سمير', 'القاهرة'], ['سارة عادل', 'الجيزة'], ['أحمد فتحي', 'الإسكندرية'], ['منة الله خالد', 'المنصورة'], ['عمر حسن', 'القاهرة'], ['نورهان إبراهيم', 'طنطا'], ['يوسف مجدي', 'الجيزة'], ['هدى مصطفى', 'أسيوط'], ['كريم وليد', 'القاهرة'], ['آية محمود', 'الإسماعيلية'], ['مصطفى رضا', 'الزقازيق'], ['ريم أشرف', 'القاهرة']];
     names.forEach(([name, city], i) => s.customers.push({ id: uid(), name, city, phone: `010${String(12345670 + i * 1117).slice(0, 8)}`, address: '' }));
     // مولد أرقام ثابت حتى تكون البيانات التجريبية متطابقة في كل مرة
@@ -213,11 +225,38 @@
         status, returnDate: status === 'returned' ? addDays(date, 4) : '', returnFee: status === 'returned' ? 35 : 0, notes: '',
       });
     }
+    // ربط الطلبات بالحملات حسب القناة والتاريخ، وأرقام بوليصة لطلبات بوسطة
+    s.sales.forEach((sale, i) => {
+      const c = campaigns.find((x) => x.platform === sale.channel && sale.date >= x.startDate && sale.date <= x.endDate);
+      if (c && i % 3 !== 0) sale.campaignId = c.id;
+      if (sale.courierId === bosta.id && sale.status !== 'pending') sale.trackingNo = `BST${String(40210 + sale.no).padStart(7, '0')}`;
+    });
+    // تقسيم زجاجة كلمات إلى ديكانت
+    s.decants.push({ id: uid(), date: '2026-08-10', sourceProductId: products[5].id, sourceQty: 1, outputs: [{ productId: decant5.id, qty: 8 }, { productId: decant10.id, qty: 6 }], materialsCost: 180, accountId: cash.id, notes: 'عبوات 5 و10 مل مع ستيكر' });
+    s.sales.push({
+      id: uid(), no: s.settings.nextInvoiceNo++, date: '2026-08-12', customerId: s.customers[0].id, channel: 'tiktok', items: [{ productId: decant10.id, qty: 2, price: 450 }, { productId: decant5.id, qty: 1, price: 260 }],
+      discount: 0, shippingCharged: 70, courierId: bosta.id, courierFee: 65, payment: 'cod', status: 'delivered', returnDate: '', returnFee: 0, notes: '', campaignId: campaigns[1].id,
+    });
+    // فواتير دعاية: قطع مجانية لمؤثرين
+    const influencer = { id: uid(), name: 'مروة (بلوجر عطور)', city: 'القاهرة', phone: '01099887766', address: '' };
+    s.customers.push(influencer);
+    s.sales.push({
+      id: uid(), no: s.settings.nextInvoiceNo++, kind: 'promo', date: '2026-08-14', customerId: influencer.id, channel: 'instagram', items: [{ productId: products[4].id, qty: 1, price: 0 }, { productId: products[2].id, qty: 1, price: 0 }],
+      discount: 0, shippingCharged: 0, courierId: bosta.id, courierFee: 65, payment: 'cod', status: 'delivered', returnDate: '', returnFee: 0, notes: 'تعاون — ريفيو على إنستجرام', campaignId: null,
+    });
     // تسويات شهرية مع شركات الشحن تقريبًا بقيمة المستحق
     const settleMonth = (month, day) => {
       const cut = `${month}-${day}`;
       const bal = Acc.courierBalances(s, Acc.buildJournal(s), cut);
-      s.couriers.forEach((c) => { const amt = Math.floor((bal[c.id] || 0) * 0.95); if (amt > 0) s.settlements.push({ id: uid(), date: cut, courierId: c.id, accountId: bank.id, amount: amt, notes: 'تسوية تحصيل COD' }); });
+      const done = new Set(s.reconciliations.flatMap((r) => r.lines.map((l) => l.saleId)));
+      s.couriers.forEach((c) => {
+        const amt = Math.floor((bal[c.id] || 0) * 0.95);
+        if (amt <= 0) return;
+        const st = { id: uid(), date: cut, courierId: c.id, accountId: bank.id, amount: amt, notes: 'تسوية تحصيل COD' };
+        s.settlements.push(st);
+        const lines = s.sales.filter((x) => x.courierId === c.id && x.payment === 'cod' && x.kind !== 'promo' && (x.status === 'delivered' || x.status === 'returned') && x.date <= addDays(cut, -5) && !done.has(x.id)).map((x) => ({ saleId: x.id }));
+        s.reconciliations.push({ id: uid(), date: cut, courierId: c.id, fileName: 'كشف شهري', lines, net: amt, settlementId: st.id });
+      });
     };
     [['2026-06', '30'], ['2026-07', '15'], ['2026-07', '31'], ['2026-08', '15'], ['2026-08', '31'], ['2026-09', '15']].forEach(([m, d]) => settleMonth(m, d));
     const X = (date, category, amount, accountId, notes) => s.expenses.push({ id: uid(), date, category, amount, accountId, notes });
@@ -228,11 +267,27 @@
       X(`2026-${m}-10`, '5950', 450, voda.id, 'اشتراك المتجر الإلكتروني');
     });
     X('2026-08-15', '5300', 3500, bank.id, 'تعاون مع مؤثرة');
+    X('2026-07-20', '5300', 1500, voda.id, 'إعلانات تيك توك');
+    X('2026-08-20', '5300', 1500, voda.id, 'إعلانات تيك توك');
+    // ربط مصروفات الإعلانات بالحملات
+    s.expenses.forEach((e) => {
+      if (e.category !== '5300') return;
+      const meta = campaigns.filter((x) => x.platform !== 'tiktok');
+      const c = e.notes === 'تعاون مع مؤثرة' ? campaigns[0] : (/تيك/.test(e.notes) ? [campaigns[1]] : meta).find((x) => e.date >= x.startDate && e.date <= x.endDate);
+      if (c) e.campaignId = c.id;
+    });
     s.transfers.push({ id: uid(), date: '2026-08-02', fromId: voda.id, toId: bank.id, amount: 12000, fee: 60, notes: 'تفريغ المحفظة' });
     s.transfers.push({ id: uid(), date: '2026-09-02', fromId: insta.id, toId: bank.id, amount: 15000, fee: 0, notes: '' });
-    s.equity.push({ id: uid(), date: '2026-08-30', type: 'drawing', amount: 8000, accountId: bank.id, notes: 'مسحوبات الشريك' });
+    s.equity.push({ id: uid(), date: '2026-08-30', type: 'drawing', amount: 8000, accountId: bank.id, notes: 'مسحوبات شخصية' });
+    s.shipments[0].dueDate = '2026-07-05';
+    s.shipments[2].dueDate = '2026-09-28';
     s.adjustments.push({ id: uid(), date: '2026-07-15', productId: byId(2), qty: -1, reason: 'tester', notes: 'زجاجة تستر للتصوير' });
     s.adjustments.push({ id: uid(), date: '2026-08-20', productId: byId(0), qty: -1, reason: 'damage', notes: 'انكسرت أثناء التغليف' });
+    // توزيع أرباح يوليو على الشريكين (مع حجز ٢٠٪ في النشاط) ومسحوبات من الحساب الجاري
+    const plan = Acc.distributionPlan(s, Acc.buildJournal(s), '2026-07-01', '2026-07-31', 20);
+    if (plan.distributable > 0) s.distributions.push({ id: uid(), date: '2026-08-05', from: '2026-07-01', to: '2026-07-31', retainPct: 20, profit: plan.netProfit, allocations: plan.allocations, notes: 'أرباح يوليو' });
+    s.equity.push({ id: uid(), date: '2026-08-10', type: 'drawing', amount: 3000, accountId: bank.id, partnerId: pa.id, notes: 'من أرباح يوليو' });
+    s.equity.push({ id: uid(), date: '2026-08-12', type: 'drawing', amount: 2000, accountId: voda.id, partnerId: pb.id, notes: 'من أرباح يوليو' });
     return s;
   }
 
