@@ -1233,7 +1233,7 @@
       </section>
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
-        <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP. هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
+        <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP، أو <b>تصدير طلبات Shopify أو WooCommerce</b> (Orders → Export). هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
         <div class="btn-row">
           <button class="btn btn-primary" data-action="importExcel">رفع ملف Excel</button>
           <button class="btn" data-action="importTemplate">تنزيل نموذج فاضي</button>
@@ -2021,6 +2021,7 @@
         </div>
         ${Object.keys(opts.salesPay).length || Object.keys(opts.expensePay).length ? `<h3 class="sub-title">طريقة الدفع في الملف ← في النظام</h3><div class="form-grid">${Object.keys(opts.salesPay).map((k, i) => UI.field(`«${esc(k)}» في المبيعات`, UI.select('impPay' + i, payOptions(base), opts.salesPay[k], `data-imp-pay="${esc(k)}"`))).join('')}
           ${Object.keys(opts.expensePay).map((k, i) => UI.field(`«${esc(k)}» في المصروفات`, UI.select('impExp' + i, [{ v: 'skip', l: 'تخطي هذه السطور' }, ...base.accounts.map((a) => ({ v: a.id, l: a.name }))], opts.expensePay[k], `data-imp-exp="${esc(k)}"`))).join('')}</div>` : ''}
+        ${Object.keys(opts.webProducts || {}).length ? `<h3 class="sub-title">منتجات المتجر ← منتجات النظام</h3><p class="muted">اربط كل منتج في ملف المتجر بالمنتج بتاعه هنا عشان المخزون والتكلفة يتحسبوا صح. «منتج جديد» بيتضاف من غير مخزون.</p><div class="form-grid">${Object.keys(opts.webProducts).map((k, i) => UI.field(esc(opts.webNames[k] || k), UI.select('impWeb' + i, [{ v: 'new', l: '+ منتج جديد' }, ...base.products.map((p) => ({ v: p.id, l: productLabel(p) }))], opts.webProducts[k], `data-imp-web="${esc(k)}"`))).join('')}</div>` : ''}
         <div class="summary imp-summary">
           <div><span>منتجات جديدة</span><b>${newProducts.length}</b></div>
           <div><span>مخزون افتتاحي</span><b>${fmt(t.openingQty)} قطعة · ${fmt(t.openingValue)} ج.م</b></div>
@@ -2051,6 +2052,7 @@
           } else if (el.dataset.imp) opts[el.dataset.imp] = el.value;
           else if (el.dataset.impPay != null) opts.salesPay[el.dataset.impPay] = el.value;
           else if (el.dataset.impExp != null) opts.expensePay[el.dataset.impExp] = el.value;
+          else if (el.dataset.impWeb != null) opts.webProducts[el.dataset.impWeb] = el.value;
           replan();
         });
       },

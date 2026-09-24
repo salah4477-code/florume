@@ -175,6 +175,28 @@
       cost: ['cost', 'unitcost', 'التكلفه', 'تكلفهالوحده'],
       price: ['price', 'saleprice', 'السعر', 'سعرالبيع'],
     },
+    // تصدير طلبات Shopify و WooCommerce: سطر لكل صنف، وبيانات الطلب في أول سطر
+    web: {
+      orderNo: ['name', 'ordernumber', 'orderid', 'order', 'رقمالطلب'],
+      date: ['createdat', 'orderdate', 'paidat', 'date'],
+      productName: ['lineitemname', 'itemname', 'productname', 'itemtitle'],
+      qty: ['lineitemquantity', 'quantity', 'qty', 'itemquantity'],
+      price: ['lineitemprice', 'itemcost', 'itemprice', 'price'],
+      sku: ['lineitemsku', 'sku', 'itemsku'],
+      discount: ['discountamount', 'cartdiscountamount', 'orderdiscount', 'discounttotal', 'cartdiscount'],
+      shipping: ['shipping', 'ordershippingamount', 'shippingtotal', 'ordershipping'],
+      total: ['total', 'ordertotalamount', 'ordertotal'],
+      financial: ['financialstatus'],
+      status: ['orderstatus', 'status', 'fulfillmentstatus'],
+      cancelled: ['cancelledat'],
+      payMethod: ['paymentmethod', 'paymentmethodtitle', 'paymentgateway', 'gateway'],
+      customerName: ['billingname', 'shippingname', 'customername'],
+      firstName: ['billingfirstname', 'shippingfirstname', 'firstname'],
+      lastName: ['billinglastname', 'shippinglastname', 'lastname'],
+      phone: ['billingphone', 'shippingphone', 'phone', 'customerphone'],
+      city: ['shippingprovince', 'shippingcity', 'billingprovince', 'billingcity', 'shippingstate', 'billingstate', 'city'],
+      address: ['shippingaddress1', 'shippingstreet', 'billingaddress1', 'billingstreet', 'shippingaddress', 'billingaddress'],
+    },
     expenses: {
       date: ['date', 'التاريخ'],
       category: ['category', 'البند', 'التصنيف', 'النوع'],
@@ -183,15 +205,30 @@
       desc: ['desc', 'description', 'notes', 'البيان', 'الوصف', 'ملاحظات'],
     },
   };
-  const REQUIRED = { sales: ['date', 'productName', 'qty', 'netTotal'], stock: ['name', 'qty'], expenses: ['date', 'amount'] };
-  const KIND_LABEL = { sales: 'مبيعات', stock: 'مخزون ومنتجات', expenses: 'مصروفات' };
+  const REQUIRED = { web: ['orderNo', 'date', 'productName', 'qty', 'price'], sales: ['date', 'productName', 'qty', 'netTotal'], stock: ['name', 'qty'], expenses: ['date', 'amount'] };
+  const KIND_LABEL = { web: 'طلبات المتجر الإلكتروني (Shopify / WooCommerce)', sales: 'مبيعات', stock: 'مخزون ومنتجات', expenses: 'مصروفات' };
+  // أسماء المحافظات بالإنجليزي زي ما بتيجي من المتجر
+  const GOV_EN = { cairo: 'القاهرة', giza: 'الجيزة', alexandria: 'الإسكندرية', qalyubia: 'القليوبية', qaliubiya: 'القليوبية', sharqia: 'الشرقية', sharkia: 'الشرقية', dakahlia: 'الدقهلية', gharbia: 'الغربية', monufia: 'المنوفية', menofia: 'المنوفية', beheira: 'البحيرة', kafrelsheikh: 'كفر الشيخ', damietta: 'دمياط', portsaid: 'بورسعيد', ismailia: 'الإسماعيلية', suez: 'السويس', faiyum: 'الفيوم', fayoum: 'الفيوم', benisuef: 'بني سويف', minya: 'المنيا', asyut: 'أسيوط', assiut: 'أسيوط', sohag: 'سوهاج', qena: 'قنا', luxor: 'الأقصر', aswan: 'أسوان', redsea: 'البحر الأحمر', newvalley: 'الوادي الجديد', matrouh: 'مطروح', northsinai: 'شمال سيناء', southsinai: 'جنوب سيناء' };
+  const govFromText = (t) => { const k = normKey(t).replace(/governorate|محافظه/g, ''); return GOV_EN[k] || str(t); };
+  const isCodText = (t) => /cod|cash on delivery|cashondelivery|الدفع عند الاستلام|عند الاستلام|كاش عند/i.test(str(t));
+  // حالة طلب المتجر ← حالتنا (الملغي والمسترد بيتخطى)
+  function webStatus(row, fallback) {
+    const t = normKey(`${str(row.status)} ${str(row.financial)}`);
+    if (str(row.cancelled) || /cancel|refund|void|failed|trash|ملغي/.test(t)) return 'skip';
+    if (/completed|fulfilled|delivered|مكتمل/.test(t) && !/unfulfilled/.test(t)) return 'delivered';
+    if (/processing|onhold|pending|unfulfilled|partial/.test(t)) return 'pending';
+    return fallback || 'delivered';
+  }
 
   function mapHeader(cells, kind) {
     const map = {};
     const keys = cells.map(normKey);
+    // الأسماء بالترتيب: الأول هو المفضّل (مثلًا «Created at» قبل «Paid at»)
     Object.entries(FIELDS[kind]).forEach(([field, aliases]) => {
-      const i = keys.findIndex((k, idx) => k && aliases.includes(k) && !Object.values(map).includes(idx));
-      if (i >= 0) map[field] = i;
+      for (const alias of aliases) {
+        const i = keys.findIndex((k, idx) => k === alias && !Object.values(map).includes(idx));
+        if (i >= 0) { map[field] = i; break; }
+      }
     });
     return map;
   }
@@ -203,7 +240,7 @@
       let best = null;
       for (let h = 0; h < Math.min(sh.rows.length, 12) && !best; h++) {
         const cells = sh.rows[h] || [];
-        for (const kind of ['sales', 'expenses', 'stock']) {
+        for (const kind of ['web', 'sales', 'expenses', 'stock']) {
           const map = mapHeader(cells, kind);
           if (REQUIRED[kind].every((f) => map[f] != null)) { best = { kind, map, headerRow: h }; break; }
         }
@@ -264,9 +301,34 @@
       if (expensePay[key]) return;
       expensePay[key] = isStockPayment(key) ? 'skip' : guessAccount(key, accounts) || (accounts.find((a) => a.type === 'cash') || accounts[0] || {}).id || 'skip';
     }));
+    const webProducts = {}, webNames = {};
+    const products = state.products || [];
+    found.filter((s) => s.kind === 'web').forEach((s) => {
+      let last = null;
+      s.rows.forEach((r) => {
+        // بيانات الطلب في أول سطر ليه؛ السطور التانية لنفس الطلب بتاخد منه
+        if (str(r.orderNo) && (!last || str(last.orderNo) !== str(r.orderNo))) last = r;
+        else if (!str(r.orderNo)) Object.assign(r, { orderNo: last && last.orderNo });
+        if (last && r !== last && str(r.orderNo) === str(last.orderNo) && !str(r.payMethod) && !str(r.financial)) { r.payMethod = last.payMethod; r.financial = last.financial; }
+        const pay = str(r.payMethod) || str(r.financial) || (last && (str(last.payMethod) || str(last.financial))) || '(فارغ)';
+        if (!salesPay[pay]) {
+          const byName = accounts.find((a) => { const an = normName(a.name), pn = normName(pay); return an && pn && (an.includes(pn) || pn.includes(an)); });
+          // أي طريقة مش «عند الاستلام» يبقى مدفوع مقدمًا: حساب بنفس الاسم، أو محفظة، أو بنك
+          salesPay[pay] = isCodText(pay) || pay === '(فارغ)' ? cod : (byName || {}).id || guessAccount(pay, accounts) || (accounts.find((a) => a.type === 'wallet') || accounts.find((a) => a.type === 'bank') || {}).id || cod;
+        }
+        const key = webProductKey(r);
+        if (!key || webProducts[key] != null) return;
+        const sku = normKey(r.sku), nm = normName(r.productName);
+        const hit = (sku && products.find((p) => normKey(p.sku) === sku)) || products.find((p) => normName(p.name) === nm || normName(`${p.brand || ''} ${p.name}`) === nm) || products.find((p) => nm.includes(normName(p.name)) && normName(p.name).length > 3);
+        webProducts[key] = hit ? hit.id : 'new';
+        webNames[key] = `${str(r.productName)}${str(r.sku) ? ' (' + str(r.sku) + ')' : ''}`;
+      });
+    });
     const dates = found.flatMap((s) => (s.kind === 'stock' ? [] : s.rows.map((r) => toDate(r.date)))).filter((d) => d && d !== 'invalid').sort();
-    return { salesPay, expensePay, status: 'delivered', openingDate: dates[0] || '' };
+    return { salesPay, expensePay, webProducts, webNames, status: 'delivered', openingDate: dates[0] || '' };
   }
+
+  const webProductKey = (r) => (str(r.sku) ? 'sku:' + normKey(r.sku) : str(r.productName) ? 'name:' + normName(r.productName) : '');
 
   // ---------- الخطة ----------
   function planImport(sheets, state, opts, uid) {
@@ -375,12 +437,73 @@
       }
       groups.get(importRef).items.push({ productId: product.id, qty, price: Math.round((total / qty) * 100) / 100 });
     }));
+    // طلبات المتجر الإلكتروني
+    const webOrders = new Map();
+    found.filter((s) => s.kind === 'web').forEach((s) => {
+      let head = null;
+      s.rows.forEach((r) => {
+        const where = { sheet: s.name, row: r._row };
+        const no = str(r.orderNo) || (head && str(head.orderNo));
+        if (str(r.orderNo) && (!head || str(head.orderNo) !== str(r.orderNo))) head = r;
+        if (!no) { errors.push({ ...where, reason: 'رقم الطلب فاضي' }); return; }
+        const order = head && str(head.orderNo) === no ? head : r;
+        const status = webStatus(order, opts.status);
+        const importRef = `web:${cleanRef(no)}`;
+        if (status === 'skip') { if (!webOrders.has(importRef)) skipped.push({ ...where, reason: `طلب ${no} ملغي أو مسترد` }); webOrders.set(importRef, null); return; }
+        if (existingRefs.has(importRef)) { if (!webOrders.has(importRef)) skipped.push({ ...where, reason: `طلب المتجر ${no} مستورد قبل كده` }); webOrders.set(importRef, null); return; }
+        if (webOrders.get(importRef) === null) return;
+        const qty = toNumber(r.qty), price = toNumber(r.price);
+        if (!str(r.productName) && !str(r.sku)) return;
+        if (qty == null || isNaN(qty) || qty <= 0) { errors.push({ ...where, reason: `كمية غير صحيحة «${str(r.qty)}»` }); return; }
+        if (price == null || isNaN(price) || price < 0) { errors.push({ ...where, reason: `سعر غير صحيح «${str(r.price)}»` }); return; }
+        let o = webOrders.get(importRef);
+        if (!o) {
+          const date = toDate(order.date);
+          if (!date || date === 'invalid') { errors.push({ ...where, reason: `تاريخ غير صحيح «${str(order.date)}»` }); webOrders.set(importRef, null); return; }
+          const name = str(order.customerName) || `${str(order.firstName)} ${str(order.lastName)}`.trim();
+          const customerId = customerFor({ customerName: name, customerPhone: order.phone, customerAddress: str(order.address) });
+          const cust = customers.find((c) => c.id === customerId);
+          if (cust && !cust.city && str(order.city)) cust.city = govFromText(order.city);
+          const payKey = str(order.payMethod) || str(order.financial) || '(فارغ)';
+          const pay = opts.salesPay[payKey] || 'cod:';
+          const isCod = String(pay).startsWith('cod:');
+          o = { id: makeId(), date, customerId, channel: 'website', status, items: [], discount: Math.abs(toNumber(order.discount) || 0), shippingCharged: Math.abs(toNumber(order.shipping) || 0), fileTotal: toNumber(order.total),
+            courierId: isCod ? String(pay).slice(4) : ((state.couriers || [])[0] || {}).id || '', courierFee: 0, payment: isCod ? 'cod' : pay, returnDate: '', returnFee: 0,
+            notes: `طلب المتجر ${no}`, importRef, webOrderNo: no, _rows: [] };
+          webOrders.set(importRef, o);
+        }
+        // المنتج: ربط بمنتج موجود أو منتج جديد بسعر السطر
+        const key = webProductKey(r);
+        const target = (opts.webProducts || {})[key];
+        let productId = target && target !== 'new' ? target : null;
+        if (!productId) {
+          let p = byNorm.get(normName(r.productName)) || (str(r.sku) && bySku.get(normKey(r.sku)));
+          if (!p) {
+            p = { id: makeId(), sku: str(r.sku), name: str(r.productName) || str(r.sku), price, cost: 0, currentQty: 0, soldQty: 0, isNew: true, fromWeb: true };
+            products.push(p); byNorm.set(normName(p.name), p); if (p.sku) bySku.set(normKey(p.sku), p);
+            warnings.push(`منتج المتجر «${p.name}» مش موجود — هيتضاف من غير مخزون. اربطه بمنتج موجود أو سجّل له مخزون/شحنة`);
+          }
+          productId = p.id;
+        }
+        o._rows.push(r._row);
+        o.items.push({ productId, qty, price });
+      });
+    });
+    webOrders.forEach((o) => {
+      if (!o) return;
+      if (!o.items.length) return;
+      const gross = o.items.reduce((a, it) => a + it.qty * it.price, 0);
+      if (o.discount > gross) o.discount = gross;
+      if (o.fileTotal != null && !isNaN(o.fileTotal) && Math.abs(gross - o.discount + o.shippingCharged - o.fileTotal) > 1) warnings.push(`طلب المتجر ${o.webOrderNo}: الإجمالي في الملف ${o.fileTotal} والمحسوب ${Math.round((gross - o.discount + o.shippingCharged) * 100) / 100} (ممكن ضرايب أو رسوم)`);
+      delete o.fileTotal;
+      groups.set(o.importRef, o);
+    });
     const sales = [...groups.values()];
     if (cogsGapLines) warnings.push(`${cogsGapLines} سطر مبيعات تكلفتها في الملف تختلف عن تكلفة المنتج في ورقة المخزون (الفرق ${Math.round(cogsGap)} ج.م) — النظام يحسب التكلفة من تكلفة المخزون`);
 
     // المخزون الافتتاحي = الرصيد الحالي + ما خرج في الملف
     const opening = [];
-    products.filter((p) => p.isNew).forEach((p) => {
+    products.filter((p) => p.isNew && !p.fromWeb).forEach((p) => {
       const qty = (p.currentQty || 0) + p.soldQty;
       if (qty > 0) opening.push({ id: makeId(), date: openingDate, productId: p.id, qty, unitCost: p.cost || 0, reason: 'opening', notes: 'مخزون افتتاحي من ملف الاستيراد', importRef: `erp:opening:${p.sku || normKey(p.name)}` });
     });
