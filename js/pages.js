@@ -45,7 +45,7 @@
   // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
   const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
   const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
@@ -2551,6 +2551,7 @@
     if (key !== lastKey) { m.classList.remove('enter'); void m.offsetWidth; m.classList.add('enter'); lastKey = key; }
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
+    UI.labelTables(m);
     let n = 0;
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
