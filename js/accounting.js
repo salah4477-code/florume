@@ -17,6 +17,7 @@
     { code: '1200', name: 'مستحقات لدى شركات الشحن', type: 'asset' },
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
+    { code: '1500', name: 'مصروفات التأسيس وما قبل التشغيل', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
     { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
@@ -351,6 +352,17 @@
       ]);
     });
 
+    // مصروفات التأسيس وما قبل التشغيل: أصل في الميزانية ومش بتدخل في الأرباح والخسائر.
+    // لو اتدفعت من فلوس صاحب المشروع أو شريك بتتحسب رأس مال، ولو من حساب النشاط بتنزل منه.
+    (state.formation || []).forEach((x) => {
+      const amt = num(x.amount);
+      const partner = x.partnerId ? { type: 'partner', id: x.partnerId } : undefined;
+      add(x.date, 'formation', { type: 'formation', id: x.id }, `مصروف تأسيس — ${FORMATION_KINDS[x.kind] || 'أخرى'}${x.notes ? ' — ' + x.notes : ''}`, [
+        { acc: '1500', dr: amt, cr: 0 },
+        x.accountId ? { acc: cashCode(x.accountId), dr: 0, cr: amt } : { acc: '3100', dr: 0, cr: amt, party: partner },
+      ]);
+    });
+
     // رأس المال والمسحوبات
     // مسحوبات الشريك تُخصم من حسابه الجاري، والمسحوبات بدون شريك تبقى مسحوبات شخصية
     (state.equity || []).forEach((e) => {
@@ -549,6 +561,7 @@
     return { entries, inventory: inv, suppliers: sup };
   }
 
+  const FORMATION_KINDS = { website: 'الموقع والدومين والاستضافة', design: 'اللوجو والتصميم والتغليف', photos: 'تصوير المنتجات', legal: 'السجل التجاري والتراخيص', equipment: 'أجهزة وأدوات', ads: 'إعلانات قبل الافتتاح', other: 'أخرى' };
   const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', promo: 'عينة دعاية', other: 'أخرى' };
 
   // ---------- التقارير ----------
@@ -617,6 +630,7 @@
       { name: 'المخزون', amount: net('1300') },
       { name: 'بضاعة في الطريق', amount: net('1310') },
     ];
+    if (net('1500')) assets.push({ name: 'مصروفات التأسيس وما قبل التشغيل', amount: net('1500') });
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
     if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
@@ -784,6 +798,26 @@
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- رأس مال التأسيس ----------
+  // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
+  function foundingCapital(state, journal, asOf) {
+    const r = { cash: 0, stock: 0, formationOwn: 0, formationFromCash: 0, added: 0, total: 0, formationTotal: 0 };
+    journal.entries.forEach((e) => {
+      if (asOf && e.date > asOf) return;
+      e.lines.forEach((l) => {
+        if (e.source === 'opening' && l.acc === '3100') r.cash += l.cr;
+        else if (e.source === 'adjustment' && l.acc === '3100') r.stock += l.cr - l.dr;
+        else if (e.source === 'formation' && l.acc === '3100') r.formationOwn += l.cr;
+        else if (e.source === 'formation' && l.acc.startsWith('1100:')) r.formationFromCash += l.cr;
+        else if (e.source === 'equity' && l.acc === '3100') r.added += l.cr - l.dr;
+      });
+    });
+    Object.keys(r).forEach((k) => (r[k] = round2(r[k])));
+    r.total = round2(r.cash + r.stock + r.formationOwn + r.added);
+    r.formationTotal = round2(r.formationOwn + r.formationFromCash);
+    return r;
+  }
+
   // ---------- الشركاء ----------
   function partnerAccounts(state, journal, asOf) {
     const out = {};
@@ -819,7 +853,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

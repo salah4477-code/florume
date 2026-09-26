@@ -1077,15 +1077,62 @@
     const max = Math.max(1, ...Object.values(byCat));
     const due = OPS.dueRecurring(s, today());
     const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
-    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
       ${due.length ? `<section class="panel due-panel"><h2 class="section-title">مصروفات ثابتة مستحقة (${due.length}) <button class="btn btn-small btn-primary" data-action="postAllRecurring">تسجيل الكل</button></h2><ul class="list">${due.map((d, i) => `<li><span>${esc((Acc.COA_MAP[d.category] || {}).name || '')} — ${esc(d.notes)} · ${monthLong(d.period)}</span><b>${fmt(d.amount)} ج.م</b><button class="link-btn" data-action="postRecurring" data-id="${i}">تسجيل</button></li>`).join('')}</ul></section>` : ''}
       <section class="grid-2 exp-top">
         <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(total)}</span></h2>
           ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
+      ${formationSection()}
       ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
       ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
+  }
+  // ---------- التأسيس ورأس المال ----------
+  // مصروفات قبل بداية الشغل الفعلي: بتتحسب رأس مال تأسيس ومش بتدخل في أرباح وخسائر أي فترة
+  const payerOf = (x) => (x.accountId ? 'acc:' + x.accountId : x.partnerId ? 'partner:' + x.partnerId : 'owner');
+  const payerLabel = (x) => (x.accountId ? `من ${nameOf('accounts', x.accountId)}` : x.partnerId ? `من فلوس ${nameOf('partners', x.partnerId)}` : 'من فلوس صاحب المشروع');
+  function formationSection() {
+    const s = S(), fc = Acc.foundingCapital(s, J());
+    const rows = [...s.formation].sort((a, b) => (a.date < b.date ? 1 : -1)).map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(Acc.FORMATION_KINDS[x.kind] || 'أخرى'))}${td(esc(x.notes || ''))}${td(`${esc(payerLabel(x))}${x.accountId ? '' : ' ' + UI.pill('رأس مال', 'info')}`)}${tdn(fmt(x.amount))}${actions(btn('تعديل', 'editFormation', x.id), btn('حذف', 'delFormation', x.id, 'danger'))}</tr>`);
+    const line = (l, v, hint) => `<li><span>${l}${hint ? ` <small class="muted">${hint}</small>` : ''}</span><b>${fmt(v)} ج.م</b></li>`;
+    return `<section class="panel" id="formation-panel">
+      <h2 class="section-title">التأسيس ورأس المال <span class="muted">— مش بيدخل في الأرباح والخسائر</span></h2>
+      <div class="grid-2">
+        <div><p class="muted">اللي صرفته قبل ما الشغل يبدأ (الموقع، اللوجو، التصوير، السجل التجاري…) سجّله هنا مش في المصروفات العادية. بيظهر في الميزانية أصل «مصروفات التأسيس»، ولو دفعته من جيبك بيتحسب من رأس المال.</p>
+          <div class="btn-row"><button class="btn btn-primary btn-small" data-action="newFormation">+ مصروف تأسيس</button><button class="btn btn-small" data-action="newAdjustment">+ بضاعة أول المدة</button><a class="btn btn-small" href="#settings">الأرصدة الافتتاحية</a></div></div>
+        <div><h3 class="sub-title">رأس مال التأسيس</h3><ul class="list cap-list">
+          ${line('فلوس في الخزينة والبنوك أول المدة', fc.cash, 'الأرصدة الافتتاحية')}
+          ${line('بضاعة أول المدة', fc.stock, 'مخزون افتتاحي')}
+          ${line('مصروفات تأسيس من جيبك', fc.formationOwn)}
+          ${fc.added ? line('إضافات رأس مال بعد كده', fc.added) : ''}
+          <li class="cap-total"><span>الإجمالي</span><b>${fmt(fc.total)} ج.م</b></li></ul>
+          ${fc.formationFromCash ? `<p class="muted">ومنهم ${fmt(fc.formationFromCash)} ج.م مصروفات تأسيس اتدفعت من حسابات النشاط (مش فلوس جديدة).</p>` : ''}</div>
+      </div>
+      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
+    </section>`;
+  }
+  function formationForm(x) {
+    const s = S(); const isNew = !x;
+    x = x || { id: uid(), date: s.settings.startDate || today(), kind: 'website', amount: '', notes: '' };
+    const payers = [{ v: 'owner', l: 'من فلوسي الشخصية — تتحسب رأس مال' }, ...s.partners.map((p) => ({ v: 'partner:' + p.id, l: `من فلوس ${p.name} — تتحسب رأس مال ليه` })), ...s.accounts.map((a) => ({ v: 'acc:' + a.id, l: `من حساب النشاط: ${a.name}` }))];
+    UI.modal({ title: isNew ? 'مصروف تأسيس' : 'تعديل مصروف التأسيس',
+      body: `<p class="muted">مصروف قبل بداية الشغل الفعلي. بيتسجل أصل في الميزانية ومش بيدخل في الأرباح والخسائر.</p>
+        <div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', x.date, 'type="date" required'), { req: true })}
+          ${UI.field('البند', UI.select('kind', Acc.FORMATION_KINDS, x.kind))}
+          ${UI.field('المبلغ', UI.input('amount', x.amount, 'type="number" min="0" step="0.01" required'), { req: true })}
+          ${UI.field('اتدفع منين', UI.select('payer', payers, payerOf(x)), { hint: 'لو من فلوسك الشخصية بيزود رأس المال، ولو من حساب النشاط بينزل من رصيده' })}
+          ${UI.field('البيان', UI.input('notes', x.notes, 'placeholder="دومين سنة، تصميم اللوجو…"'), { cls: 'span-2' })}
+        </div>`,
+      onSubmit(f, fd) {
+        const payer = fd.get('payer');
+        const obj = { ...x, date: fd.get('date'), kind: fd.get('kind'), amount: num(fd.get('amount')), notes: fd.get('notes').trim(), accountId: payer.startsWith('acc:') ? payer.slice(4) : '', partnerId: payer.startsWith('partner:') ? payer.slice(8) : '' };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date)) return false;
+        if (obj.accountId && !cashOk(f, RULES.withDoc(S(), 'formation', obj))) return false;
+        DB.upsert('formation', obj); UI.toast('تم حفظ مصروف التأسيس'); render();
+      } });
   }
   function recurringForm(r) {
     const s = S(); const isNew = !r;
@@ -2215,6 +2262,7 @@
     newTransfer: () => transferForm(), newSettlement: () => settlementForm(), newEquity: () => equityForm(),
     editDoc: (key) => { const [list, id] = key.split(':'); const doc = DB.find(list, id); ({ transfers: transferForm, settlements: settlementForm, equity: equityForm })[list](doc); },
     delDoc: (key) => { const [list, id] = key.split(':'); del(list, id, 'هذا المستند'); },
+    newFormation: () => formationForm(), editFormation: (id) => formationForm(DB.find('formation', id)), delFormation: (id) => del('formation', id, 'مصروف التأسيس ده'),
     newExpense: () => expenseForm(), editExpense: (id) => expenseForm(DB.find('expenses', id)), delExpense: (id) => del('expenses', id, 'هذا المصروف'),
     pickReport: (id) => { report = id; render(); },
     printPage: () => { const x = pageExport(); FX.printDoc({ business: S().settings.businessName, title: x.title, subtitle: x.subtitle, html: FX.cleanForPrint(x.root) }); },

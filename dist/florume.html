@@ -524,6 +524,10 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   .app { display: block; }
   body { background: #fff; }
 }
+/* رأس مال التأسيس */
+.cap-list li > span:first-child { white-space: normal; }
+.cap-list .cap-total { border-top: 2px solid var(--line); border-bottom: 0; font-weight: 700; }
+.cap-list b { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 </style>
 </head>
@@ -600,6 +604,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     { code: '1200', name: 'مستحقات لدى شركات الشحن', type: 'asset' },
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
+    { code: '1500', name: 'مصروفات التأسيس وما قبل التشغيل', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
     { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
@@ -934,6 +939,17 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
       ]);
     });
 
+    // مصروفات التأسيس وما قبل التشغيل: أصل في الميزانية ومش بتدخل في الأرباح والخسائر.
+    // لو اتدفعت من فلوس صاحب المشروع أو شريك بتتحسب رأس مال، ولو من حساب النشاط بتنزل منه.
+    (state.formation || []).forEach((x) => {
+      const amt = num(x.amount);
+      const partner = x.partnerId ? { type: 'partner', id: x.partnerId } : undefined;
+      add(x.date, 'formation', { type: 'formation', id: x.id }, `مصروف تأسيس — ${FORMATION_KINDS[x.kind] || 'أخرى'}${x.notes ? ' — ' + x.notes : ''}`, [
+        { acc: '1500', dr: amt, cr: 0 },
+        x.accountId ? { acc: cashCode(x.accountId), dr: 0, cr: amt } : { acc: '3100', dr: 0, cr: amt, party: partner },
+      ]);
+    });
+
     // رأس المال والمسحوبات
     // مسحوبات الشريك تُخصم من حسابه الجاري، والمسحوبات بدون شريك تبقى مسحوبات شخصية
     (state.equity || []).forEach((e) => {
@@ -1132,6 +1148,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     return { entries, inventory: inv, suppliers: sup };
   }
 
+  const FORMATION_KINDS = { website: 'الموقع والدومين والاستضافة', design: 'اللوجو والتصميم والتغليف', photos: 'تصوير المنتجات', legal: 'السجل التجاري والتراخيص', equipment: 'أجهزة وأدوات', ads: 'إعلانات قبل الافتتاح', other: 'أخرى' };
   const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', promo: 'عينة دعاية', other: 'أخرى' };
 
   // ---------- التقارير ----------
@@ -1200,6 +1217,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
       { name: 'المخزون', amount: net('1300') },
       { name: 'بضاعة في الطريق', amount: net('1310') },
     ];
+    if (net('1500')) assets.push({ name: 'مصروفات التأسيس وما قبل التشغيل', amount: net('1500') });
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
     if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
@@ -1367,6 +1385,26 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- رأس مال التأسيس ----------
+  // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
+  function foundingCapital(state, journal, asOf) {
+    const r = { cash: 0, stock: 0, formationOwn: 0, formationFromCash: 0, added: 0, total: 0, formationTotal: 0 };
+    journal.entries.forEach((e) => {
+      if (asOf && e.date > asOf) return;
+      e.lines.forEach((l) => {
+        if (e.source === 'opening' && l.acc === '3100') r.cash += l.cr;
+        else if (e.source === 'adjustment' && l.acc === '3100') r.stock += l.cr - l.dr;
+        else if (e.source === 'formation' && l.acc === '3100') r.formationOwn += l.cr;
+        else if (e.source === 'formation' && l.acc.startsWith('1100:')) r.formationFromCash += l.cr;
+        else if (e.source === 'equity' && l.acc === '3100') r.added += l.cr - l.dr;
+      });
+    });
+    Object.keys(r).forEach((k) => (r[k] = round2(r[k])));
+    r.total = round2(r.cash + r.stock + r.formationOwn + r.added);
+    r.formationTotal = round2(r.formationOwn + r.formationFromCash);
+    return r;
+  }
+
   // ---------- الشركاء ----------
   function partnerAccounts(state, journal, asOf) {
     const out = {};
@@ -1402,7 +1440,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
@@ -2918,7 +2956,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     const add = (d) => d && dates.push(d);
     (state.sales || []).forEach((x) => add(x.date));
     (state.shipments || []).forEach((x) => { add(x.orderDate); (x.costs || []).forEach((c) => add(c.date)); });
-    ['supplierPayments', 'expenses', 'transfers', 'settlements', 'equity', 'adjustments', 'decants', 'distributions'].forEach((k) => (state[k] || []).forEach((x) => add(x.date)));
+    ['supplierPayments', 'expenses', 'transfers', 'settlements', 'equity', 'adjustments', 'decants', 'distributions', 'formation'].forEach((k) => (state[k] || []).forEach((x) => add(x.date)));
     return dates.sort()[0] || '';
   }
 
@@ -3108,9 +3146,9 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
 (function (root) {
   'use strict';
   // القوائم اللي ليها تاريخ بتتقسم بالشهر، والمبيعات كمان على 8 حزم في الشهر
-  const DATED = { sales: 'date', expenses: 'date', settlements: 'date', transfers: 'date', equity: 'date', adjustments: 'date', decants: 'date', distributions: 'date', supplierPayments: 'date', commissionPayments: 'date', reconciliations: 'date', shipments: 'orderDate' };
+  const DATED = { sales: 'date', expenses: 'date', settlements: 'date', transfers: 'date', equity: 'date', adjustments: 'date', decants: 'date', distributions: 'date', supplierPayments: 'date', commissionPayments: 'date', reconciliations: 'date', formation: 'date', shipments: 'orderDate' };
   const SPLIT = { sales: 8, customers: 8, products: 4 }; // لحد ~2000 طلب في الشهر من غير ما مستند يعدّي 256KB
-  const LISTS = ['accounts', 'couriers', 'suppliers', 'products', 'customers', 'shipments', 'supplierPayments', 'sales', 'settlements', 'expenses', 'transfers', 'equity', 'adjustments', 'campaigns', 'partners', 'distributions', 'decants', 'reconciliations', 'coupons', 'commissionPayments', 'recurring'];
+  const LISTS = ['accounts', 'couriers', 'suppliers', 'products', 'customers', 'shipments', 'supplierPayments', 'sales', 'settlements', 'expenses', 'transfers', 'equity', 'adjustments', 'campaigns', 'partners', 'distributions', 'decants', 'reconciliations', 'coupons', 'commissionPayments', 'recurring', 'formation'];
   const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
   const cleanSeg = (s) => String(s || 'x').replace(/[^A-Za-z0-9_\-.~:@+]/g, '_').slice(0, 60) || 'x';
 
@@ -3207,7 +3245,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   }
 
   // وصف تعديل لسجل التعديلات
-  const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
+  const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', formation: 'مصروف تأسيس', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
   function describe(list, rec, prefix) {
     if (!rec) return LIST_LABEL[list] || list;
     const name = list === 'sales' ? `${prefix || ''}${rec.no || ''}` : rec.name || rec.code || rec.ref || rec.notes || rec.date || '';
@@ -3497,7 +3535,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     suppliers: [], products: [], customers: [], shipments: [], supplierPayments: [],
     sales: [], settlements: [], expenses: [], transfers: [], equity: [], adjustments: [],
     campaigns: [], partners: [], distributions: [], decants: [], reconciliations: [],
-    coupons: [], commissionPayments: [], recurring: [],
+    coupons: [], commissionPayments: [], recurring: [], formation: [],
   });
 
   // ---------- أدوات ----------
@@ -3885,6 +3923,8 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     const salary = { id: uid(), category: '5500', amount: 5000, accountId: bank.id, day: 28, startMonth: '2026-06', notes: 'مرتب مسؤول الطلبات', active: true };
     const subscription = { id: uid(), category: '5950', amount: 450, accountId: voda.id, day: 10, startMonth: '2026-06', notes: 'اشتراك المتجر الإلكتروني', active: true };
     s.recurring.push(salary, subscription);
+    // مصروفات التأسيس قبل بداية الشغل (رأس مال، مش بتدخل في الأرباح)
+    s.formation.push({ id: uid(), date: '2026-06-01', kind: 'website', amount: 4500, notes: 'دومين واستضافة سنة وقالب المتجر' }, { id: uid(), date: '2026-06-01', kind: 'photos', amount: 1800, notes: 'تصوير المنتجات', accountId: bank.id });
     s.expenses = s.expenses.filter((e) => !(e.category === '5950' && e.date === '2026-09-10'));
     s.expenses.forEach((e) => { const r = e.category === '5500' ? salary : e.category === '5950' ? subscription : null; if (r) { e.recurringId = r.id; e.period = e.date.slice(0, 7); } });
     // ربط مصروفات الإعلانات بالحملات
@@ -5288,15 +5328,62 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     const max = Math.max(1, ...Object.values(byCat));
     const due = OPS.dueRecurring(s, today());
     const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
-    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
       ${due.length ? `<section class="panel due-panel"><h2 class="section-title">مصروفات ثابتة مستحقة (${due.length}) <button class="btn btn-small btn-primary" data-action="postAllRecurring">تسجيل الكل</button></h2><ul class="list">${due.map((d, i) => `<li><span>${esc((Acc.COA_MAP[d.category] || {}).name || '')} — ${esc(d.notes)} · ${monthLong(d.period)}</span><b>${fmt(d.amount)} ج.م</b><button class="link-btn" data-action="postRecurring" data-id="${i}">تسجيل</button></li>`).join('')}</ul></section>` : ''}
       <section class="grid-2 exp-top">
         <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(total)}</span></h2>
           ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
+      ${formationSection()}
       ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
       ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
+  }
+  // ---------- التأسيس ورأس المال ----------
+  // مصروفات قبل بداية الشغل الفعلي: بتتحسب رأس مال تأسيس ومش بتدخل في أرباح وخسائر أي فترة
+  const payerOf = (x) => (x.accountId ? 'acc:' + x.accountId : x.partnerId ? 'partner:' + x.partnerId : 'owner');
+  const payerLabel = (x) => (x.accountId ? `من ${nameOf('accounts', x.accountId)}` : x.partnerId ? `من فلوس ${nameOf('partners', x.partnerId)}` : 'من فلوس صاحب المشروع');
+  function formationSection() {
+    const s = S(), fc = Acc.foundingCapital(s, J());
+    const rows = [...s.formation].sort((a, b) => (a.date < b.date ? 1 : -1)).map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(Acc.FORMATION_KINDS[x.kind] || 'أخرى'))}${td(esc(x.notes || ''))}${td(`${esc(payerLabel(x))}${x.accountId ? '' : ' ' + UI.pill('رأس مال', 'info')}`)}${tdn(fmt(x.amount))}${actions(btn('تعديل', 'editFormation', x.id), btn('حذف', 'delFormation', x.id, 'danger'))}</tr>`);
+    const line = (l, v, hint) => `<li><span>${l}${hint ? ` <small class="muted">${hint}</small>` : ''}</span><b>${fmt(v)} ج.م</b></li>`;
+    return `<section class="panel" id="formation-panel">
+      <h2 class="section-title">التأسيس ورأس المال <span class="muted">— مش بيدخل في الأرباح والخسائر</span></h2>
+      <div class="grid-2">
+        <div><p class="muted">اللي صرفته قبل ما الشغل يبدأ (الموقع، اللوجو، التصوير، السجل التجاري…) سجّله هنا مش في المصروفات العادية. بيظهر في الميزانية أصل «مصروفات التأسيس»، ولو دفعته من جيبك بيتحسب من رأس المال.</p>
+          <div class="btn-row"><button class="btn btn-primary btn-small" data-action="newFormation">+ مصروف تأسيس</button><button class="btn btn-small" data-action="newAdjustment">+ بضاعة أول المدة</button><a class="btn btn-small" href="#settings">الأرصدة الافتتاحية</a></div></div>
+        <div><h3 class="sub-title">رأس مال التأسيس</h3><ul class="list cap-list">
+          ${line('فلوس في الخزينة والبنوك أول المدة', fc.cash, 'الأرصدة الافتتاحية')}
+          ${line('بضاعة أول المدة', fc.stock, 'مخزون افتتاحي')}
+          ${line('مصروفات تأسيس من جيبك', fc.formationOwn)}
+          ${fc.added ? line('إضافات رأس مال بعد كده', fc.added) : ''}
+          <li class="cap-total"><span>الإجمالي</span><b>${fmt(fc.total)} ج.م</b></li></ul>
+          ${fc.formationFromCash ? `<p class="muted">ومنهم ${fmt(fc.formationFromCash)} ج.م مصروفات تأسيس اتدفعت من حسابات النشاط (مش فلوس جديدة).</p>` : ''}</div>
+      </div>
+      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
+    </section>`;
+  }
+  function formationForm(x) {
+    const s = S(); const isNew = !x;
+    x = x || { id: uid(), date: s.settings.startDate || today(), kind: 'website', amount: '', notes: '' };
+    const payers = [{ v: 'owner', l: 'من فلوسي الشخصية — تتحسب رأس مال' }, ...s.partners.map((p) => ({ v: 'partner:' + p.id, l: `من فلوس ${p.name} — تتحسب رأس مال ليه` })), ...s.accounts.map((a) => ({ v: 'acc:' + a.id, l: `من حساب النشاط: ${a.name}` }))];
+    UI.modal({ title: isNew ? 'مصروف تأسيس' : 'تعديل مصروف التأسيس',
+      body: `<p class="muted">مصروف قبل بداية الشغل الفعلي. بيتسجل أصل في الميزانية ومش بيدخل في الأرباح والخسائر.</p>
+        <div class="form-grid">
+          ${UI.field('التاريخ', UI.input('date', x.date, 'type="date" required'), { req: true })}
+          ${UI.field('البند', UI.select('kind', Acc.FORMATION_KINDS, x.kind))}
+          ${UI.field('المبلغ', UI.input('amount', x.amount, 'type="number" min="0" step="0.01" required'), { req: true })}
+          ${UI.field('اتدفع منين', UI.select('payer', payers, payerOf(x)), { hint: 'لو من فلوسك الشخصية بيزود رأس المال، ولو من حساب النشاط بينزل من رصيده' })}
+          ${UI.field('البيان', UI.input('notes', x.notes, 'placeholder="دومين سنة، تصميم اللوجو…"'), { cls: 'span-2' })}
+        </div>`,
+      onSubmit(f, fd) {
+        const payer = fd.get('payer');
+        const obj = { ...x, date: fd.get('date'), kind: fd.get('kind'), amount: num(fd.get('amount')), notes: fd.get('notes').trim(), accountId: payer.startsWith('acc:') ? payer.slice(4) : '', partnerId: payer.startsWith('partner:') ? payer.slice(8) : '' };
+        if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
+        if (!dateOk(obj.date)) return false;
+        if (obj.accountId && !cashOk(f, RULES.withDoc(S(), 'formation', obj))) return false;
+        DB.upsert('formation', obj); UI.toast('تم حفظ مصروف التأسيس'); render();
+      } });
   }
   function recurringForm(r) {
     const s = S(); const isNew = !r;
@@ -6426,6 +6513,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     newTransfer: () => transferForm(), newSettlement: () => settlementForm(), newEquity: () => equityForm(),
     editDoc: (key) => { const [list, id] = key.split(':'); const doc = DB.find(list, id); ({ transfers: transferForm, settlements: settlementForm, equity: equityForm })[list](doc); },
     delDoc: (key) => { const [list, id] = key.split(':'); del(list, id, 'هذا المستند'); },
+    newFormation: () => formationForm(), editFormation: (id) => formationForm(DB.find('formation', id)), delFormation: (id) => del('formation', id, 'مصروف التأسيس ده'),
     newExpense: () => expenseForm(), editExpense: (id) => expenseForm(DB.find('expenses', id)), delExpense: (id) => del('expenses', id, 'هذا المصروف'),
     pickReport: (id) => { report = id; render(); },
     printPage: () => { const x = pageExport(); FX.printDoc({ business: S().settings.businessName, title: x.title, subtitle: x.subtitle, html: FX.cleanForPrint(x.root) }); },

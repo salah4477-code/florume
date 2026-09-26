@@ -7,9 +7,9 @@
 (function (root) {
   'use strict';
   // القوائم اللي ليها تاريخ بتتقسم بالشهر، والمبيعات كمان على 8 حزم في الشهر
-  const DATED = { sales: 'date', expenses: 'date', settlements: 'date', transfers: 'date', equity: 'date', adjustments: 'date', decants: 'date', distributions: 'date', supplierPayments: 'date', commissionPayments: 'date', reconciliations: 'date', shipments: 'orderDate' };
+  const DATED = { sales: 'date', expenses: 'date', settlements: 'date', transfers: 'date', equity: 'date', adjustments: 'date', decants: 'date', distributions: 'date', supplierPayments: 'date', commissionPayments: 'date', reconciliations: 'date', formation: 'date', shipments: 'orderDate' };
   const SPLIT = { sales: 8, customers: 8, products: 4 }; // لحد ~2000 طلب في الشهر من غير ما مستند يعدّي 256KB
-  const LISTS = ['accounts', 'couriers', 'suppliers', 'products', 'customers', 'shipments', 'supplierPayments', 'sales', 'settlements', 'expenses', 'transfers', 'equity', 'adjustments', 'campaigns', 'partners', 'distributions', 'decants', 'reconciliations', 'coupons', 'commissionPayments', 'recurring'];
+  const LISTS = ['accounts', 'couriers', 'suppliers', 'products', 'customers', 'shipments', 'supplierPayments', 'sales', 'settlements', 'expenses', 'transfers', 'equity', 'adjustments', 'campaigns', 'partners', 'distributions', 'decants', 'reconciliations', 'coupons', 'commissionPayments', 'recurring', 'formation'];
   const hash = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
   const cleanSeg = (s) => String(s || 'x').replace(/[^A-Za-z0-9_\-.~:@+]/g, '_').slice(0, 60) || 'x';
 
@@ -106,7 +106,7 @@
   }
 
   // وصف تعديل لسجل التعديلات
-  const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
+  const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', formation: 'مصروف تأسيس', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
   function describe(list, rec, prefix) {
     if (!rec) return LIST_LABEL[list] || list;
     const name = list === 'sales' ? `${prefix || ''}${rec.no || ''}` : rec.name || rec.code || rec.ref || rec.notes || rec.date || '';

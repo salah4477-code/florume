@@ -29,7 +29,7 @@
     suppliers: [], products: [], customers: [], shipments: [], supplierPayments: [],
     sales: [], settlements: [], expenses: [], transfers: [], equity: [], adjustments: [],
     campaigns: [], partners: [], distributions: [], decants: [], reconciliations: [],
-    coupons: [], commissionPayments: [], recurring: [],
+    coupons: [], commissionPayments: [], recurring: [], formation: [],
   });
 
   // ---------- أدوات ----------
@@ -417,6 +417,8 @@
     const salary = { id: uid(), category: '5500', amount: 5000, accountId: bank.id, day: 28, startMonth: '2026-06', notes: 'مرتب مسؤول الطلبات', active: true };
     const subscription = { id: uid(), category: '5950', amount: 450, accountId: voda.id, day: 10, startMonth: '2026-06', notes: 'اشتراك المتجر الإلكتروني', active: true };
     s.recurring.push(salary, subscription);
+    // مصروفات التأسيس قبل بداية الشغل (رأس مال، مش بتدخل في الأرباح)
+    s.formation.push({ id: uid(), date: '2026-06-01', kind: 'website', amount: 4500, notes: 'دومين واستضافة سنة وقالب المتجر' }, { id: uid(), date: '2026-06-01', kind: 'photos', amount: 1800, notes: 'تصوير المنتجات', accountId: bank.id });
     s.expenses = s.expenses.filter((e) => !(e.category === '5950' && e.date === '2026-09-10'));
     s.expenses.forEach((e) => { const r = e.category === '5500' ? salary : e.category === '5950' ? subscription : null; if (r) { e.recurringId = r.id; e.period = e.date.slice(0, 7); } });
     // ربط مصروفات الإعلانات بالحملات

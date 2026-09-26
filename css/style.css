@@ -514,3 +514,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   .app { display: block; }
   body { background: #fff; }
 }
+/* رأس مال التأسيس */
+.cap-list li > span:first-child { white-space: normal; }
+.cap-list .cap-total { border-top: 2px solid var(--line); border-bottom: 0; font-weight: 700; }
+.cap-list b { font-variant-numeric: tabular-nums; white-space: nowrap; }
