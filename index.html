@@ -17,23 +17,33 @@
   <aside class="side">
     <a class="brand" href="#dashboard"><span class="brand-drop" aria-hidden="true"></span><span><b data-brand>Florume</b><small>حسابات العطور المستوردة</small></span></a>
     <nav class="nav" aria-label="القائمة الرئيسية">
-      <a href="#dashboard">لوحة التحكم</a>
-      <a href="#sales">المبيعات</a>
-      <a href="#shipments">شحنات الاستيراد</a>
-      <a href="#products">المنتجات والمخزون</a>
-      <a href="#suppliers">الموردين</a>
-      <a href="#customers">العملاء</a>
-      <a href="#treasury">الخزينة والبنوك</a>
-      <a href="#expenses">المصروفات</a>
-      <a href="#campaigns">الحملات الإعلانية</a>
-      <a href="#reconcile">تسوية شركات الشحن</a>
-      <a href="#partners">الشركاء والأرباح</a>
-      <a href="#alerts">التنبيهات <b class="nav-badge" id="alert-badge" hidden></b></a>
-      <a href="#health">فحص البيانات</a>
-      <a href="#audit">سجل التعديلات</a>
-      <a href="#planning">التخطيط</a>
-      <a href="#reports">التقارير</a>
-      <a href="#settings">الإعدادات</a>
+      <div class="nav-group" data-sec="daily"><p class="nav-label">اليومي</p>
+        <a href="#dashboard">لوحة التحكم</a>
+        <a href="#sales">المبيعات</a>
+        <a href="#customers">العملاء</a>
+        <a href="#alerts">التنبيهات <b class="nav-badge" id="alert-badge" hidden></b></a>
+      </div>
+      <div class="nav-group" data-sec="goods"><p class="nav-label">البضاعة</p>
+        <a href="#products">المنتجات والمخزون</a>
+        <a href="#shipments">شحنات الاستيراد</a>
+        <a href="#suppliers">الموردين</a>
+      </div>
+      <div class="nav-group" data-sec="money"><p class="nav-label">الفلوس</p>
+        <a href="#treasury">الخزينة والبنوك</a>
+        <a href="#expenses">المصروفات</a>
+        <a href="#reconcile">تسوية شركات الشحن</a>
+        <a href="#partners">الشركاء والأرباح</a>
+      </div>
+      <div class="nav-group" data-sec="growth"><p class="nav-label">النمو والتحليل</p>
+        <a href="#campaigns">الحملات الإعلانية</a>
+        <a href="#planning">التخطيط</a>
+        <a href="#reports">التقارير</a>
+      </div>
+      <div class="nav-group" data-sec="system"><p class="nav-label">النظام</p>
+        <a href="#health">فحص البيانات</a>
+        <a href="#audit">سجل التعديلات</a>
+        <a href="#settings">الإعدادات</a>
+      </div>
     </nav>
     <p class="side-foot">SAR · AED → EGP</p>
   </aside>
@@ -44,6 +54,7 @@
         <span class="tb-date"><span id="tb-date"></span><small id="tb-hijri"></small></span>
         <b class="tb-time" id="tb-time" dir="ltr"></b>
       </div>
+      <button type="button" class="tb-search" data-action="openSearch" aria-label="بحث سريع (Ctrl+K)"><span data-icon="search"></span><span class="tb-search-text">ابحث عن فاتورة، عميل، منتج…</span><kbd>Ctrl K</kbd></button>
       <span class="sync-chip" id="sync-chip" hidden></span>
       <div class="tb-actions">
         <button class="btn btn-primary btn-small tb-new" data-action="newSale">+ طلب جديد</button>
@@ -61,6 +72,14 @@
     </div>
     <div id="main"></div>
   </main>
+  <div class="drawer-backdrop" data-action="closeDrawer" hidden></div>
+  <nav class="bottom-nav" aria-label="التنقل السريع">
+    <a href="#dashboard"><span data-icon="dashboard"></span><span>الرئيسية</span></a>
+    <a href="#sales"><span data-icon="sales"></span><span>المبيعات</span></a>
+    <button type="button" class="bn-new" data-action="newSale" aria-label="طلب جديد"><span data-icon="plus"></span></button>
+    <a href="#treasury"><span data-icon="treasury"></span><span>الخزينة</span></a>
+    <button type="button" data-action="openDrawer" aria-label="القائمة الكاملة"><span data-icon="menu"></span><span>القائمة</span></button>
+  </nav>
 </div>
 <div id="modal" class="modal" hidden></div>
 <div id="toasts" class="toasts" aria-live="polite"></div>

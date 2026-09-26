@@ -17,6 +17,7 @@
     { code: '1200', name: 'مستحقات لدى شركات الشحن', type: 'asset' },
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
+    { code: '1500', name: 'مصروفات التأسيس وما قبل التشغيل', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
     { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
@@ -30,6 +31,7 @@
     { code: '4300', name: 'أرباح فروق العملة', type: 'revenue', other: true },
     { code: '4900', name: 'إيرادات أخرى', type: 'revenue', other: true },
     { code: '4910', name: 'تعويضات شركات الشحن', type: 'revenue', other: true },
+    { code: '4920', name: 'زيادة في جرد الخزينة', type: 'revenue', other: true },
     { code: '5100', name: 'تكلفة البضاعة المباعة', type: 'expense', cogs: true },
     { code: '5200', name: 'مصاريف شحن الطلبات', type: 'expense' },
     { code: '5210', name: 'مصاريف المرتجعات', type: 'expense' },
@@ -41,6 +43,7 @@
     { code: '5800', name: 'عجز وتوالف المخزون', type: 'expense' },
     { code: '5810', name: 'تسترات وعينات وهدايا', type: 'expense' },
     { code: '5820', name: 'خسائر شحنات مفقودة', type: 'expense' },
+    { code: '5830', name: 'عجز في جرد الخزينة', type: 'expense' },
     { code: '5900', name: 'خسائر فروق العملة', type: 'expense', other: true },
     { code: '5950', name: 'اشتراكات وبرامج', type: 'expense' },
     { code: '5990', name: 'مصروفات أخرى', type: 'expense' },
@@ -351,6 +354,17 @@
       ]);
     });
 
+    // مصروفات التأسيس وما قبل التشغيل: أصل في الميزانية ومش بتدخل في الأرباح والخسائر.
+    // لو اتدفعت من فلوس صاحب المشروع أو شريك بتتحسب رأس مال، ولو من حساب النشاط بتنزل منه.
+    (state.formation || []).forEach((x) => {
+      const amt = num(x.amount);
+      const partner = x.partnerId ? { type: 'partner', id: x.partnerId } : undefined;
+      add(x.date, 'formation', { type: 'formation', id: x.id }, `مصروف تأسيس — ${FORMATION_KINDS[x.kind] || 'أخرى'}${x.notes ? ' — ' + x.notes : ''}`, [
+        { acc: '1500', dr: amt, cr: 0 },
+        x.accountId ? { acc: cashCode(x.accountId), dr: 0, cr: amt } : { acc: '3100', dr: 0, cr: amt, party: partner },
+      ]);
+    });
+
     // رأس المال والمسحوبات
     // مسحوبات الشريك تُخصم من حسابه الجاري، والمسحوبات بدون شريك تبقى مسحوبات شخصية
     (state.equity || []).forEach((e) => {
@@ -544,11 +558,29 @@
       ]);
     });
 
+    // جرد الخزينة: الرصيد الفعلي في نهاية اليوم ده. الفرق عن رصيد الدفاتر بيتسجل زيادة أو عجز.
+    // الفرق بيتحسب من المستندات نفسها، فلو سجلت بعدين مصروف قبل الجرد كنت ناسيه، العجز بيقل لوحده.
+    const counts = [...(state.cashCounts || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const cashCounts = {};
+    counts.forEach((cc) => {
+      const code = cashCode(cc.accountId);
+      let book = 0;
+      entries.forEach((e) => { if (e.date <= cc.date) e.lines.forEach((l) => { if (l.acc === code) book += l.dr - l.cr; }); });
+      book = round2(book);
+      const diff = round2(num(cc.actual) - book);
+      cashCounts[cc.id] = { book, diff };
+      if (Math.abs(diff) < EPS) return;
+      add(cc.date, 'cashCount', { type: 'cashCount', id: cc.id }, `جرد ${name('accounts', cc.accountId)} — ${diff > 0 ? 'زيادة' : 'عجز'}${cc.notes ? ' — ' + cc.notes : ''}`, diff > 0
+        ? [{ acc: code, dr: diff, cr: 0 }, { acc: '4920', dr: 0, cr: diff }]
+        : [{ acc: '5830', dr: -diff, cr: 0 }, { acc: code, dr: 0, cr: -diff }]);
+    });
+
     entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     entries.forEach((e, i) => (e.no = i + 1));
-    return { entries, inventory: inv, suppliers: sup };
+    return { entries, inventory: inv, suppliers: sup, cashCounts };
   }
 
+  const FORMATION_KINDS = { website: 'الموقع والدومين والاستضافة', design: 'اللوجو والتصميم والتغليف', photos: 'تصوير المنتجات', legal: 'السجل التجاري والتراخيص', equipment: 'أجهزة وأدوات', ads: 'إعلانات قبل الافتتاح', other: 'أخرى' };
   const ADJ_REASONS = { opening: 'مخزون افتتاحي', count: 'فرق جرد', damage: 'تالف/مكسور', tester: 'تستر', gift: 'هدية/عينة', promo: 'عينة دعاية', other: 'أخرى' };
 
   // ---------- التقارير ----------
@@ -599,7 +631,9 @@
     const opex = COA.filter((a) => a.type === 'expense' && !a.cogs && !a.other).map((a) => ({ code: a.code, name: a.name, amount: bal(a.code) })).filter((r) => Math.abs(r.amount) > EPS);
     const totalOpex = round2(opex.reduce((s, r) => s + r.amount, 0));
     const operatingProfit = round2(grossProfit - totalOpex);
-    const fxGain = bal('4300'), otherIncome = bal('4900'), fxLoss = bal('5900');
+    // الإيرادات الأخرى: كل حسابات الإيراد «الأخرى» ماعدا فروق العملة (إيرادات أخرى، تعويضات الشحن، زيادة الجرد)
+    const fxGain = bal('4300'), fxLoss = bal('5900');
+    const otherIncome = round2(COA.filter((a) => a.type === 'revenue' && a.other && a.code !== '4300').reduce((t, a) => t + bal(a.code), 0));
     const netProfit = round2(operatingProfit + fxGain + otherIncome - fxLoss);
     return { grossSales, discounts, returns, shippingIncome, netSales, cogs, grossProfit, opex, totalOpex, operatingProfit, fxGain, otherIncome, fxLoss, netProfit, grossMargin: netSales ? grossProfit / netSales : 0, netMargin: netSales ? netProfit / netSales : 0 };
   }
@@ -617,6 +651,7 @@
       { name: 'المخزون', amount: net('1300') },
       { name: 'بضاعة في الطريق', amount: net('1310') },
     ];
+    if (net('1500')) assets.push({ name: 'مصروفات التأسيس وما قبل التشغيل', amount: net('1500') });
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
     if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
@@ -784,6 +819,26 @@
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- رأس مال التأسيس ----------
+  // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
+  function foundingCapital(state, journal, asOf) {
+    const r = { cash: 0, stock: 0, formationOwn: 0, formationFromCash: 0, added: 0, total: 0, formationTotal: 0 };
+    journal.entries.forEach((e) => {
+      if (asOf && e.date > asOf) return;
+      e.lines.forEach((l) => {
+        if (e.source === 'opening' && l.acc === '3100') r.cash += l.cr;
+        else if (e.source === 'adjustment' && l.acc === '3100') r.stock += l.cr - l.dr;
+        else if (e.source === 'formation' && l.acc === '3100') r.formationOwn += l.cr;
+        else if (e.source === 'formation' && l.acc.startsWith('1100:')) r.formationFromCash += l.cr;
+        else if (e.source === 'equity' && l.acc === '3100') r.added += l.cr - l.dr;
+      });
+    });
+    Object.keys(r).forEach((k) => (r[k] = round2(r[k])));
+    r.total = round2(r.cash + r.stock + r.formationOwn + r.added);
+    r.formationTotal = round2(r.formationOwn + r.formationFromCash);
+    return r;
+  }
+
   // ---------- الشركاء ----------
   function partnerAccounts(state, journal, asOf) {
     const out = {};
@@ -819,7 +874,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

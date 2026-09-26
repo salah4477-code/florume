@@ -95,7 +95,7 @@ test('lost shipment: revenue reversed, goods written off, compensation income', 
   near(is.netSales, 0);
   near(is.cogs, 0);
   near(is.opex.find((o) => o.code === '5820').amount, 1000);
-  near(is.otherIncome, 0); // 4910 منفصلة
+  near(is.otherIncome, 800); // تعويض شركة الشحن جزء من صافي الربح
   near(Acc.courierBalances(s, j).bosta, -60 + 800);
   near(Acc.saleProfit(s.sales[0], j).profit, -60 - 1000 + 800);
   balanced(s, j);

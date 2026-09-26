@@ -217,6 +217,15 @@
     if (dueRec.length) push({ type: 'recurring', level: 'warn', days: 0, title: `${dueRec.length} مصروف ثابت ميعاده جه ولسه ما اتسجلش`, detail: dueRec.slice(0, 3).map((d) => `${d.notes || d.category} (${d.period})`).join('، '), action: 'goto', id: 'expenses' });
 
     const rank = { bad: 0, warn: 1, info: 2 };
+    // جرد الخزينة الشهري: الحسابات اللي عليها حركة وآخر جرد ليها من أكتر من 35 يوم — في تنبيه واحد
+    const start = (state.settings || {}).startDate || '';
+    const due = (state.accounts || []).map((a) => {
+      const last = (state.cashCounts || []).filter((k) => k.accountId === a.id).map((k) => k.date).sort().pop() || start;
+      const age = last ? daysBetween(last, today) : 0;
+      const active = journal.entries.some((e) => e.date > (last || '') && e.lines.some((l) => l.acc === Acc.cashCode(a.id)));
+      return age >= 35 && active ? { a, age } : null;
+    }).filter(Boolean);
+    if (due.length) push({ type: 'cashCount', level: 'warn', days: Math.max(...due.map((d) => d.age)), title: due.length === 1 ? `جرد ${due[0].a.name}: آخر جرد من ${due[0].age} يوم` : `جرد الخزينة: ${due.length === 2 ? "حسابين محتاجين" : `${due.length} حسابات محتاجة`} جرد`, detail: due.length === 1 ? 'قارن الرصيد الحقيقي بالرصيد اللي في السيستم' : due.map((d) => d.a.name).join('، '), action: 'newCashCount', id: due[0].a.id });
     return list.sort((a, b) => rank[a.level] - rank[b.level] || b.days - a.days);
   }
 
@@ -290,7 +299,66 @@
   }
   const productCode = (p) => (validBarcode(str(p.barcode)) ? str(p.barcode) : validBarcode(str(p.sku)) ? str(p.sku) : '');
 
-  const api = { dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  // =====================================================================
+  // المرتجع: الأسباب، العملاء اللي بيرفضوا، وتحليل نسبة المرتجع
+  // =====================================================================
+  const RETURN_REASONS = { refused: 'رفض الاستلام', noAnswer: 'مابيردش / مش موجود', address: 'العنوان غلط أو ناقص', changedMind: 'غيّر رأيه / طلب بالغلط', damaged: 'المنتج وصل فيه مشكلة', wrongItem: 'وصله صنف غلط', late: 'التوصيل اتأخر', other: 'سبب تاني' };
+  // الأسباب اللي غلطها على العميل: بتتحسب عليه في التحذير
+  const RISKY_REASONS = new Set(['refused', 'noAnswer', 'changedMind']);
+  const phoneKey = (p) => { let d = IMP.latinDigits(str(p)).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); else if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d.length >= 8 ? d : ''; };
+  const isSale = (x) => x.kind !== 'promo';
+
+  // تاريخ العميل (بالعميل نفسه أو أي عميل تاني بنفس الموبايل)
+  function customerRisk(state, customerId, phone, excludeSaleId) {
+    const customers = state.customers || [];
+    const me = customers.find((c) => c.id === customerId);
+    const key = phoneKey(phone || (me && me.phone));
+    const ids = new Set([customerId, ...customers.filter((c) => key && phoneKey(c.phone) === key).map((c) => c.id)].filter(Boolean));
+    const r = { orders: 0, delivered: 0, returned: 0, refused: 0, pending: 0, lastRefusal: '', reasons: {}, level: 'none' };
+    (state.sales || []).forEach((x) => {
+      if (!ids.has(x.customerId) || x.id === excludeSaleId || !isSale(x) || x.status === 'cancelled') return;
+      r.orders += 1;
+      if (x.status === 'delivered') r.delivered += 1;
+      if (x.status === 'pending' || x.status === 'shipped') r.pending += 1;
+      if (x.status === 'returned') {
+        r.returned += 1;
+        const why = x.returnReason || '';
+        if (why) r.reasons[why] = (r.reasons[why] || 0) + 1;
+        if (RISKY_REASONS.has(why)) { r.refused += 1; if ((x.returnDate || x.date) > r.lastRefusal) r.lastRefusal = x.returnDate || x.date; }
+      }
+    });
+    // مرتين رفض أو أكتر، أو رفض من غير ولا طلب اتسلم = خطر. رفض واحد = انتبه
+    r.level = r.refused >= 2 || (r.refused >= 1 && !r.delivered) ? 'high' : r.refused === 1 || r.returned >= 2 ? 'watch' : 'none';
+    return r;
+  }
+
+  // نسبة المرتجع حسب المحافظة وشركة الشحن والسبب والقناة
+  function returnAnalysis(state, from, to) {
+    const custCity = new Map((state.customers || []).map((c) => [c.id, c.city || '']));
+    const mk = () => ({ orders: 0, returned: 0, partial: 0, lost: 0, loss: 0 });
+    const by = { gov: {}, courier: {}, channel: {}, reason: {} };
+    const total = mk();
+    const bump = (group, key, fn) => { const k = key || '—'; fn((by[group][k] = by[group][k] || mk())); };
+    (state.sales || []).forEach((x) => {
+      if (!isSale(x) || !Acc.BOOKED.has(x.status)) return;
+      if ((from && x.date < from) || (to && x.date > to)) return;
+      const returned = x.status === 'returned', lost = x.status === 'lost';
+      const partial = !returned && (x.returns || []).length > 0;
+      // الخسارة المباشرة للمرتجع: الشحن رايح وجاي من غير بيع
+      const loss = returned ? num(x.courierFee) + num(x.returnFee) : partial ? (x.returns || []).reduce((a, r) => a + num(r.fee), 0) : 0;
+      const apply = (r) => { r.orders += 1; if (returned) r.returned += 1; if (partial) r.partial += 1; if (lost) r.lost += 1; r.loss += loss; };
+      apply(total);
+      bump('gov', custCity.get(x.customerId), apply);
+      bump('courier', x.courierId, apply);
+      bump('channel', x.channel, apply);
+      if (returned) bump('reason', x.returnReason || 'unknown', (r) => { r.returned += 1; r.loss += loss; });
+      if (partial) (x.returns || []).forEach((rt) => bump('reason', rt.reason || 'unknown', (r) => { r.partial += 1; r.loss += num(rt.fee); }));
+    });
+    const rows = (group) => Object.entries(by[group]).map(([key, r]) => ({ key, ...r, loss: round2(r.loss), rate: r.orders ? r.returned / r.orders : 0 })).sort((a, b) => b.returned - a.returned || b.orders - a.orders);
+    return { total: { ...total, loss: round2(total.loss), rate: total.orders ? total.returned / total.orders : 0 }, gov: rows('gov'), courier: rows('courier'), channel: rows('channel'), reason: rows('reason') };
+  }
+
+  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);

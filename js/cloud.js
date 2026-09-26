@@ -10,6 +10,7 @@
   const COL = 'florume';
   const LOCAL_AUDIT = 'florume.audit';
   const LAST_BACKUP = 'florume.lastBackup';
+  const SYNC_BASE = 'florume.syncBase'; // بصمة آخر نسخة اتزامنت: منها بنعرف إيه اللي اتعمل من غير نت ولسه ما اترفعش
   const today = () => F.today();
   const safeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* لا شيء */ } };
@@ -63,6 +64,13 @@
     return out.sort((a, b) => (a.at < b.at ? 1 : -1));
   }
 
+  // ---------- التعديلات اللي ما اترفعتش ----------
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  function saveBase() { if (C.synced) safeSet(SYNC_BASE, JSON.stringify(SYNC.fingerprint(C.synced))); }
+  function readBase() { try { return JSON.parse(safeGet(SYNC_BASE) || 'null'); } catch (e) { return null; } }
+  // اللي على الجهاز ومش على السحابة، مقارنة بآخر نسخة متزامنة
+  const unsynced = () => (C.readOnly || F.DB.state.demo ? [] : SYNC.diff(C.synced || {}, SYNC.encode(F.DB.state)).filter((c) => c.docId !== 'meta' || c.meta));
+
   // ---------- الحفظ ----------
   // بيتنادي من DB.save: محلي يسجل التعديل، وسحابي يبعت التغييرات بعد لحظة
   function onSave() {
@@ -103,12 +111,13 @@
         [C.synced, C.remote].forEach((m) => { const cur = (m[d.docId] = m[d.docId] || { kind: 'list', list: d.list, items: {} }); cur.items = { ...cur.items, ...d.changes }; });
       }
       logCloud(log);
+      saveBase();
       setStatus('☁ متزامن', 'ok');
     } catch (e) {
       const code = e && e.code;
       if (code === 'invalid_argument' || code === 'not_granted' || code === 'revoked') { C.readOnly = true; setStatus('عرض بس — التعديلات مش بتتحفظ', 'bad'); F.UI.toast('صلاحيتك عرض بس — التعديل مش هيتحفظ', 'bad'); }
       else if (code === 'quota_exceeded') { setStatus('المساحة السحابية اتملت', 'bad'); F.UI.toast('المساحة السحابية اتملت — كلمنا عشان نقسم البيانات', 'bad'); }
-      else { setStatus('مش متزامن — هيحاول تاني', 'bad'); setTimeout(() => onSave(), 5000); }
+      else { setStatus('مفيش نت — محفوظ على الجهاز وهيترفع لما النت يرجع', 'bad'); setTimeout(() => onSave(), 5000); }
     } finally {
       C.busy = false;
       if (C.again) { C.again = false; flush(); }
@@ -123,10 +132,14 @@
     if (!hasData) return;
     const local = SYNC.encode(F.DB.state);
     if (!SYNC.diff(local, C.remote).length && !F.DB.state.demo) return;
-    F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+    // تعديلات على الجهاز لسه ما اترفعتش (النت كان فاصل): تتحط فوق نسخة السحابة الجديدة بدل ما تضيع
+    const pend = unsynced();
+    F.DB.state = F.migrateState(SYNC.decode(pend.length ? SYNC.applyChanges(C.remote, pend) : C.remote, F.DB.state));
     F.DB._journal = null;
     F.DB.saveLocal();
-    C.synced = JSON.parse(JSON.stringify(C.remote));
+    C.synced = clone(C.remote);
+    saveBase();
+    if (pend.length) onSave();
     if (document.getElementById('modal').hidden) { if (C.onChange) C.onChange(); }
     else C.pendingRender = true;
   }
@@ -143,7 +156,13 @@
     setStatus('بيتصل…', 'busy');
     let snap;
     try { snap = await db.collection(COL).get(); }
-    catch (e) { setStatus('السحابة مش متاحة — شغال على الجهاز', 'bad'); localMode(); return; }
+    catch (e) {
+      // مفيش نت: نشتغل على الجهاز، ونحاول نتصل تاني كل شوية — واللي يتسجل هيترفع أول ما نتصل
+      localMode();
+      setStatus('مفيش نت — بيحفظ على الجهاز وهيترفع لما النت يرجع', 'bad');
+      clearTimeout(C.retry); C.retry = setTimeout(connect, 20000);
+      return;
+    }
     snap.docs.forEach((d) => (C.remote[d.id] = JSON.parse(JSON.stringify(d.data()))));
     C.mode = 'cloud';
     document.body.dataset.mode = 'cloud';
@@ -151,10 +170,19 @@
     if (cloudHasData) {
       // نحتفظ بنسخة من اللي كان على الجهاز قبل ما السحابة تحل محله
       if (!F.DB.state.demo && !safeGet('florume.preCloud')) safeSet('florume.preCloud', JSON.stringify(F.DB.state));
-      C.synced = JSON.parse(JSON.stringify(C.remote));
-      F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+      // اللي اتسجل على الجهاز ده بعد آخر مزامنة (الصفحة اتقفلت والنت فاصل) يتحط فوق نسخة السحابة
+      const base = readBase();
+      const pend = base && !F.DB.state.demo && !C.readOnly ? SYNC.pendingChanges(base, SYNC.encode(F.DB.state)) : [];
+      C.synced = clone(C.remote);
+      F.DB.state = F.migrateState(SYNC.decode(pend.length ? SYNC.applyChanges(C.remote, pend) : C.remote, F.DB.state));
       F.DB._journal = null; F.DB.saveLocal();
-      setStatus('☁ متزامن', 'ok');
+      saveBase();
+      if (pend.length) {
+        setStatus('بيرفع اللي اتسجل من غير نت…', 'busy');
+        await flush();
+        const n = pend.reduce((a, c) => a + (c.meta ? 1 : Object.keys(c.changes).length), 0);
+        if (C.status === '☁ متزامن') F.UI.toast(`اترفع ${n} تعديل كانوا متسجلين على الجهاز من غير نت ☁`);
+      } else setStatus('☁ متزامن', 'ok');
     } else {
       C.synced = {};
       if (!F.DB.state.demo) {
@@ -186,7 +214,9 @@
   }
   function applyRole() {
     document.body.dataset.role = C.role;
-    document.querySelectorAll('.nav a').forEach((a) => (a.hidden = !SYNC.canSeePage(C.role, a.getAttribute('href').slice(1)) || (a.getAttribute('href') === '#audit' && !['owner', 'manager'].includes(C.role))));
+    document.querySelectorAll('.nav a, .bottom-nav a').forEach((a) => (a.hidden = !SYNC.canSeePage(C.role, a.getAttribute('href').slice(1)) || (a.getAttribute('href') === '#audit' && !['owner', 'manager'].includes(C.role))));
+    // قسم في القائمة كل صفحاته مخفية: يختفي هو كمان
+    document.querySelectorAll('.nav-group').forEach((g) => (g.hidden = ![...g.querySelectorAll('a')].some((a) => !a.hidden)));
   }
   async function loadMembers() {
     if (!C.db) return [];
