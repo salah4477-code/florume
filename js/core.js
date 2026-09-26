@@ -200,14 +200,15 @@
     // على الموبايل الجداول بتتعرض كروت: كل خانة بتاخد اسم عمودها، وأول خانة عنوان الكارت
     labelTables(root) {
       (root || document).querySelectorAll('table.data-table').forEach((t) => {
-        const heads = [...t.querySelectorAll('thead th')].map((th) => ({ label: th.textContent.trim(), num: th.classList.contains('num') }));
+        const heads = [...t.querySelectorAll('thead th')].map((th) => ({ label: th.textContent.trim(), num: th.classList.contains('num'), serial: th.classList.contains('serial') }));
+        const first = heads.findIndex((h) => !h.serial);
         t.querySelectorAll('tbody tr').forEach((tr) => {
           let col = 0, titled = false;
           [...tr.children].forEach((cell) => {
             const h = heads[col] || {};
             if (cell.colSpan >= heads.length) cell.classList.add('c-full');
-            else if (h.label) cell.dataset.label = h.label;
-            if (!titled && col === 0 && h.label && !h.num && !cell.classList.contains('c-full')) { cell.classList.add('c-title'); titled = true; }
+            else if (h.label && !h.serial) cell.dataset.label = h.label;
+            if (!titled && col === first && h.label && !h.num && !cell.classList.contains('c-full')) { cell.classList.add('c-title'); titled = true; }
             col += cell.colSpan || 1;
           });
         });

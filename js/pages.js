@@ -45,7 +45,13 @@
   // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
   const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
   const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  // كل جدول أول عمود فيه رقم مسلسل (م)، وجنبه خانة تحديد لو السطر ينفع يتحذف
+  const table = (head0, rows, opts = {}) => {
+    const head = ['م', ...head0];
+    const body = rows.map((r, i) => r.replace(/^(\s*<tr[^>]*>)/, `$1<td class="serial">${i + 1}</td>`)).join('');
+    const foot = opts.foot ? opts.foot.replace(/<tr([^>]*)>/g, '<tr$1><td class="serial"></td>') : '';
+    return `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h, i) => `<th${i === 0 ? ' class="serial"' : /^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${body || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table></div>`;
+  };
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
@@ -884,6 +890,8 @@
       onSubmit(f, fd) {
         const barcode = fd.get('barcode').trim();
         if (barcode && !OPS.validBarcode(barcode)) { UI.toast('الباركود لازم يكون حروف وأرقام إنجليزي بس', 'bad'); return false; }
+        const dupP = RULES.productDuplicate(S(), { id: p.id, sku: fd.get('sku').trim(), brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')) });
+        if (dupP) { (dupP.field === 'sku' ? f.sku : f.name).focus(); return fail(dupP.field === 'sku' ? `الكود «${fd.get('sku').trim()}» مستخدم قبل كده للصنف ${productLabel(dupP.other)}` : `الصنف ده متسجل قبل كده: ${productLabel(dupP.other)} — غيّر الاسم أو الحجم، أو عدّل الصنف الموجود`); }
         const dup = barcode && S().products.find((x) => x.id !== p.id && (x.barcode || '').toUpperCase() === barcode.toUpperCase());
         if (dup) { UI.toast(`الباركود ده مستخدم لـ ${productLabel(dup)}`, 'bad'); return false; }
         DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), weightG: num(fd.get('weightG')), gender: fd.get('gender'), sku: fd.get('sku').trim(), barcode, price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
@@ -1421,6 +1429,7 @@
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
           <button class="btn btn-primary" data-action="exportBackup">تصدير نسخة احتياطية</button>
+          <button class="btn" data-action="exportAll">تصدير كل البيانات Excel</button>
           <label class="btn file-btn">استيراد من ملف<input type="file" id="f-import" accept=".json,application/json" data-change="importFile" hidden></label>
           <button class="btn" data-action="pasteBackup">استيراد بلصق النص</button>
         </div>
@@ -2233,10 +2242,32 @@
   // =====================================================================
   // الأحداث
   // =====================================================================
-  const del = (list, id, label, guard) => {
-    if (guard && guard()) { UI.toast(`لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`, 'bad'); return; }
-    UI.confirm(`هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
+  // كل الحذف بيعدّي من هنا. الحذف الجماعي بيشغّل نفس الدالة «تجربة» عشان ياخد نفس الشروط بالظبط
+  let delProbe = null;
+  const del = (list, id, label, guard, message) => {
+    const why = guard && guard();
+    const block = why ? (typeof why === 'string' ? why : `لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`) : null;
+    if (delProbe) { delProbe.push({ list, id, block }); return; }
+    if (block) { UI.toast(block, 'bad'); return; }
+    UI.confirm(message || `هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
   };
+  function probeDelete(action, id) {
+    delProbe = [];
+    try { ACTIONS[action](id); } catch (e) { /* لا شيء */ }
+    const r = delProbe[0] || null; delProbe = null; return r;
+  }
+  function bulkDelete(items) {
+    const probes = items.map((it) => probeDelete(it.action, it.id)).filter(Boolean);
+    const ok = probes.filter((p) => !p.block), blocked = probes.filter((p) => p.block);
+    if (!ok.length) return fail(blocked.length ? `مفيش حاجة ينفع تتحذف: ${blocked[0].block}${blocked.length > 1 ? ` (و${blocked.length - 1} غيره)` : ''}` : 'اختار حاجة الأول');
+    const all = ok.length === items.length;
+    F.Gate.guard(() => UI.confirm(`هتحذف ${ok.length === 1 ? 'عنصر واحد' : ok.length === 2 ? 'عنصرين' : `${ok.length} عناصر`}${blocked.length ? `.<br><b>${blocked.length} مش هيتحذفوا</b> لأنهم مستخدمين في مستندات تانية (${esc(blocked[0].block)})` : ''}. لا يمكن التراجع.`, () => {
+      const by = {};
+      ok.forEach((p) => (by[p.list] = by[p.list] || new Set()).add(p.id));
+      Object.entries(by).forEach(([l, ids]) => (S()[l] = S()[l].filter((x) => !ids.has(x.id))));
+      DB.save(); UI.toast(`تم حذف ${ok.length}${blocked.length ? ` — ${blocked.length} اتسابوا لأنهم مستخدمين` : ''}`); render();
+    }, all ? `حذف الكل (${ok.length})` : `حذف ${ok.length}`), 'الحذف محتاج الباسورد');
+  }
   // =====================================================================
   // الاستيراد من Excel
   // =====================================================================
@@ -2336,7 +2367,7 @@
 
   const ACTIONS = {
     newSale: () => saleForm(), newPromo: () => saleForm(null, 'promo'), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
-    delSale: (id) => (RULES.isReconciled(S(), id) ? fail('الفاتورة داخلة في تسوية كشف شركة الشحن — احذف التسوية الأول') : del('sales', id, 'هذا الطلب')),
+    delSale: (id) => del('sales', id, 'هذا الطلب', () => RULES.isReconciled(S(), id) && 'الفاتورة داخلة في تسوية كشف شركة الشحن — احذف التسوية الأول'),
     newShipment: () => shipmentForm(), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
     delShipment: (id) => del('shipments', id, 'هذه الشحنة'),
     receiveShipment: (id) => {
@@ -2352,7 +2383,7 @@
     newProduct: () => productForm(), editProduct: (id) => productForm(DB.find('products', id)), productMoves: (id) => productMoves(DB.find('products', id)),
     delProduct: (id) => del('products', id, 'هذا المنتج', () => used(id, [['sales', (x, i) => x.items.some((l) => l.productId === i)], ['shipments', (x, i) => x.items.some((l) => l.productId === i)], ['adjustments', (x, i) => x.productId === i], ['decants', (x, i) => x.sourceProductId === i || x.outputs.some((o) => o.productId === i)]])),
     newDecant: decantForm, unbox: unboxForm, viewDecant: (id) => viewDecant(DB.find('decants', id)),
-    delDecant: (id) => UI.confirm('هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.', () => { DB.remove('decants', id); UI.toast('تم الحذف'); render(); }),
+    delDecant: (id) => del('decants', id, 'العملية دي', null, 'هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.'),
     barcodeLabels, stockCount,
     newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
     delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),
@@ -2361,7 +2392,7 @@
     uploadStatement: pickStatementFile,
     statementTemplate: () => FX.exportExcel('courier-statement-template.xlsx', [{ name: 'كشف الحساب', plain: true, header: ['رقم البوليصة', 'رقم الطلب', 'المبلغ المحصل', 'مصاريف الشحن', 'الحالة', 'التاريخ'], rows: [] }], { business: S().settings.businessName, subtitle: '' }),
     viewReconciliation: (id) => viewReconciliation(DB.find('reconciliations', id)),
-    delReconciliation: (id) => UI.confirm('هل تريد حذف هذه التسوية؟ الطلبات هترجع «لسه ما اتسوتش». التحصيل المسجل في الخزينة مش هيتحذف — احذفه من شاشة الخزينة لو محتاج.', () => { DB.remove('reconciliations', id); UI.toast('تم الحذف'); render(); }),
+    delReconciliation: (id) => del('reconciliations', id, 'التسوية دي', null, 'هل تريد حذف هذه التسوية؟ الطلبات هترجع «لسه ما اتسوتش». التحصيل المسجل في الخزينة مش هيتحذف — احذفه من شاشة الخزينة لو محتاج.'),
     newPartner: () => partnerForm(), editPartner: (id) => partnerForm(DB.find('partners', id)), partnerStatement: (id) => partnerStatement(DB.find('partners', id)),
     delPartner: (id) => del('partners', id, 'هذا الشريك', () => used(id, [['equity', (x, i) => x.partnerId === i], ['distributions', (x, i) => x.allocations.some((a) => a.partnerId === i)]])),
     partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
@@ -2387,6 +2418,10 @@
     editDoc: (key) => { const [list, id] = key.split(':'); const doc = DB.find(list, id); ({ transfers: transferForm, settlements: settlementForm, equity: equityForm })[list](doc); },
     delDoc: (key) => { const [list, id] = key.split(':'); del(list, id, 'هذا المستند'); },
     openSearch: () => openSearch(),
+    bulkSelectAll: (ti) => { const st = bulkState(ti); if (st) { st.boxes.forEach((b) => (b.checked = true)); syncBulk(ti); } },
+    bulkClear: (ti) => { const st = bulkState(ti); if (st) { st.boxes.forEach((b) => (b.checked = false)); syncBulk(ti); } },
+    bulkDelete: (ti) => { const st = bulkState(ti); if (st) bulkDelete(st.sel.map((b) => ({ action: b.dataset.del, id: b.dataset.id }))); },
+    exportAll: () => exportAll(),
     openDrawer: () => { document.body.classList.add('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = false; },
     closeDrawer: () => { document.body.classList.remove('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = true; },
     pickSettingsTab: (id) => { settingsTab = id; render(); },
@@ -2552,6 +2587,7 @@
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
     UI.labelTables(m);
+    enhanceTables(m);
     let n = 0;
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
@@ -2559,7 +2595,7 @@
     if (key === 'settings') renderTeam();
     const pa = m.querySelector('.page-head .page-actions');
     // أدوات الصفحة (طباعة وتصدير واستيراد) في قايمة واحدة عشان الزراير الأساسية تبان
-    if (pa) pa.insertAdjacentHTML('afterbegin', `<details class="tools-menu doc-tools"><summary class="btn" aria-label="أدوات الصفحة">${icon('more')}<span>أدوات</span></summary><div class="menu" role="menu">${['sales', 'products', 'customers', 'expenses'].includes(key) ? `<button type="button" role="menuitem" data-action="importExcel">${icon('upload')}استيراد من Excel</button>` : ''}<button type="button" role="menuitem" data-action="excelPage">${icon('download')}تصدير Excel</button><button type="button" role="menuitem" data-action="printPage">${icon('print')}طباعة / PDF</button></div></details>`);
+    if (pa) pa.insertAdjacentHTML('afterbegin', `<details class="tools-menu doc-tools"><summary class="btn" aria-label="أدوات الصفحة">${icon('more')}<span>أدوات</span></summary><div class="menu" role="menu">${['sales', 'products', 'customers', 'expenses'].includes(key) ? `<button type="button" role="menuitem" data-action="importExcel">${icon('upload')}استيراد من Excel</button>` : ''}<button type="button" role="menuitem" data-action="excelPage">${icon('download')}تصدير Excel</button><button type="button" role="menuitem" data-action="printPage">${icon('print')}طباعة / PDF</button>${SYNC.seesCosts(CLOUD.role) ? `<button type="button" role="menuitem" data-action="exportAll">${icon('download')}تصدير كل بيانات السيستم</button>` : ''}</div></details>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -2614,8 +2650,70 @@
   };
   const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
 
+  // ---------- التحديد والحذف الجماعي ----------
+  // أي جدول سطوره فيها زرار حذف: خانة تحديد جنب الرقم، و«تحديد الكل» في العنوان، وشريط بيظهر لما تحدد
+  function enhanceTables(root) {
+    if (CLOUD.readOnly) return;
+    root.querySelectorAll('table.data-table').forEach((t, ti) => {
+      const rows = [...t.tBodies[0].rows].filter((tr) => tr.querySelectorAll('[data-action^="del"]').length === 1 && tr.querySelector('td.serial'));
+      if (!rows.length) return;
+      t.dataset.bulk = ti;
+      rows.forEach((tr) => { const b = tr.querySelector('[data-action^="del"]'); const c = tr.querySelector('td.serial'); c.insertAdjacentHTML('afterbegin', `<input type="checkbox" class="row-sel" data-del="${b.dataset.action}" data-id="${esc(b.dataset.id)}" aria-label="تحديد السطر ${c.textContent.trim()}">`); });
+      const th = t.tHead.querySelector('th.serial'); if (th) th.insertAdjacentHTML('afterbegin', '<input type="checkbox" class="sel-all" aria-label="تحديد الكل">');
+      t.closest('.table-wrap').insertAdjacentHTML('beforebegin', `<div class="bulk-bar" data-for="${ti}" hidden role="region" aria-label="الحذف الجماعي"><b class="bulk-count"></b><button type="button" class="btn btn-small" data-action="bulkSelectAll" data-id="${ti}">تحديد الكل (${rows.length})</button><button type="button" class="btn btn-small" data-action="bulkClear" data-id="${ti}">إلغاء التحديد</button><button type="button" class="btn btn-small btn-danger" data-action="bulkDelete" data-id="${ti}"></button></div>`);
+    });
+  }
+  function bulkState(ti) {
+    const t = main().querySelector(`table[data-bulk="${ti}"]`); if (!t) return null;
+    const boxes = [...t.querySelectorAll('.row-sel')];
+    return { t, boxes, sel: boxes.filter((b) => b.checked), bar: main().querySelector(`.bulk-bar[data-for="${ti}"]`) };
+  }
+  function syncBulk(ti) {
+    const st = bulkState(ti); if (!st) return;
+    const n = st.sel.length, all = n && n === st.boxes.length;
+    st.bar.hidden = !n;
+    st.bar.querySelector('.bulk-count').textContent = n === 1 ? 'سطر واحد محدد' : n === 2 ? 'سطرين محددين' : `${n} محددين`;
+    st.bar.querySelector('[data-action="bulkDelete"]').textContent = all ? `حذف الكل (${n})` : `حذف المحدد (${n})`;
+    st.bar.querySelector('[data-action="bulkSelectAll"]').hidden = all;
+    const sa = st.t.querySelector('.sel-all'); if (sa) { sa.checked = all; sa.indeterminate = n > 0 && !all; }
+    st.boxes.forEach((b) => b.closest('tr').classList.toggle('row-picked', b.checked));
+  }
+
+  // ---------- تصدير كل البيانات Excel ----------
+  function exportAll() {
+    const s = S(), j = J(), costs = SYNC.seesCosts(CLOUD.role);
+    const nm = (list, id) => nameOf(list, id) || '';
+    const sheet = (name, header, rows) => ({ name, header, rows: rows.map((cells) => ({ cells })) });
+    const cust = (id) => DB.find('customers', id) || {};
+    const sheets = [];
+    sheets.push(sheet('ملخص', ['البيان', 'القيمة'], [['النشاط', s.settings.businessName], ['تاريخ التصدير', fmtDate(today())], ['بداية الحسابات', fmtDate(s.settings.startDate)], ['عدد الفواتير', s.sales.length], ['عدد المنتجات', s.products.length], ['عدد العملاء', s.customers.length], ['عدد الشحنات', s.shipments.length], ['عدد المصروفات', s.expenses.length]]));
+    sheets.push(sheet('الفواتير', ['م', 'الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الموبايل', 'المحافظة', 'القناة', 'الحالة', 'سبب المرتجع', 'الدفع', 'شركة الشحن', 'البوليصة', 'الأصناف', 'الخصم', 'الشحن المحصل', 'الإجمالي', ...(costs ? ['التكلفة', 'الربح'] : []), 'ملاحظات'],
+      s.sales.map((x, i) => { const t = Acc.saleTotals(x), pr = costs ? Acc.saleProfit(x, j) : null, c = cust(x.customerId); return [i + 1, invoiceNo(x), isPromo(x) ? 'دعاية' : 'بيع', x.date, c.name || '', c.phone || '', c.city || '', CHANNELS[x.channel] || x.channel || '', STATUSES[x.status] || x.status, OPS.RETURN_REASONS[x.returnReason] || '', x.payment === 'cod' ? 'عند الاستلام' : nm('accounts', x.payment), nm('couriers', x.courierId), x.trackingNo || '', x.items.reduce((a, l) => a + num(l.qty), 0), num(x.discount), num(x.shippingCharged), t.total, ...(costs ? [pr.cogs, pr.profit] : []), x.notes || '']; })));
+    const lines = []; s.sales.forEach((x) => x.items.forEach((l) => { const p = productById(l.productId); lines.push([lines.length + 1, invoiceNo(x), x.date, p ? productLabel(p) : '', p && p.sku || '', num(l.qty), num(l.price), Acc.round2(num(l.qty) * num(l.price))]); }));
+    sheets.push(sheet('أصناف الفواتير', ['م', 'الفاتورة', 'التاريخ', 'الصنف', 'الكود', 'الكمية', 'السعر', 'الإجمالي'], lines));
+    sheets.push(sheet('المنتجات والمخزون', ['م', 'الكود', 'الباركود', 'الماركة', 'الاسم', 'الحجم مل', 'سعر البيع', 'الرصيد', 'المحجوز', 'المتاح', ...(costs ? ['متوسط التكلفة', 'قيمة المخزون'] : [])],
+      s.products.map((p, i) => { const st = j.inventory.products[p.id] || {}; return [i + 1, p.sku || '', p.barcode || '', p.brand || '', p.name, num(p.sizeMl), num(p.price), num(st.qty), num(st.reserved), num(st.available), ...(costs ? [Acc.round2(num(st.avgCost)), Acc.round2(num(st.value))] : [])]; })));
+    sheets.push(sheet('العملاء', ['م', 'الاسم', 'الموبايل', 'المحافظة', 'العنوان', 'الطلبات', 'اتسلم', 'مرتجع', 'رفض'], s.customers.map((c, i) => { const r = OPS.customerRisk(s, c.id); return [i + 1, c.name, c.phone || '', c.city || '', c.address || '', r.orders, r.delivered, r.returned, r.refused]; })));
+    sheets.push(sheet('الموردين', ['م', 'المورد', 'البلد', 'العملة', 'الموبايل', 'ملاحظات'], s.suppliers.map((x, i) => [i + 1, x.name, x.country || '', x.currency || '', x.phone || '', x.notes || ''])));
+    if (costs) {
+      sheets.push(sheet('شحنات الاستيراد', ['م', 'المرجع', 'المورد', 'العملة', 'سعر الصرف', 'تاريخ الطلب', 'الحالة', 'تاريخ الاستلام', 'قيمة البضاعة بالعملة', 'مصاريف إضافية ج.م'], s.shipments.map((x, i) => [i + 1, x.ref || '', nm('suppliers', x.supplierId), x.currency, num(x.rate), x.orderDate, SHIP_STATUSES[x.status] || x.status, x.receivedDate || '', Acc.round2(x.items.reduce((a, l) => a + num(l.qty) * num(l.unitCost), 0)), Acc.round2((x.costs || []).reduce((a, c) => a + num(c.amount), 0))])));
+      sheets.push(sheet('دفعات الموردين', ['م', 'التاريخ', 'المورد', 'المبلغ بالعملة', 'سعر الصرف', 'بالجنيه', 'من حساب'], s.supplierPayments.map((x, i) => [i + 1, x.date, nm('suppliers', x.supplierId), num(x.amount), num(x.rate), Acc.round2(num(x.amount) * (num(x.rate) || 1)), nm('accounts', x.accountId)])));
+      sheets.push(sheet('المصروفات', ['م', 'التاريخ', 'البند', 'المبلغ', 'من حساب', 'الحملة', 'البيان'], s.expenses.map((x, i) => [i + 1, x.date, (Acc.COA_MAP[x.category] || {}).name || x.category, num(x.amount), nm('accounts', x.accountId), nm('campaigns', x.campaignId), x.notes || ''])));
+      sheets.push(sheet('مصروفات التأسيس', ['م', 'التاريخ', 'البند', 'المبلغ', 'اتدفع', 'البيان'], s.formation.map((x, i) => [i + 1, x.date, Acc.FORMATION_KINDS[x.kind] || '', num(x.amount), payerLabel(x), x.notes || ''])));
+      sheets.push(sheet('الحسابات', ['م', 'الحساب', 'النوع', 'رصيد افتتاحي', 'الرصيد الحالي'], Acc.cashBalances(s, j).map((a, i) => [i + 1, a.name, ACCOUNT_TYPES[a.type] || '', num(a.opening), Acc.round2(a.balance)])));
+      const moves = [...s.transfers.map((t) => [t.date, 'تحويل', `${nm('accounts', t.fromId)} ← ${nm('accounts', t.toId)}`, num(t.amount), t.notes || '']), ...s.settlements.map((t) => [t.date, 'تحصيل شحن', `${nm('couriers', t.courierId)} → ${nm('accounts', t.accountId)}`, num(t.amount), t.notes || '']), ...s.equity.map((t) => [t.date, t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', nm('accounts', t.accountId), num(t.amount), t.notes || ''])].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      sheets.push(sheet('حركات الخزينة', ['م', 'التاريخ', 'النوع', 'البيان', 'المبلغ', 'ملاحظات'], moves.map((r, i) => [i + 1, ...r])));
+      sheets.push(sheet('جرد الخزينة', ['م', 'التاريخ', 'الحساب', 'رصيد السيستم', 'الرصيد الحقيقي', 'الفرق'], s.cashCounts.map((k, i) => { const r = j.cashCounts[k.id] || {}; return [i + 1, k.date, nm('accounts', k.accountId), num(r.book), num(k.actual), num(r.diff)]; })));
+      sheets.push(sheet('تسويات المخزون', ['م', 'التاريخ', 'الصنف', 'السبب', 'الكمية', 'تكلفة الوحدة', 'ملاحظات'], s.adjustments.map((x, i) => [i + 1, x.date, productLabel(productById(x.productId)), Acc.ADJ_REASONS[x.reason] || x.reason, num(x.qty), x.unitCost == null ? '' : num(x.unitCost), x.notes || ''])));
+      const tb = Acc.trialBalance(s, j, today());
+      sheets.push(sheet('ميزان المراجعة', ['م', 'الكود', 'الحساب', 'مدين', 'دائن', 'رصيد مدين', 'رصيد دائن'], tb.rows.map((r, i) => [i + 1, r.acc.split(':')[0], r.name, r.dr, r.cr, r.balDr, r.balCr])));
+      const je = []; j.entries.forEach((e) => e.lines.forEach((l) => je.push([e.no, e.date, e.desc, Acc.accountName(l.acc, s), l.dr || '', l.cr || ''])));
+      sheets.push(sheet('دفتر اليومية', ['القيد', 'التاريخ', 'البيان', 'الحساب', 'مدين', 'دائن'], je));
+    }
+    FX.exportExcel(`${s.settings.businessName || 'florume'}-كل-البيانات-${today()}.xlsx`, sheets.filter((x) => x.rows.length), { business: s.settings.businessName, subtitle: `كل البيانات حتى ${fmtDate(today())}` });
+  }
   // ---------- البحث السريع (Ctrl+K) ----------
-  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses']];
+  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses'], ['تصدير كل البيانات Excel', 'exportAll', 'reports']];
   function searchResults(q) {
     const s = S(), out = [];
     const n = (t) => IMP.normName(IMP.latinDigits(String(t || ''))).toLowerCase();
@@ -2713,6 +2811,11 @@
       else ACTIONS[a](el.dataset.id);
     });
     document.addEventListener('change', (e) => {
+      if (e.target.matches('.row-sel, .sel-all')) {
+        const t = e.target.closest('table[data-bulk]'); if (!t) return;
+        if (e.target.matches('.sel-all')) t.querySelectorAll('.row-sel').forEach((b) => (b.checked = e.target.checked));
+        syncBulk(t.dataset.bulk); return;
+      }
       const el = e.target.closest('[data-change]'); if (!el || !CHANGES[el.dataset.change]) return;
       const reason = LOCKED_CHANGES[el.dataset.change];
       if (reason) F.Gate.guard(() => CHANGES[el.dataset.change](el), reason, render);

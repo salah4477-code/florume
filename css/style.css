@@ -705,3 +705,22 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
   table.data-table tfoot tr { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; background: var(--sec-soft); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; font-weight: 700; }
   table.data-table tfoot td { border: 0; padding: 0; text-align: right; }
 }
+
+/* ---------- الرقم المسلسل والتحديد والحذف الجماعي ---------- */
+th.serial, td.serial { width: 1%; white-space: nowrap; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; text-align: center; padding-inline: 10px 6px; }
+td.serial { display: table-cell; }
+th.serial .sel-all, td.serial .row-sel { width: 16px; height: 16px; margin: 0 0 0 6px; vertical-align: middle; accent-color: var(--bad); cursor: pointer; }
+tr.row-picked td { background: color-mix(in srgb, var(--bad-soft) 55%, var(--surface)) !important; }
+.bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 10px 14px; border-radius: 10px; background: var(--bad-soft); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); position: sticky; top: 72px; z-index: 7; }
+.bulk-bar[hidden] { display: none; }
+.bulk-bar .bulk-count { color: var(--bad); margin-inline-end: auto; }
+body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: none; }
+@media (max-width: 860px) { .bulk-bar { top: 8px; } }
+@media (max-width: 640px) {
+  table.data-table tbody tr { position: relative; }
+  table.data-table tbody td.serial { position: absolute; top: 12px; left: 14px; flex-direction: row; align-items: center; gap: 6px; font-size: .75rem; color: var(--muted); padding: 0; }
+  table.data-table tbody td.serial .row-sel { margin: 0; width: 20px; height: 20px; }
+  table.data-table tbody td.c-title { padding-left: 64px; }
+  table.data-table tfoot td.serial { display: none; }
+}
+@media print { .row-sel, .sel-all, .bulk-bar { display: none !important; } }
