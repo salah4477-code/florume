@@ -679,3 +679,29 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
   .page-head p { font-size: .84rem; }
 }
 @media print { .bottom-nav, .drawer-backdrop, .tb-search, .tools-menu, .settings-tabs { display: none !important; } .page-head { background: none; border: 0; padding: 0; } .ph-icon { display: none; } }
+
+/* =====================================================================
+   الجداول على الموبايل: كل سطر كارت
+   العنوان من أول خانة، وباقي الخانات اسم وقيمة في عمودين، والزراير تحت
+   ===================================================================== */
+@media (max-width: 640px) {
+  .table-wrap:has(> table.data-table) { overflow: visible; background: transparent; border: 0; border-radius: 0; }
+  table.data-table, table.data-table tbody, table.data-table tfoot { display: block; }
+  table.data-table thead { display: none; }
+  table.data-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; box-shadow: 0 1px 0 rgba(0, 0, 0, .02); }
+  table.data-table tbody tr:hover td { background: none; }
+  table.data-table tbody td { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0; border: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  table.data-table tbody td[data-label]::before { content: attr(data-label); font-size: .72rem; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
+  table.data-table tbody td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+  table.data-table tbody td.c-title { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 1rem; font-weight: 700; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+  table.data-table tbody td.c-title::before { display: none; }
+  table.data-table tbody td.row-actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding-top: 10px; border-top: 1px solid var(--line); }
+  table.data-table tbody td.row-actions::before { display: none; }
+  table.data-table tbody td.row-actions:empty { display: none; }
+  table.data-table tbody td.c-full { grid-column: 1 / -1; align-items: center; text-align: center; color: var(--muted); padding: 8px 0; }
+  table.data-table tbody td select { width: auto; max-width: 100%; }
+  table.data-table tbody td > * { max-width: 100%; }
+  table.data-table tbody td .pill { white-space: normal; text-align: right; }
+  table.data-table tfoot tr { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; background: var(--sec-soft); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; font-weight: 700; }
+  table.data-table tfoot td { border: 0; padding: 0; text-align: right; }
+}

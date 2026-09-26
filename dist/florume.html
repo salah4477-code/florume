@@ -690,6 +690,32 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
 }
 @media print { .bottom-nav, .drawer-backdrop, .tb-search, .tools-menu, .settings-tabs { display: none !important; } .page-head { background: none; border: 0; padding: 0; } .ph-icon { display: none; } }
 
+/* =====================================================================
+   الجداول على الموبايل: كل سطر كارت
+   العنوان من أول خانة، وباقي الخانات اسم وقيمة في عمودين، والزراير تحت
+   ===================================================================== */
+@media (max-width: 640px) {
+  .table-wrap:has(> table.data-table) { overflow: visible; background: transparent; border: 0; border-radius: 0; }
+  table.data-table, table.data-table tbody, table.data-table tfoot { display: block; }
+  table.data-table thead { display: none; }
+  table.data-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; box-shadow: 0 1px 0 rgba(0, 0, 0, .02); }
+  table.data-table tbody tr:hover td { background: none; }
+  table.data-table tbody td { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0; border: 0; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  table.data-table tbody td[data-label]::before { content: attr(data-label); font-size: .72rem; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
+  table.data-table tbody td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+  table.data-table tbody td.c-title { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 1rem; font-weight: 700; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+  table.data-table tbody td.c-title::before { display: none; }
+  table.data-table tbody td.row-actions { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding-top: 10px; border-top: 1px solid var(--line); }
+  table.data-table tbody td.row-actions::before { display: none; }
+  table.data-table tbody td.row-actions:empty { display: none; }
+  table.data-table tbody td.c-full { grid-column: 1 / -1; align-items: center; text-align: center; color: var(--muted); padding: 8px 0; }
+  table.data-table tbody td select { width: auto; max-width: 100%; }
+  table.data-table tbody td > * { max-width: 100%; }
+  table.data-table tbody td .pill { white-space: normal; text-align: right; }
+  table.data-table tfoot tr { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; background: var(--sec-soft); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; font-weight: 700; }
+  table.data-table tfoot td { border: 0; padding: 0; text-align: right; }
+}
+
 </style>
 </head>
 <body>
@@ -3940,6 +3966,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
         form.querySelector('[data-modal-print]').addEventListener('click', () => FX.printDoc({ ...meta(), title: tools.title, subtitle: tools.subtitle, html: FX.cleanForPrint(target()), invoice: tools.invoice }));
         form.querySelector('[data-modal-excel]').addEventListener('click', () => FX.exportExcel(`${tools.file || 'florume'}-${today()}.xlsx`, FX.collectSheets(form.querySelector('.modal-body'), tools.title), meta()));
       }
+      UI.labelTables(form);
       if (onOpen) onOpen(form);
       const first = form.querySelector('.modal-body input:not([type=hidden]), .modal-body select, .modal-body textarea');
       // أول خانة تاخد التركيز، إلا لو المستخدم لحق وكتب في خانة تانية (مانسحبش منه التركيز)
@@ -3970,6 +3997,22 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
+    },
+    // على الموبايل الجداول بتتعرض كروت: كل خانة بتاخد اسم عمودها، وأول خانة عنوان الكارت
+    labelTables(root) {
+      (root || document).querySelectorAll('table.data-table').forEach((t) => {
+        const heads = [...t.querySelectorAll('thead th')].map((th) => ({ label: th.textContent.trim(), num: th.classList.contains('num') }));
+        t.querySelectorAll('tbody tr').forEach((tr) => {
+          let col = 0, titled = false;
+          [...tr.children].forEach((cell) => {
+            const h = heads[col] || {};
+            if (cell.colSpan >= heads.length) cell.classList.add('c-full');
+            else if (h.label) cell.dataset.label = h.label;
+            if (!titled && col === 0 && h.label && !h.num && !cell.classList.contains('c-full')) { cell.classList.add('c-title'); titled = true; }
+            col += cell.colSpan || 1;
+          });
+        });
+      });
     },
     // نافذة الباسورد: فوق أي نافذة مفتوحة، وبترجع true لو الباسورد صح
     askPassword(reason) {
@@ -4575,7 +4618,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
   // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
   const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
   const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
@@ -7081,6 +7124,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
     if (key !== lastKey) { m.classList.remove('enter'); void m.offsetWidth; m.classList.add('enter'); lastKey = key; }
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
+    UI.labelTables(m);
     let n = 0;
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });

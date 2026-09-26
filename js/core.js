@@ -165,6 +165,7 @@
         form.querySelector('[data-modal-print]').addEventListener('click', () => FX.printDoc({ ...meta(), title: tools.title, subtitle: tools.subtitle, html: FX.cleanForPrint(target()), invoice: tools.invoice }));
         form.querySelector('[data-modal-excel]').addEventListener('click', () => FX.exportExcel(`${tools.file || 'florume'}-${today()}.xlsx`, FX.collectSheets(form.querySelector('.modal-body'), tools.title), meta()));
       }
+      UI.labelTables(form);
       if (onOpen) onOpen(form);
       const first = form.querySelector('.modal-body input:not([type=hidden]), .modal-body select, .modal-body textarea');
       // أول خانة تاخد التركيز، إلا لو المستخدم لحق وكتب في خانة تانية (مانسحبش منه التركيز)
@@ -195,6 +196,22 @@
     confirm(message, onYes, yes = 'نعم، احذف') {
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
+    },
+    // على الموبايل الجداول بتتعرض كروت: كل خانة بتاخد اسم عمودها، وأول خانة عنوان الكارت
+    labelTables(root) {
+      (root || document).querySelectorAll('table.data-table').forEach((t) => {
+        const heads = [...t.querySelectorAll('thead th')].map((th) => ({ label: th.textContent.trim(), num: th.classList.contains('num') }));
+        t.querySelectorAll('tbody tr').forEach((tr) => {
+          let col = 0, titled = false;
+          [...tr.children].forEach((cell) => {
+            const h = heads[col] || {};
+            if (cell.colSpan >= heads.length) cell.classList.add('c-full');
+            else if (h.label) cell.dataset.label = h.label;
+            if (!titled && col === 0 && h.label && !h.num && !cell.classList.contains('c-full')) { cell.classList.add('c-title'); titled = true; }
+            col += cell.colSpan || 1;
+          });
+        });
+      });
     },
     // نافذة الباسورد: فوق أي نافذة مفتوحة، وبترجع true لو الباسورد صح
     askPassword(reason) {
