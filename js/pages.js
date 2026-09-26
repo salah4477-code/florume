@@ -50,7 +50,13 @@
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
   const btn = (label, action, id, cls = '') => `<button type="button" class="link-btn ${cls}" data-action="${action}" data-id="${id}">${label}</button>`;
-  const header = (title, sub, buttons = '') => `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="page-actions">${buttons}</div></header>`;
+  // أقسام القائمة: كل قسم له لون وأيقونة، وكل صفحة بتاخد لون قسمها عشان تعرف إنت فين
+  const SECTIONS = { daily: 'اليومي', goods: 'البضاعة', money: 'الفلوس', growth: 'النمو والتحليل', system: 'النظام' };
+  const PAGE_SEC = { dashboard: 'daily', sales: 'daily', customers: 'daily', alerts: 'daily', products: 'goods', shipments: 'goods', suppliers: 'goods', treasury: 'money', expenses: 'money', reconcile: 'money', partners: 'money', campaigns: 'growth', planning: 'growth', reports: 'growth', health: 'system', audit: 'system', settings: 'system' };
+  let curKey = 'dashboard', lastKey = '';
+  const header = (title, sub, buttons = '') => `<header class="page-head">
+    <div class="ph-id"><span class="ph-icon">${icon(curKey)}</span><div class="ph-text"><span class="ph-eyebrow">${SECTIONS[PAGE_SEC[curKey]] || ''}</span><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div></div>
+    <div class="page-actions">${buttons}</div></header>`;
   const kpi = (label, value, note = '', tone = '') => `<div class="kpi ${tone}"><span class="kpi-label">${label}</span><strong class="kpi-value">${value}</strong>${note ? `<span class="kpi-note">${note}</span>` : ''}</div>`;
   const used = (id, checks) => checks.some(([list, fn]) => S()[list].some((x) => fn(x, id)));
   const PARTY_LISTS = { supplier: 'suppliers', courier: 'couriers', partner: 'partners' };
@@ -338,6 +344,7 @@
         ${UI.field('الحالة', UI.select('status', STATUSES, sale.status))}
         ${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions(), sale.campaignId || ''), { hint: 'الطلب جه من أنهي حملة؟' })}
       </div>
+      <div id="risk-box" class="risk-box" hidden role="status"></div>
       <p class="promo-note" hidden>فاتورة الدعاية تُخرج القطع من المخزون بتكلفتها، ولا تُحسب مبيعات. التكلفة ومصاريف شحنها تروح على <b>مصروف الإعلانات والتسويق</b>${s.campaigns.length ? ' (ولو ربطتها بحملة تدخل في إنفاق الحملة)' : ''}.</p>
       <div class="form-grid new-customer" hidden>
         ${UI.field('اسم العميل', UI.input('cName', ''), { req: true })}
@@ -361,6 +368,7 @@
         ${UI.field('عدد العينات', UI.input('sampleQty', sample0.qty || 1, 'type="number" min="1" step="1"'), { cls: 'sale-only sample-qty' })}
       </div>
       <div class="form-grid return-fields" hidden>
+        ${UI.field('سبب المرتجع', UI.select('returnReason', RETURN_OPTS(), sale.returnReason || ''), { req: true, hint: 'بيساعدك تعرف المرتجع جاي منين، وبينبهك من العملاء اللي بيرفضوا' })}
         ${UI.field('تاريخ المرتجع', UI.input('returnDate', sale.returnDate || today(), 'type="date"'))}
         ${UI.field('مصاريف المرتجع', UI.input('returnFee', sale.returnFee || 0, 'type="number" min="0" step="0.01"'))}
         ${UI.field('الفلوس ترجع للعميل من', UI.select('refundAccountId', accountOptions(), sale.refundAccountId || (sale.payment !== 'cod' ? sale.payment : '')), { cls: 'prepaid-only' })}
@@ -446,6 +454,7 @@
           f.querySelector('#f-cName').required = f.customerId.value === '__new';
           f.querySelector('.return-fields').hidden = f.status.value !== 'returned';
           f.querySelector('.lost-fields').hidden = f.status.value !== 'lost';
+          riskBox(f, sale.id);
           f.querySelectorAll('.prepaid-only').forEach((el) => (el.hidden = promo || f.payment.value === 'cod'));
           f.querySelector('.sample-qty').hidden = promo || !f.sampleProductId.value;
           recalc();
@@ -466,7 +475,8 @@
           if (!retTouched) f.returnFee.value = num(r.returnFee);
           recalc();
         };
-        f.customerId.addEventListener('change', () => { toggle(); autoShip(); }); f.courierId.addEventListener('change', autoShip); f.cCity.addEventListener('change', autoShip);
+        f.customerId.addEventListener('change', () => { toggle(); autoShip(); });
+        f.cPhone.addEventListener('input', () => riskBox(f, sale.id)); f.courierId.addEventListener('change', autoShip); f.cCity.addEventListener('change', autoShip);
         f.status.addEventListener('change', toggle); f.kind.addEventListener('change', toggle); f.payment.addEventListener('change', toggle); f.sampleProductId.addEventListener('change', toggle);
         toggle(); if (isNew) autoShip();
       },
@@ -477,7 +487,8 @@
         const merged = RULES.mergeLines(lines);
         if (merged.conflicts.length) return fail(`${merged.conflicts.map((id) => productLabel(productById(id))).join('، ')} متكرر في أكتر من سطر بأسعار مختلفة — خليه سطر واحد`);
         const status = fd.get('status');
-        const obj = { ...sale, kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
+        if (status === 'returned' && !fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
+        const obj = { ...sale, returnReason: status === 'returned' ? fd.get('returnReason') : '', kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
           discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
           courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
           refundAccountId: status === 'returned' ? fd.get('refundAccountId') : '', lostDate: status === 'lost' ? fd.get('lostDate') : '', compensation: status === 'lost' ? num(fd.get('compensation')) : 0, lostRefundAccountId: status === 'lost' ? fd.get('lostRefundAccountId') : '',
@@ -574,6 +585,7 @@
       <article class="invoice">
         <header class="inv-head"><div><div class="brand-mark">${esc(s.settings.businessName)}</div><small class="muted">${esc(s.settings.businessPhone || '')}</small></div>
           <div class="inv-meta"><b>${esc(title)}</b><span>${fmtDate(sale.date)}</span>${UI.pill(STATUSES[sale.status], statusKind[sale.status])}</div></header>
+        ${sale.status === 'returned' && sale.returnReason ? `<p class="ret-reason no-print">سبب المرتجع: <b>${esc(OPS.RETURN_REASONS[sale.returnReason] || '')}</b></p>` : ''}
         <div class="inv-party"><span class="muted">${promo ? 'المستلم' : 'العميل'}</span><b>${esc(c.name || '—')}</b><span>${esc(c.phone || '')}</span><span>${esc([c.city, c.address].filter(Boolean).join(' — '))}</span></div>
         ${itemsTable}
         <p class="muted">${promo ? 'قطع مجانية لأغراض الدعاية — بدون مقابل' : `الدفع: ${sale.payment === 'cod' ? 'عند الاستلام' : 'مدفوع مقدمًا — ' + esc(nameOf('accounts', sale.payment))}`} · الشحن: ${esc(nameOf('couriers', sale.courierId))}${sale.trackingNo ? ` · بوليصة <span class="mono">${esc(sale.trackingNo)}</span>` : ''}</p>
@@ -595,6 +607,48 @@
   }
 
   // مرتجع جزئي لأصناف من طلب اتسلم، واختياري استبدالها بأصناف تانية في طلب جديد
+  const RETURN_OPTS = () => [{ v: '', l: 'اختار السبب' }, ...Object.entries(OPS.RETURN_REASONS).map(([v, l]) => ({ v, l }))];
+  // تحذير في فورم الطلب لو العميل (أو نفس الموبايل) رفض طلبات قبل كده
+  function riskMessage(r) {
+    if (!r || r.level === 'none') return null;
+    const why = Object.entries(r.reasons).filter(([k]) => OPS.RISKY_REASONS.has(k)).map(([k, n]) => `${OPS.RETURN_REASONS[k]} ${n > 1 ? `(${n})` : ''}`.trim()).join('، ');
+    const text = r.level === 'high'
+      ? `⚠ العميل ده رفض ${r.refused === 1 ? 'طلب' : r.refused === 2 ? 'طلبين' : r.refused <= 10 ? `${r.refused} طلبات` : `${r.refused} طلب`} قبل كده${why ? ` (${why})` : ''}${r.delivered ? ` واستلم ${r.delivered}` : ' ومستلمش ولا طلب'}. اطلب منه يدفع الشحن أو المبلغ مقدم قبل ما تشحن.`
+      : `انتبه: العميل ده ${r.refused ? `رفض طلب قبل كده${why ? ` (${why})` : ''}` : `رجّع ${r.returned === 2 ? 'طلبين' : `${r.returned} طلبات`}`} واستلم ${r.delivered}. أكّد معاه الطلب والعنوان قبل الشحن.`;
+    return { level: r.level, text };
+  }
+  function riskBox(f, saleId) {
+    const box = f.querySelector('#risk-box'); if (!box) return;
+    const isNew = f.customerId.value === '__new';
+    const r = isNew ? (OPS.phoneKey(f.cPhone.value) ? OPS.customerRisk(S(), '', f.cPhone.value, saleId) : null) : f.customerId.value ? OPS.customerRisk(S(), f.customerId.value, null, saleId) : null;
+    const m = riskMessage(r);
+    box.hidden = !m || f.classList.contains('promo-mode');
+    if (m) { box.className = `risk-box risk-${m.level}`; box.textContent = m.text; }
+  }
+  // تغيير الحالة لـ«مرتجع» من الجدول: بيسأل عن السبب والمصاريف
+  function returnQuickForm(sale) {
+    const prepaid = sale.payment !== 'cod';
+    UI.modal({ title: `مرتجع — فاتورة ${esc(invoiceNo(sale))}`, submit: 'تسجيل المرتجع',
+      body: `<div class="form-grid">
+        ${UI.field('سبب المرتجع', UI.select('returnReason', RETURN_OPTS(), ''), { req: true })}
+        ${UI.field('تاريخ المرتجع', UI.input('returnDate', today() < sale.date ? sale.date : today(), 'type="date" required'), { req: true })}
+        ${UI.field('مصاريف المرتجع علينا', UI.input('returnFee', sale.returnFee || 0, 'type="number" min="0" step="0.01"'), { hint: 'اللي شركة الشحن هتخصمه' })}
+        ${prepaid ? UI.field('الفلوس ترجع للعميل من', UI.select('refundAccountId', accountOptions(), sale.payment)) : ''}
+      </div>`,
+      onSubmit(f, fd) {
+        if (!fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
+        if (!dateOk(fd.get('returnDate'), 'تاريخ المرتجع')) return false;
+        const upd = { ...sale, status: 'returned', returnReason: fd.get('returnReason'), returnDate: fd.get('returnDate'), returnFee: num(fd.get('returnFee')), refundAccountId: prepaid ? fd.get('refundAccountId') : '' };
+        if (RULES.lockedSaleChanges(S(), sale, upd).length) return fail('الفاتورة داخلة في تسوية كشف شركة الشحن — الحالة مقفولة');
+        const e = RULES.saleDateError(upd); if (e) return fail(e);
+        const stock = RULES.checkSaleStock(S(), J(), upd, sale);
+        if (stock.errors.length) return fail(stockMsg(stock.errors, upd.status));
+        DB.upsert('sales', upd); UI.toast('تم تسجيل المرتجع'); render();
+      } });
+    // لو قفل النافذة من غير حفظ، الجدول يرجع للحالة القديمة
+    const w = document.getElementById('modal');
+    const obs = new MutationObserver(() => { if (w.hidden) { obs.disconnect(); render(); } }); obs.observe(w, { attributes: true, attributeFilter: ['hidden'] });
+  }
   function partialReturnForm(sale) {
     const s = S();
     const pr = Acc.partialReturns(sale);
@@ -605,6 +659,7 @@
         <div class="table-wrap"><table class="lines"><thead><tr><th>الصنف</th><th class="num">المباع</th><th class="num">رجع قبل كده</th><th>بيرجع دلوقتي</th><th class="num">السعر</th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="form-grid">
           ${UI.field('تاريخ المرتجع', UI.input('date', today() < sale.date ? sale.date : today(), 'type="date" required'), { req: true })}
+          ${UI.field('سبب المرتجع', UI.select('reason', RETURN_OPTS(), ''), { req: true })}
           ${UI.field('مصاريف المرتجع علينا', UI.input('fee', 0, 'type="number" min="0" step="0.01"'), { hint: 'اللي شركة الشحن هتخصمه' })}
           ${prepaid ? UI.field('الفلوس ترجع للعميل من', UI.select('refundAccountId', accountOptions(), sale.payment)) : ''}
           ${UI.field('ملاحظات', UI.input('note', ''))}
@@ -634,7 +689,8 @@
         recalc();
       },
       onSubmit(f, fd) {
-        const ret = { id: uid(), date: fd.get('date'), fee: num(fd.get('fee')), note: fd.get('note'), items: [...f.querySelectorAll('.r-qty')].map((i) => ({ line: +i.dataset.line, qty: num(i.value) })).filter((x) => x.qty > 0) };
+        if (!fd.get('reason')) { f.reason.focus(); return fail('اختار سبب المرتجع'); }
+        const ret = { id: uid(), date: fd.get('date'), fee: num(fd.get('fee')), reason: fd.get('reason'), note: fd.get('note'), items: [...f.querySelectorAll('.r-qty')].map((i) => ({ line: +i.dataset.line, qty: num(i.value) })).filter((x) => x.qty > 0) };
         if (prepaid) ret.refundAccountId = fd.get('refundAccountId');
         const err = RULES.partialReturnError(sale, ret);
         if (err) return fail(err);
@@ -972,7 +1028,8 @@
       .map((c) => ({ c, r: by[c.id] })).sort((a, b) => (custSeg === 'due' ? b.r.since - a.r.since : b.r.spend - a.r.spend))
       .map(({ c, r }) => {
         const wa = (r.segment === 'due' || r.segment === 'sleeping') && OPS.waPhone(c.phone) ? `<a class="link-btn" href="${esc(OPS.waLink(c.phone, reorderText(c, r.lastProductId)))}" target="_blank" rel="noopener">واتساب</a>` : '';
-        return `<tr>${td(`<b>${esc(c.name)}</b> ${UI.pill(PLAN.SEGMENTS[r.segment], segKind[r.segment])}`)}${td(esc(c.phone || ''), 'mono')}${td(esc(c.city || ''))}${tdn(r.orders)}${tdn(returns[c.id] ? `<span class="bad-text">${returns[c.id]}</span>` : '0')}${tdn(fmt(r.spend))}${tdn(fmt(r.profit || 0))}${td(r.last ? `${fmtDate(r.last)} <small class="muted">(${r.since} يوم)</small>` : '—')}${td(r.lastProductId ? esc(productLabel(productById(r.lastProductId))) : '—')}${actions(wa, btn('تعديل', 'editCustomer', c.id), btn('حذف', 'delCustomer', c.id, 'danger'))}</tr>`;
+        const risk = OPS.customerRisk(s, c.id);
+        return `<tr>${td(`<b>${esc(c.name)}</b> ${UI.pill(PLAN.SEGMENTS[r.segment], segKind[r.segment])}${risk.refused ? ' ' + UI.pill(`رفض ${risk.refused}`, risk.level === 'high' ? 'bad' : 'warn') : ''}`)}${td(esc(c.phone || ''), 'mono')}${td(esc(c.city || ''))}${tdn(r.orders)}${tdn(returns[c.id] ? `<span class="bad-text">${returns[c.id]}</span>` : '0')}${tdn(fmt(r.spend))}${tdn(fmt(r.profit || 0))}${td(r.last ? `${fmtDate(r.last)} <small class="muted">(${r.since} يوم)</small>` : '—')}${td(r.lastProductId ? esc(productLabel(productById(r.lastProductId))) : '—')}${actions(wa, btn('تعديل', 'editCustomer', c.id), btn('حذف', 'delCustomer', c.id, 'danger'))}</tr>`;
       });
     const tabs = [['', `الكل (${s.customers.length})`], ...Object.entries(PLAN.SEGMENTS).filter(([k]) => seg.counts[k]).map(([k, l]) => [k, `${l} (${seg.counts[k]})`])];
     return `${header('العملاء', 'مقسّمين حسب سلوك الشراء. العطر بيخلص في حوالي 3 شهور — «آن الأوان يطلب تاني» فرصة بيع جاهزة.', '<button class="btn btn-primary" data-action="newCustomer">+ عميل جديد</button>')}
@@ -1010,7 +1067,7 @@
       ...s.settlements.map((t) => ({ date: t.date, kind: t.amount >= 0 ? 'تحصيل شحن' : 'سداد لشركة شحن', desc: `${nameOf('couriers', t.courierId)} → ${nameOf('accounts', t.accountId)}`, amount: t.amount, extra: t.notes || '', list: 'settlements', id: t.id })),
       ...s.equity.map((t) => ({ date: t.date, kind: t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', desc: `${nameOf('accounts', t.accountId)}${t.partnerId ? ' — ' + nameOf('partners', t.partnerId) : ''}`, amount: t.amount, extra: t.notes || '', list: 'equity', id: t.id })),
     ].filter((d) => inPeriod(d.date)).sort((a, b) => (a.date < b.date ? 1 : -1));
-    return `${header('الخزينة والبنوك', 'أرصدة الخزائن والمحافظ، التحصيل من شركات الشحن، التحويلات، ورأس المال.', `${periodBar()}<button class="btn" data-action="newEquity">رأس مال / مسحوبات</button><button class="btn" data-action="newTransfer">تحويل بين الحسابات</button><button class="btn btn-primary" data-action="newSettlement">تحصيل من شركة شحن</button>`)}
+    return `${header('الخزينة والبنوك', 'أرصدة الخزائن والمحافظ، التحصيل من شركات الشحن، التحويلات، ورأس المال.', `${periodBar()}<button class="btn" data-action="newCashCount" data-id="${treasuryAcc || ''}">جرد الخزينة</button><button class="btn" data-action="newEquity">رأس مال / مسحوبات</button><button class="btn" data-action="newTransfer">تحويل بين الحسابات</button><button class="btn btn-primary" data-action="newSettlement">تحصيل من شركة شحن</button>`)}
       <section class="acc-cards">
         ${cb.map((a) => `<button class="acc-card ${a.id === treasuryAcc ? 'active' : ''}" data-action="pickAccount" data-id="${a.id}"><span>${esc(ACCOUNT_TYPES[a.type] || '')}</span><b>${esc(a.name)}</b><strong class="${a.balance < 0 ? 'bad-text' : ''}">${money(a.balance)}</strong></button>`).join('')}
         ${s.couriers.map((c) => `<div class="acc-card courier"><span>${couriers[c.id] >= 0 ? 'مستحق لنا لدى' : 'مستحق علينا لـ'}</span><b>${esc(c.name)}</b><strong>${money(Math.abs(couriers[c.id] || 0))}</strong></div>`).join('')}
@@ -1020,10 +1077,48 @@
         empty: 'لا توجد حركة في هذه الفترة',
         foot: `<tr><td colspan="4">رصيد أول الفترة ${fmt(led.opening)} · رصيد آخر الفترة</td>${tdn(`<b>${fmt(led.closing)}</b>`)}</tr>`,
       })}
+      ${cashCountSection()}
       <h2 class="section-title">التحويلات والتحصيلات ورأس المال</h2>
       ${table(['التاريخ', 'النوع', 'البيان', '#المبلغ', 'ملاحظات', ''], docs.map((d) => `<tr>${td(fmtDate(d.date))}${td(d.kind)}${td(esc(d.desc))}${tdn(fmt(Math.abs(d.amount)))}${td(esc(d.extra))}${actions(btn('تعديل', 'editDoc', `${d.list}:${d.id}`), btn('حذف', 'delDoc', `${d.list}:${d.id}`, 'danger'))}</tr>`), { empty: 'لا توجد مستندات في هذه الفترة' })}`;
   }
 
+  // ---------- جرد الخزينة ----------
+  function cashCountSection() {
+    const s = S(), j = J();
+    const list = [...s.cashCounts].sort((a, b) => (a.date < b.date ? 1 : -1));
+    if (!list.length) return `<section class="panel count-hint"><h2 class="section-title">جرد الخزينة</h2><p class="muted">مرة في الشهر افتح البنك وفودافون كاش وعدّ الكاش، واكتب الرصيد الحقيقي. السيستم بيقارنه بالرصيد اللي عنده، ولو فيه فرق بيسجله زيادة أو عجز عشان الأرصدة تفضل مظبوطة.</p><button class="btn btn-primary btn-small" data-action="newCashCount" data-id="${treasuryAcc || ''}">أول جرد</button></section>`;
+    return `<h2 class="section-title">جرد الخزينة</h2>${table(['التاريخ', 'الحساب', '#رصيد السيستم', '#الرصيد الحقيقي', '#الفرق', 'ملاحظات', ''], list.map((k) => { const r = j.cashCounts[k.id] || { book: 0, diff: 0 }; return `<tr>${td(fmtDate(k.date))}${td(esc(nameOf('accounts', k.accountId)))}${tdn(fmt(r.book))}${tdn(fmt(k.actual))}${tdn(Math.abs(r.diff) < 0.005 ? UI.pill('مظبوط', 'good') : UI.pill(`${r.diff > 0 ? 'زيادة' : 'عجز'} ${fmt(Math.abs(r.diff))}`, r.diff > 0 ? 'info' : 'bad'))}${td(esc(k.notes || ''))}${actions(btn('تعديل', 'editCashCount', k.id), btn('حذف', 'delCashCount', k.id, 'danger'))}</tr>`; }))}`;
+  }
+  function cashCountForm(k, accountId) {
+    const s = S(); const isNew = !k;
+    if (!s.accounts.length) return fail('أضف حساب الأول من الإعدادات');
+    k = k || { id: uid(), date: today(), accountId: accountId && DB.find('accounts', accountId) ? accountId : s.accounts[0].id, actual: '', notes: '' };
+    UI.modal({ title: isNew ? 'جرد الخزينة' : 'تعديل الجرد', submit: 'حفظ الجرد',
+      body: `<p class="muted">اكتب الرصيد الحقيقي في آخر اليوم ده (عدّ الكاش، أو شوف رصيد البنك والمحفظة في الأبلكيشن).</p>
+        <div class="form-grid">
+          ${UI.field('الحساب', UI.select('accountId', accountOptions(), k.accountId))}
+          ${UI.field('التاريخ', UI.input('date', k.date, 'type="date" required'), { req: true })}
+          ${UI.field('الرصيد الحقيقي', UI.input('actual', k.actual, 'type="number" step="0.01" required'), { req: true })}
+          ${UI.field('ملاحظات', UI.input('notes', k.notes || '', 'placeholder="مثال: فرق فكة، مصروف مش متسجل…"'))}
+        </div>
+        <div class="summary" id="count-sum"></div>`,
+      onOpen(f) {
+        const upd = () => {
+          const probe = { ...k, accountId: f.accountId.value, date: f.date.value, actual: 0 };
+          const book = f.date.value ? (Acc.buildJournal(RULES.withDoc(S(), 'cashCounts', probe)).cashCounts[k.id] || { book: 0 }).book : 0;
+          const has = f.actual.value !== '';
+          const diff = Acc.round2(num(f.actual.value) - book);
+          f.querySelector('#count-sum').innerHTML = `<div><span>رصيد السيستم في آخر اليوم ده</span><b>${fmt(book)} ج.م</b></div>${has ? `<div class="strong"><span>${Math.abs(diff) < 0.005 ? 'مظبوط ✔' : diff > 0 ? 'زيادة هتتسجل إيراد' : 'عجز هيتسجل مصروف'}</span><b class="${diff < -0.005 ? 'bad-text' : ''}">${fmt(Math.abs(diff))} ج.م</b></div>` : ''}${has && Math.abs(diff) >= 0.005 ? '<p class="muted">قبل ما تحفظ: اتأكد إن مفيش مصروف أو تحصيل ناسي تسجله. لو سجلته بعدين بتاريخه، الفرق بيتظبط لوحده.</p>' : ''}`;
+        };
+        f.addEventListener('input', upd); f.addEventListener('change', upd); upd();
+      },
+      onSubmit(f, fd) {
+        if (fd.get('actual') === '') return fail('اكتب الرصيد الحقيقي');
+        if (!dateOk(fd.get('date'))) return false;
+        DB.upsert('cashCounts', { ...k, accountId: fd.get('accountId'), date: fd.get('date'), actual: num(fd.get('actual')), notes: fd.get('notes').trim() });
+        UI.toast('تم حفظ الجرد'); render();
+      } });
+  }
   function transferForm(t) {
     const s = S(); const isNew = !t;
     t = t || { id: uid(), date: today(), fromId: (s.accounts[0] || {}).id, toId: (s.accounts[1] || {}).id, amount: '', fee: 0, notes: '' };
@@ -1100,7 +1195,7 @@
       <h2 class="section-title">التأسيس ورأس المال <span class="muted">— مش بيدخل في الأرباح والخسائر</span></h2>
       <div class="grid-2">
         <div><p class="muted">اللي صرفته قبل ما الشغل يبدأ (الموقع، اللوجو، التصوير، السجل التجاري…) سجّله هنا مش في المصروفات العادية. بيظهر في الميزانية أصل «مصروفات التأسيس»، ولو دفعته من جيبك بيتحسب من رأس المال.</p>
-          <div class="btn-row"><button class="btn btn-primary btn-small" data-action="newFormation">+ مصروف تأسيس</button><button class="btn btn-small" data-action="newAdjustment">+ بضاعة أول المدة</button><a class="btn btn-small" href="#settings">الأرصدة الافتتاحية</a></div></div>
+          <div class="btn-row"><button class="btn btn-primary btn-small" data-action="newFormation">+ مصروف تأسيس</button><button class="btn btn-small" data-action="newAdjustment">+ بضاعة أول المدة</button><button type="button" class="btn btn-small" data-action="goSettings" data-id="money">الأرصدة الافتتاحية</button></div></div>
         <div><h3 class="sub-title">رأس مال التأسيس</h3><ul class="list cap-list">
           ${line('فلوس في الخزينة والبنوك أول المدة', fc.cash, 'الأرصدة الافتتاحية')}
           ${line('بضاعة أول المدة', fc.stock, 'مخزون افتتاحي')}
@@ -1168,7 +1263,7 @@
   // =====================================================================
   // التقارير
   // =====================================================================
-  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات' };
+  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
   let report = 'income', ledgerAcc = '1300';
   function reports() {
     const tabs = `<nav class="tabs" role="tablist">${Object.entries(REPORTS).map(([k, l]) => `<button role="tab" aria-selected="${k === report}" class="tab ${k === report ? 'active' : ''}" data-action="pickReport" data-id="${k}">${l}</button>`).join('')}</nav>`;
@@ -1213,6 +1308,24 @@
       return `<h2>دفتر الأستاذ</h2><div class="filters">${UI.select('ledgerAcc', opts, ledgerAcc, 'data-change="ledgerAcc" aria-label="الحساب"')}</div>
         ${table(['التاريخ', 'القيد', 'البيان', '#مدين', '#دائن', '#الرصيد'], led.rows.map((r) => `<tr>${td(fmtDate(r.date))}${td('#' + r.no, 'mono')}${td(esc(r.desc))}${tdn(r.dr ? fmt(r.dr) : '')}${tdn(r.cr ? fmt(r.cr) : '')}${tdn(fmt(r.balance))}</tr>`), { empty: 'لا توجد حركة', foot: `<tr><td colspan="5">رصيد أول الفترة ${fmt(led.opening)} · رصيد آخر الفترة (مدين + / دائن −)</td>${tdn(`<b>${fmt(led.closing)}</b>`)}</tr>` })}`;
     }
+    if (report === 'returns') {
+      const a = OPS.returnAnalysis(s, period.from, period.to);
+      const bar = (rate) => `<span class="rate-bar" style="--w:${Math.min(100, rate * 100)}%"><i></i></span>`;
+      const tbl = (title, rows, label) => `<h3 class="sub-title">${title}</h3>${table([title.replace('حسب ', ''), '#الطلبات', '#مرتجع', '#جزئي', 'نسبة المرتجع', '#خسارة الشحن'], rows.map((r) => `<tr>${td(esc(label(r.key)))}${tdn(r.orders)}${tdn(r.returned ? `<b class="bad-text">${r.returned}</b>` : '0')}${tdn(r.partial || '—')}${td(`${bar(r.rate)} <span class="num">${pct(r.rate)}</span>`)}${tdn(fmt(r.loss))}</tr>`), { empty: 'مفيش طلبات اتشحنت في الفترة دي' })}`;
+      const reasons = a.reason.map((r) => `<tr>${td(esc(r.key === 'unknown' ? 'من غير سبب' : OPS.RETURN_REASONS[r.key] || r.key))}${tdn(r.returned)}${tdn(r.partial || '—')}${tdn(fmt(r.loss))}${td(OPS.RISKY_REASONS.has(r.key) ? UI.pill('من العميل', 'warn') : r.key === 'unknown' ? '' : UI.pill('مننا أو من الشحن', 'info'))}</tr>`);
+      return `<h2>تحليل المرتجع <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small></h2>
+        <section class="kpis">
+          ${kpi('طلبات اتشحنت', fmt(a.total.orders))}
+          ${kpi('مرتجع كامل', fmt(a.total.returned), pct(a.total.rate) + ' من الطلبات', a.total.rate > 0.15 ? 'bad' : '')}
+          ${kpi('مرتجع جزئي', fmt(a.total.partial))}
+          ${kpi('خسارة الشحن في المرتجع', money(a.total.loss), 'شحن رايح وجاي من غير بيع')}
+        </section>
+        <h3 class="sub-title">حسب السبب</h3>${table(['السبب', '#مرتجع كامل', '#جزئي', '#خسارة الشحن', ''], reasons, { empty: 'مفيش مرتجعات في الفترة دي' })}
+        ${tbl('حسب المحافظة', a.gov, (k) => (k === '—' ? 'من غير محافظة' : k))}
+        ${tbl('حسب شركة الشحن', a.courier, (k) => (k === '—' ? 'من غير شركة' : nameOf('couriers', k)))}
+        ${tbl('حسب القناة', a.channel, (k) => CHANNELS[k] || k)}
+        <p class="muted">المحافظة أو القناة اللي نسبة المرتجع فيها عالية: فكّر تطلب فيها دفع الشحن مقدم. الأسباب «من العميل» بتتحسب عليه في التحذير اللي بيظهر وإنت بتسجل طلب جديد.</p>`;
+    }
     if (report === 'productsPerf') {
       const rows = Acc.productPerformance(s, j, period.from, period.to);
       return `<h2>ربحية المنتجات</h2>${table(['المنتج', '#المباع', '#المرتجع', '#دعاية مجانية', '#صافي الإيراد', '#التكلفة', '#مجمل الربح', '#الهامش'], rows.map((r) => `<tr>${td(esc(productLabel(productById(r.productId))))}${tdn(fmt(r.qty))}${tdn(r.returnedQty ? fmt(r.returnedQty) : '—')}${tdn(r.promoQty ? `${fmt(r.promoQty)} <small class="muted">(${fmt(r.promoCost)})</small>` : '—')}${tdn(fmt(r.revenue))}${tdn(fmt(r.cogs))}${tdn(fmt(r.profit))}${tdn(pct(r.margin))}</tr>`), { empty: 'لا مبيعات في هذه الفترة' })}
@@ -1226,9 +1339,13 @@
   // =====================================================================
   // الإعدادات
   // =====================================================================
+  const SETTINGS_TABS = [['biz', 'النشاط والتنبيهات'], ['money', 'الحسابات وشركات الشحن'], ['team', 'الباسورد والفريق'], ['data', 'النسخ والاستيراد']];
+  let settingsTab = 'biz';
   function settings() {
     const s = S(), st = s.settings;
     return `${header('الإعدادات والنسخ الاحتياطي', 'بياناتك محفوظة في هذا المتصفح فقط. صدّر نسخة احتياطية بانتظام.')}
+      <nav class="tabs settings-tabs" role="tablist">${SETTINGS_TABS.map(([k, l]) => `<button role="tab" type="button" class="tab ${settingsTab === k ? 'active' : ''}" aria-selected="${settingsTab === k}" data-action="pickSettingsTab" data-id="${k}">${l}</button>`).join('')}</nav>
+      <div class="tab-pane" ${settingsTab === 'biz' ? '' : 'hidden'}>
       <form class="panel settings-form" id="settings-form">
         <h2 class="section-title">بيانات النشاط</h2>
         <div class="form-grid">
@@ -1273,6 +1390,8 @@
         </div>
         <button class="btn btn-primary" type="submit">حفظ الإعدادات</button>
       </form>
+      </div>
+      <div class="tab-pane" ${settingsTab === 'money' ? '' : 'hidden'}>
       <section class="grid-2">
         <div class="panel"><h2 class="section-title">الخزائن والحسابات</h2>
           ${table(['الحساب', 'النوع', '#رصيد افتتاحي', 'عمولة التحصيل', ''], s.accounts.map((a) => `<tr>${td(esc(a.name))}${td(ACCOUNT_TYPES[a.type] || '')}${tdn(fmt(a.opening))}${td(num(a.feePct) || num(a.feeFixed) ? `${fmt(a.feePct)}٪${num(a.feeFixed) ? ' + ' + fmt(a.feeFixed) : ''}` : '—')}${actions(btn('تعديل', 'editAccount', a.id), btn('حذف', 'delAccount', a.id, 'danger'))}</tr>`))}
@@ -1281,8 +1400,12 @@
           ${table(['الشركة', 'الأسعار', ''], s.couriers.map((c) => `<tr>${td(esc(c.name))}${td(Object.keys(c.rates || {}).length || c.defaultRate ? `${Object.keys(c.rates || {}).length} محافظة${c.defaultRate ? ' + افتراضي ' + fmt(c.defaultRate.fee) : ''}` : '<span class="muted">مش متسجلة</span>')}${actions(btn('تعديل', 'editCourier', c.id), btn('حذف', 'delCourier', c.id, 'danger'))}</tr>`))}
           <button class="btn btn-small" data-action="newCourier">+ شركة شحن</button></div>
       </section>
+      </div>
+      <div class="tab-pane" ${settingsTab === 'team' ? '' : 'hidden'}>
       ${lockSection()}
       ${cloudSection()}
+      </div>
+      <div class="tab-pane" ${settingsTab === 'data' ? '' : 'hidden'}>
       <section class="panel">
         <h2 class="section-title">استيراد من Excel</h2>
         <p class="muted">ارفع ملف Excel (xlsx) أو CSV فيه مبيعات أو منتجات ومخزون أو مصروفات، زي ملف التصدير من Florume ERP، أو <b>تصدير طلبات Shopify أو WooCommerce</b> (Orders → Export). هتشوف معاينة كاملة قبل ما أي حاجة تتحفظ.</p>
@@ -1306,7 +1429,8 @@
           <button class="btn" data-action="loadDemo">تحميل البيانات التجريبية</button>
           <button class="btn btn-danger" data-action="resetAll">مسح كل البيانات والبدء من جديد</button>
         </div>
-      </section>`;
+      </section>
+      </div>`;
   }
   function accountForm(a) {
     const isNew = !a; a = a || { id: uid(), name: '', type: 'cash', opening: 0 };
@@ -1344,7 +1468,7 @@
   // =====================================================================
   // التنبيهات
   // =====================================================================
-  const ALERT_TYPES = { reorder: 'إعادة الطلب', recurring: 'مصروفات ثابتة مستحقة', pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
+  const ALERT_TYPES = { cashCount: 'جرد الخزينة', reorder: 'إعادة الطلب', recurring: 'مصروفات ثابتة مستحقة', pending: 'طلبات متأخرة في التجهيز', shipped: 'طلبات متأخرة مع شركة الشحن', settle: 'تحصيل متأخر من شركات الشحن', due: 'مستحقات موردين', stagnant: 'منتجات راكدة', low: 'نواقص المخزون', negative: 'أخطاء رصيد' };
   const alertList = () => {
     const list = OPS.alerts(S(), J(), today(), S().settings.alerts);
     const now = PLAN.reorderPlan(S(), J(), today()).filter((r) => r.status === 'now');
@@ -2262,6 +2386,12 @@
     newTransfer: () => transferForm(), newSettlement: () => settlementForm(), newEquity: () => equityForm(),
     editDoc: (key) => { const [list, id] = key.split(':'); const doc = DB.find(list, id); ({ transfers: transferForm, settlements: settlementForm, equity: equityForm })[list](doc); },
     delDoc: (key) => { const [list, id] = key.split(':'); del(list, id, 'هذا المستند'); },
+    openSearch: () => openSearch(),
+    openDrawer: () => { document.body.classList.add('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = false; },
+    closeDrawer: () => { document.body.classList.remove('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = true; },
+    pickSettingsTab: (id) => { settingsTab = id; render(); },
+    goSettings: (id) => { settingsTab = id || 'biz'; if (location.hash === '#settings') render(); else location.hash = 'settings'; },
+    newCashCount: (id) => cashCountForm(null, id), editCashCount: (id) => cashCountForm(DB.find('cashCounts', id)), delCashCount: (id) => del('cashCounts', id, 'الجرد ده'),
     newFormation: () => formationForm(), editFormation: (id) => formationForm(DB.find('formation', id)), delFormation: (id) => del('formation', id, 'مصروف التأسيس ده'),
     newExpense: () => expenseForm(), editExpense: (id) => expenseForm(DB.find('expenses', id)), delExpense: (id) => del('expenses', id, 'هذا المصروف'),
     pickReport: (id) => { report = id; render(); },
@@ -2325,6 +2455,7 @@
       const upd = { ...sale, status: el.value };
       if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today() < sale.date ? sale.date : today();
       if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية كشف شركة الشحن — الحالة مقفولة'); render(); return; }
+      if (el.value === 'returned' && !isPromo(sale)) { returnQuickForm(sale); return; }
       const stock = RULES.checkSaleStock(S(), J(), upd, sale);
       if (stock.errors.length) { fail(stockMsg(stock.errors, upd.status)); render(); return; }
       upd.preorder = stock.preorder;
@@ -2401,7 +2532,11 @@
     // مسؤول الطلبات بيبدأ من المبيعات، ومايفتحش الصفحات اللي فيها تكاليف وأرباح
     if (!SYNC.canSeePage(CLOUD.role, key)) key = SYNC.canSeePage(CLOUD.role, 'sales') ? 'sales' : key;
     if (key === 'audit' && !['owner', 'manager'].includes(CLOUD.role)) key = 'sales';
-    document.querySelectorAll('.nav a').forEach((a) => a.setAttribute('aria-current', a.getAttribute('href') === '#' + key ? 'page' : 'false'));
+    curKey = key;
+    document.body.dataset.sec = PAGE_SEC[key] || 'daily';
+    document.body.classList.remove('drawer-open');
+    const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = true;
+    document.querySelectorAll('.nav a, .bottom-nav a').forEach((a) => a.setAttribute('aria-current', a.getAttribute('href') === '#' + key ? 'page' : 'false'));
     document.getElementById('demo-banner').hidden = !S().demo;
     // تذكير بالنسخة الاحتياطية لما البيانات على الجهاز بس
     const bb = document.getElementById('backup-banner');
@@ -2412,6 +2547,8 @@
       if (need) document.getElementById('backup-text').innerHTML = age == null ? '<b>ماعملتش نسخة احتياطية لسه.</b> بياناتك على المتصفح ده بس — لو اتمسح هتضيع.' : `<b>آخر نسخة احتياطية من ${age} يوم.</b> صدّر نسخة جديدة أو فعّل النسخ التلقائي من الإعدادات.`;
     }
     const m = main();
+    // حركة خفيفة لما تفتح صفحة جديدة بس (مش مع كل تحديث للصفحة نفسها)
+    if (key !== lastKey) { m.classList.remove('enter'); void m.offsetWidth; m.classList.add('enter'); lastKey = key; }
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
     let n = 0;
@@ -2420,7 +2557,8 @@
     CH.bindLines(m, document.getElementById('tip'));
     if (key === 'settings') renderTeam();
     const pa = m.querySelector('.page-head .page-actions');
-    if (pa) pa.insertAdjacentHTML('afterbegin', `<span class="doc-tools">${['sales', 'products', 'customers', 'expenses'].includes(key) ? '<button type="button" class="btn" data-action="importExcel">استيراد Excel</button>' : ''}<button type="button" class="btn" data-action="printPage">طباعة</button><button type="button" class="btn" data-action="excelPage">تصدير Excel</button></span>`);
+    // أدوات الصفحة (طباعة وتصدير واستيراد) في قايمة واحدة عشان الزراير الأساسية تبان
+    if (pa) pa.insertAdjacentHTML('afterbegin', `<details class="tools-menu doc-tools"><summary class="btn" aria-label="أدوات الصفحة">${icon('more')}<span>أدوات</span></summary><div class="menu" role="menu">${['sales', 'products', 'customers', 'expenses'].includes(key) ? `<button type="button" role="menuitem" data-action="importExcel">${icon('upload')}استيراد من Excel</button>` : ''}<button type="button" role="menuitem" data-action="excelPage">${icon('download')}تصدير Excel</button><button type="button" role="menuitem" data-action="printPage">${icon('print')}طباعة / PDF</button></div></details>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -2464,10 +2602,66 @@
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
     moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+    more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
+    print: '<path d="M6 9V2h12v7"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v8H6z"/>',
+    download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    upload: '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>',
   };
   const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
 
+  // ---------- البحث السريع (Ctrl+K) ----------
+  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses']];
+  function searchResults(q) {
+    const s = S(), out = [];
+    const n = (t) => IMP.normName(IMP.latinDigits(String(t || ''))).toLowerCase();
+    const qq = n(q).trim();
+    const has = (...parts) => !qq || parts.some((p) => n(p).includes(qq));
+    const canPage = (k) => SYNC.canSeePage(CLOUD.role, k) && (k !== 'audit' || ['owner', 'manager'].includes(CLOUD.role));
+    if (!CLOUD.readOnly) QUICK_ACTIONS.filter(([l, , page]) => canPage(page) && has(l)).slice(0, qq ? 4 : 5).forEach(([l, a]) => out.push({ group: 'اعمل', label: l, icon: 'plus', run: () => ACTIONS[a]() }));
+    Object.entries(PAGES).filter(([k, p]) => canPage(k) && has(p.title, SECTIONS[PAGE_SEC[k]])).slice(0, qq ? 5 : 17).forEach(([k, p]) => out.push({ group: 'صفحة', label: p.title, sub: SECTIONS[PAGE_SEC[k]], icon: k, sec: PAGE_SEC[k], run: () => { location.hash = k; } }));
+    if (qq) {
+      const custName = (id) => (DB.find('customers', id) || {}).name || '';
+      const custPhone = (id) => (DB.find('customers', id) || {}).phone || '';
+      s.sales.filter((x) => has(invoiceNo(x), x.no, x.trackingNo, custName(x.customerId), custPhone(x.customerId))).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6)
+        .forEach((x) => out.push({ group: 'فاتورة', label: `${invoiceNo(x)} — ${custName(x.customerId) || '—'}`, sub: `${fmtDate(x.date)} · ${STATUSES[x.status] || ''} · ${fmt(Acc.saleTotals(x).total)} ج.م`, icon: 'sales', sec: 'daily', run: () => ACTIONS.viewSale(x.id) }));
+      if (canPage('customers')) s.customers.filter((c) => has(c.name, c.phone)).slice(0, 5).forEach((c) => out.push({ group: 'عميل', label: c.name, sub: [c.phone, c.city].filter(Boolean).join(' · '), icon: 'customers', sec: 'daily', run: () => { custQ = c.name; custSeg = ''; if (location.hash === '#customers') render(); else location.hash = 'customers'; } }));
+      if (canPage('products')) s.products.filter((p) => has(p.name, p.brand, p.sku, productLabel(p))).slice(0, 5).forEach((p) => out.push({ group: 'منتج', label: productLabel(p), sub: `متاح ${fmt((J().inventory.products[p.id] || {}).available || 0)}${p.sku ? ' · ' + p.sku : ''}`, icon: 'products', sec: 'goods', run: () => ACTIONS.productMoves(p.id) }));
+      if (canPage('suppliers')) s.suppliers.filter((x) => has(x.name)).slice(0, 3).forEach((x) => out.push({ group: 'مورد', label: x.name, sub: 'كشف حساب', icon: 'suppliers', sec: 'goods', run: () => ACTIONS.supplierStatement(x.id) }));
+    }
+    return out;
+  }
+  function openSearch() {
+    UI.modal({ title: 'بحث سريع', footer: '',
+      body: `<input type="search" id="f-q" class="qs-input" placeholder="رقم فاتورة، اسم عميل، موبايل، منتج، أو صفحة…" autocomplete="off" aria-label="بحث" aria-controls="qs-list">
+        <ul class="qs-list" id="qs-list" role="listbox" aria-label="النتائج"></ul>
+        <p class="qs-hint muted"><kbd>↑</kbd> <kbd>↓</kbd> للتنقل · <kbd>Enter</kbd> للفتح · <kbd>Esc</kbd> للقفل</p>`,
+      onOpen(f) {
+        f.classList.add('qs-card');
+        const input = f.querySelector('#f-q'), list = f.querySelector('#qs-list');
+        let items = [], active = 0;
+        const go = (i) => { const it = items[i]; if (!it) return; UI.close(); setTimeout(it.run, 0); };
+        const paint = () => {
+          items = searchResults(input.value);
+          active = Math.min(active, Math.max(0, items.length - 1));
+          let last = '';
+          list.innerHTML = items.length ? items.map((it, i) => { const head = it.group !== last ? `<li class="qs-group" role="presentation">${esc(it.group)}</li>` : ''; last = it.group; return `${head}<li role="option" id="qs-${i}" class="qs-item ${i === active ? 'active' : ''}" data-i="${i}" data-sec="${it.sec || ''}" aria-selected="${i === active}"><span class="qs-ico">${icon(it.icon)}</span><span class="qs-main"><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</span></li>`; }).join('') : '<li class="qs-empty">مفيش نتايج — جرّب رقم الفاتورة أو جزء من اسم العميل</li>';
+          input.setAttribute('aria-activedescendant', items.length ? `qs-${active}` : '');
+        };
+        const move = (d) => { if (!items.length) return; active = (active + d + items.length) % items.length; list.querySelectorAll('.qs-item').forEach((li) => { const on = +li.dataset.i === active; li.classList.toggle('active', on); li.setAttribute('aria-selected', on); if (on) li.scrollIntoView({ block: 'nearest' }); }); input.setAttribute('aria-activedescendant', `qs-${active}`); };
+        input.addEventListener('input', () => { active = 0; paint(); });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+          else if (e.key === 'Enter') { e.preventDefault(); go(active); }
+        });
+        list.addEventListener('click', (e) => { const li = e.target.closest('.qs-item'); if (li) go(+li.dataset.i); });
+        paint();
+      } });
+  }
   // ---------- الوضع الليلي ----------
   const THEME_KEY = 'florume.theme';
   function currentTheme() { const t = document.documentElement.dataset.theme; if (t) return t; return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
@@ -2509,6 +2703,7 @@
     DB.onRevert = () => { renderBrand(); render(); };
     renderBrand();
     document.addEventListener('click', (e) => {
+      document.querySelectorAll('details.tools-menu[open]').forEach((d) => { if (!d.contains(e.target) || e.target.closest('[data-action]')) d.open = false; });
       const el = e.target.closest('[data-action]');
       if (!el || !ACTIONS[el.dataset.action]) return;
       e.preventDefault();
@@ -2523,7 +2718,12 @@
       else CHANGES[el.dataset.change](el);
     });
     document.addEventListener('input', (e) => { const el = e.target.closest('[data-input]'); if (el && INPUTS[el.dataset.input]) INPUTS[el.dataset.input](el); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !document.getElementById('modal').hidden) UI.close(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.body.classList.contains('drawer-open')) { ACTIONS.closeDrawer(); return; }
+      if (e.key === 'Escape' && !document.getElementById('modal').hidden) UI.close();
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target || {}).tagName || '');
+      if (((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) || (e.key === '/' && !typing && document.getElementById('modal').hidden)) { e.preventDefault(); openSearch(); }
+    });
     // تلميح الرسوم البيانية
     const tip = document.getElementById('tip');
     // المنحنى الزمني بيدير تلميحه بنفسه (الخط المتتبع)

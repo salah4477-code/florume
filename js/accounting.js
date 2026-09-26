@@ -31,6 +31,7 @@
     { code: '4300', name: 'أرباح فروق العملة', type: 'revenue', other: true },
     { code: '4900', name: 'إيرادات أخرى', type: 'revenue', other: true },
     { code: '4910', name: 'تعويضات شركات الشحن', type: 'revenue', other: true },
+    { code: '4920', name: 'زيادة في جرد الخزينة', type: 'revenue', other: true },
     { code: '5100', name: 'تكلفة البضاعة المباعة', type: 'expense', cogs: true },
     { code: '5200', name: 'مصاريف شحن الطلبات', type: 'expense' },
     { code: '5210', name: 'مصاريف المرتجعات', type: 'expense' },
@@ -42,6 +43,7 @@
     { code: '5800', name: 'عجز وتوالف المخزون', type: 'expense' },
     { code: '5810', name: 'تسترات وعينات وهدايا', type: 'expense' },
     { code: '5820', name: 'خسائر شحنات مفقودة', type: 'expense' },
+    { code: '5830', name: 'عجز في جرد الخزينة', type: 'expense' },
     { code: '5900', name: 'خسائر فروق العملة', type: 'expense', other: true },
     { code: '5950', name: 'اشتراكات وبرامج', type: 'expense' },
     { code: '5990', name: 'مصروفات أخرى', type: 'expense' },
@@ -556,9 +558,26 @@
       ]);
     });
 
+    // جرد الخزينة: الرصيد الفعلي في نهاية اليوم ده. الفرق عن رصيد الدفاتر بيتسجل زيادة أو عجز.
+    // الفرق بيتحسب من المستندات نفسها، فلو سجلت بعدين مصروف قبل الجرد كنت ناسيه، العجز بيقل لوحده.
+    const counts = [...(state.cashCounts || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const cashCounts = {};
+    counts.forEach((cc) => {
+      const code = cashCode(cc.accountId);
+      let book = 0;
+      entries.forEach((e) => { if (e.date <= cc.date) e.lines.forEach((l) => { if (l.acc === code) book += l.dr - l.cr; }); });
+      book = round2(book);
+      const diff = round2(num(cc.actual) - book);
+      cashCounts[cc.id] = { book, diff };
+      if (Math.abs(diff) < EPS) return;
+      add(cc.date, 'cashCount', { type: 'cashCount', id: cc.id }, `جرد ${name('accounts', cc.accountId)} — ${diff > 0 ? 'زيادة' : 'عجز'}${cc.notes ? ' — ' + cc.notes : ''}`, diff > 0
+        ? [{ acc: code, dr: diff, cr: 0 }, { acc: '4920', dr: 0, cr: diff }]
+        : [{ acc: '5830', dr: -diff, cr: 0 }, { acc: code, dr: 0, cr: -diff }]);
+    });
+
     entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     entries.forEach((e, i) => (e.no = i + 1));
-    return { entries, inventory: inv, suppliers: sup };
+    return { entries, inventory: inv, suppliers: sup, cashCounts };
   }
 
   const FORMATION_KINDS = { website: 'الموقع والدومين والاستضافة', design: 'اللوجو والتصميم والتغليف', photos: 'تصوير المنتجات', legal: 'السجل التجاري والتراخيص', equipment: 'أجهزة وأدوات', ads: 'إعلانات قبل الافتتاح', other: 'أخرى' };
@@ -612,7 +631,9 @@
     const opex = COA.filter((a) => a.type === 'expense' && !a.cogs && !a.other).map((a) => ({ code: a.code, name: a.name, amount: bal(a.code) })).filter((r) => Math.abs(r.amount) > EPS);
     const totalOpex = round2(opex.reduce((s, r) => s + r.amount, 0));
     const operatingProfit = round2(grossProfit - totalOpex);
-    const fxGain = bal('4300'), otherIncome = bal('4900'), fxLoss = bal('5900');
+    // الإيرادات الأخرى: كل حسابات الإيراد «الأخرى» ماعدا فروق العملة (إيرادات أخرى، تعويضات الشحن، زيادة الجرد)
+    const fxGain = bal('4300'), fxLoss = bal('5900');
+    const otherIncome = round2(COA.filter((a) => a.type === 'revenue' && a.other && a.code !== '4300').reduce((t, a) => t + bal(a.code), 0));
     const netProfit = round2(operatingProfit + fxGain + otherIncome - fxLoss);
     return { grossSales, discounts, returns, shippingIncome, netSales, cogs, grossProfit, opex, totalOpex, operatingProfit, fxGain, otherIncome, fxLoss, netProfit, grossMargin: netSales ? grossProfit / netSales : 0, netMargin: netSales ? netProfit / netSales : 0 };
   }

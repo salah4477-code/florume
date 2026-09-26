@@ -214,7 +214,9 @@
   }
   function applyRole() {
     document.body.dataset.role = C.role;
-    document.querySelectorAll('.nav a').forEach((a) => (a.hidden = !SYNC.canSeePage(C.role, a.getAttribute('href').slice(1)) || (a.getAttribute('href') === '#audit' && !['owner', 'manager'].includes(C.role))));
+    document.querySelectorAll('.nav a, .bottom-nav a').forEach((a) => (a.hidden = !SYNC.canSeePage(C.role, a.getAttribute('href').slice(1)) || (a.getAttribute('href') === '#audit' && !['owner', 'manager'].includes(C.role))));
+    // قسم في القائمة كل صفحاته مخفية: يختفي هو كمان
+    document.querySelectorAll('.nav-group').forEach((g) => (g.hidden = ![...g.querySelectorAll('a')].some((a) => !a.hidden)));
   }
   async function loadMembers() {
     if (!C.db) return [];

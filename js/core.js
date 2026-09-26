@@ -29,7 +29,7 @@
     suppliers: [], products: [], customers: [], shipments: [], supplierPayments: [],
     sales: [], settlements: [], expenses: [], transfers: [], equity: [], adjustments: [],
     campaigns: [], partners: [], distributions: [], decants: [], reconciliations: [],
-    coupons: [], commissionPayments: [], recurring: [], formation: [],
+    coupons: [], commissionPayments: [], recurring: [], formation: [], cashCounts: [],
   });
 
   // ---------- أدوات ----------
@@ -167,7 +167,8 @@
       }
       if (onOpen) onOpen(form);
       const first = form.querySelector('.modal-body input:not([type=hidden]), .modal-body select, .modal-body textarea');
-      if (first) setTimeout(() => first.focus(), 30);
+      // أول خانة تاخد التركيز، إلا لو المستخدم لحق وكتب في خانة تانية (مانسحبش منه التركيز)
+      if (first) setTimeout(() => { if (!form.contains(document.activeElement)) first.focus(); }, 30);
       return form;
     },
     // لا أرقام سالبة ولا خارج الحدود: نطبق min/max بنفسنا لأن الفورم novalidate
@@ -443,6 +444,13 @@
     if (plan.distributable > 0) s.distributions.push({ id: uid(), date: '2026-08-05', from: '2026-07-01', to: '2026-07-31', retainPct: 20, profit: plan.netProfit, allocations: plan.allocations, notes: 'أرباح يوليو' });
     s.equity.push({ id: uid(), date: '2026-08-10', type: 'drawing', amount: 3000, accountId: bank.id, partnerId: pa.id, notes: 'من أرباح يوليو' });
     s.equity.push({ id: uid(), date: '2026-08-12', type: 'drawing', amount: 2000, accountId: voda.id, partnerId: pb.id, notes: 'من أرباح يوليو' });
+    // أسباب المرتجع (بالترتيب عشان الأرقام التجريبية تفضل ثابتة)
+    const why = ['refused', 'noAnswer', 'address', 'refused', 'damaged', 'changedMind', 'noAnswer', 'late'];
+    s.sales.filter((x) => x.status === 'returned').forEach((x, i) => (x.returnReason = why[i % why.length]));
+    // جرد آخر أغسطس: الخزينة ناقصة 150 (فكة)، وفودافون كاش مظبوط
+    const probe = (acc) => { const k = { id: uid(), date: '2026-08-31', accountId: acc.id, actual: 0 }; return { k, book: Acc.buildJournal({ ...s, cashCounts: [...s.cashCounts, k] }).cashCounts[k.id].book }; };
+    const pc = probe(cash), pv = probe(voda);
+    s.cashCounts.push({ ...pc.k, actual: Acc.round2(pc.book - 150), notes: 'فرق فكة' }, { ...pv.k, actual: pv.book });
     return s;
   }
 

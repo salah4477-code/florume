@@ -124,7 +124,7 @@
     const add = (d) => d && dates.push(d);
     (state.sales || []).forEach((x) => add(x.date));
     (state.shipments || []).forEach((x) => { add(x.orderDate); (x.costs || []).forEach((c) => add(c.date)); });
-    ['supplierPayments', 'expenses', 'transfers', 'settlements', 'equity', 'adjustments', 'decants', 'distributions', 'formation'].forEach((k) => (state[k] || []).forEach((x) => add(x.date)));
+    ['supplierPayments', 'expenses', 'transfers', 'settlements', 'equity', 'adjustments', 'decants', 'distributions', 'formation', 'cashCounts'].forEach((k) => (state[k] || []).forEach((x) => add(x.date)));
     return dates.sort()[0] || '';
   }
 
