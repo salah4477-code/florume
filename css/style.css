@@ -450,7 +450,9 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
   .tb-date span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42vw; display: block; }
   .tb-new { display: none; }
   .topbar { grid-template-columns: minmax(0, 1fr) auto; }
-  .sync-chip { display: none; }
+  .sync-chip:not([data-kind="bad"]) { display: none; }
+  /* على الموبايل المؤشر بيظهر بس لما يكون فيه مشكلة (زي إن النت فاصل)، في سطر لوحده */
+  .sync-chip[data-kind="bad"] { grid-column: 1 / -1; grid-row: 2; white-space: normal; text-align: center; }
   .hero-value { font-size: 2.3rem; }
 }
 

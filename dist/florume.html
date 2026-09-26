@@ -460,7 +460,9 @@ tr.row-bad td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent)
   .tb-date span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42vw; display: block; }
   .tb-new { display: none; }
   .topbar { grid-template-columns: minmax(0, 1fr) auto; }
-  .sync-chip { display: none; }
+  .sync-chip:not([data-kind="bad"]) { display: none; }
+  /* على الموبايل المؤشر بيظهر بس لما يكون فيه مشكلة (زي إن النت فاصل)، في سطر لوحده */
+  .sync-chip[data-kind="bad"] { grid-column: 1 / -1; grid-row: 2; white-space: normal; text-align: center; }
   .hero-value { font-size: 2.3rem; }
 }
 
@@ -3165,6 +3167,45 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     return out;
   }
 
+  // بصمة آخر نسخة متزامنة: لكل سجل رقم صغير بدل نسخته كاملة، عشان تتحفظ على الجهاز من غير ما تاخد مساحة
+  function fingerprint(docs) {
+    const fp = { meta: docs && docs.meta ? hash(docs.meta.settings || '').toString(36) : '' , docs: {} };
+    Object.entries(docs || {}).forEach(([id, d]) => {
+      if (!d || d.kind !== 'list') return;
+      const m = (fp.docs[id] = {});
+      Object.entries(d.items || {}).forEach(([k, v]) => { if (v != null) m[k] = hash(v).toString(36); });
+    });
+    return fp;
+  }
+  // اللي اتغير على الجهاز بعد آخر مزامنة (اتعمل من غير نت ولسه ما اترفعش)
+  function pendingChanges(fp, local) {
+    if (!fp || !fp.docs) return [];
+    const out = [];
+    const ids = new Set([...Object.keys(fp.docs), ...Object.keys(local || {})]);
+    ids.forEach((docId) => {
+      if (docId === 'meta') return;
+      const base = fp.docs[docId] || {}, cur = ((local || {})[docId] || {}).items || {};
+      const changes = {};
+      Object.entries(cur).forEach(([k, v]) => { if (base[k] !== hash(v).toString(36)) changes[k] = v; });
+      Object.keys(base).forEach((k) => { if (!(k in cur)) changes[k] = null; });
+      if (Object.keys(changes).length) out.push({ docId, list: ((local || {})[docId] || {}).list || listOf(docId), changes });
+    });
+    const lm = local && local.meta;
+    if (lm && hash(lm.settings || '').toString(36) !== fp.meta) out.push({ docId: 'meta', meta: lm });
+    return out;
+  }
+  const listOf = (docId) => String(docId).split('.')[0];
+  // تطبيق التغييرات دي على نسخة السحابة (اللي اتعدل على الجهاز يكسب)
+  function applyChanges(docs, changes) {
+    const out = JSON.parse(JSON.stringify(docs || {}));
+    changes.forEach((c) => {
+      if (c.meta) { out.meta = { ...c.meta }; return; }
+      const d = (out[c.docId] = out[c.docId] || { kind: 'list', list: c.list, items: {} });
+      d.items = { ...(d.items || {}), ...c.changes };
+    });
+    return out;
+  }
+
   // وصف تعديل لسجل التعديلات
   const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
   function describe(list, rec, prefix) {
@@ -3195,7 +3236,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   const canWrite = (role) => role !== 'viewer';
   const seesCosts = (role) => role !== 'orders';
 
-  const api = { DATED, LISTS, hash, docIdFor, encode, diff, decode, describe, changesForLog, ROLES, canSeePage, canWrite, seesCosts };
+  const api = { DATED, LISTS, hash, docIdFor, encode, diff, decode, fingerprint, pendingChanges, applyChanges, describe, changesForLog, ROLES, canSeePage, canWrite, seesCosts };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SYNC = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -3886,6 +3927,7 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
   const COL = 'florume';
   const LOCAL_AUDIT = 'florume.audit';
   const LAST_BACKUP = 'florume.lastBackup';
+  const SYNC_BASE = 'florume.syncBase'; // بصمة آخر نسخة اتزامنت: منها بنعرف إيه اللي اتعمل من غير نت ولسه ما اترفعش
   const today = () => F.today();
   const safeGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* لا شيء */ } };
@@ -3939,6 +3981,13 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     return out.sort((a, b) => (a.at < b.at ? 1 : -1));
   }
 
+  // ---------- التعديلات اللي ما اترفعتش ----------
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  function saveBase() { if (C.synced) safeSet(SYNC_BASE, JSON.stringify(SYNC.fingerprint(C.synced))); }
+  function readBase() { try { return JSON.parse(safeGet(SYNC_BASE) || 'null'); } catch (e) { return null; } }
+  // اللي على الجهاز ومش على السحابة، مقارنة بآخر نسخة متزامنة
+  const unsynced = () => (C.readOnly || F.DB.state.demo ? [] : SYNC.diff(C.synced || {}, SYNC.encode(F.DB.state)).filter((c) => c.docId !== 'meta' || c.meta));
+
   // ---------- الحفظ ----------
   // بيتنادي من DB.save: محلي يسجل التعديل، وسحابي يبعت التغييرات بعد لحظة
   function onSave() {
@@ -3979,12 +4028,13 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
         [C.synced, C.remote].forEach((m) => { const cur = (m[d.docId] = m[d.docId] || { kind: 'list', list: d.list, items: {} }); cur.items = { ...cur.items, ...d.changes }; });
       }
       logCloud(log);
+      saveBase();
       setStatus('☁ متزامن', 'ok');
     } catch (e) {
       const code = e && e.code;
       if (code === 'invalid_argument' || code === 'not_granted' || code === 'revoked') { C.readOnly = true; setStatus('عرض بس — التعديلات مش بتتحفظ', 'bad'); F.UI.toast('صلاحيتك عرض بس — التعديل مش هيتحفظ', 'bad'); }
       else if (code === 'quota_exceeded') { setStatus('المساحة السحابية اتملت', 'bad'); F.UI.toast('المساحة السحابية اتملت — كلمنا عشان نقسم البيانات', 'bad'); }
-      else { setStatus('مش متزامن — هيحاول تاني', 'bad'); setTimeout(() => onSave(), 5000); }
+      else { setStatus('مفيش نت — محفوظ على الجهاز وهيترفع لما النت يرجع', 'bad'); setTimeout(() => onSave(), 5000); }
     } finally {
       C.busy = false;
       if (C.again) { C.again = false; flush(); }
@@ -3999,10 +4049,14 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     if (!hasData) return;
     const local = SYNC.encode(F.DB.state);
     if (!SYNC.diff(local, C.remote).length && !F.DB.state.demo) return;
-    F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+    // تعديلات على الجهاز لسه ما اترفعتش (النت كان فاصل): تتحط فوق نسخة السحابة الجديدة بدل ما تضيع
+    const pend = unsynced();
+    F.DB.state = F.migrateState(SYNC.decode(pend.length ? SYNC.applyChanges(C.remote, pend) : C.remote, F.DB.state));
     F.DB._journal = null;
     F.DB.saveLocal();
-    C.synced = JSON.parse(JSON.stringify(C.remote));
+    C.synced = clone(C.remote);
+    saveBase();
+    if (pend.length) onSave();
     if (document.getElementById('modal').hidden) { if (C.onChange) C.onChange(); }
     else C.pendingRender = true;
   }
@@ -4019,7 +4073,13 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     setStatus('بيتصل…', 'busy');
     let snap;
     try { snap = await db.collection(COL).get(); }
-    catch (e) { setStatus('السحابة مش متاحة — شغال على الجهاز', 'bad'); localMode(); return; }
+    catch (e) {
+      // مفيش نت: نشتغل على الجهاز، ونحاول نتصل تاني كل شوية — واللي يتسجل هيترفع أول ما نتصل
+      localMode();
+      setStatus('مفيش نت — بيحفظ على الجهاز وهيترفع لما النت يرجع', 'bad');
+      clearTimeout(C.retry); C.retry = setTimeout(connect, 20000);
+      return;
+    }
     snap.docs.forEach((d) => (C.remote[d.id] = JSON.parse(JSON.stringify(d.data()))));
     C.mode = 'cloud';
     document.body.dataset.mode = 'cloud';
@@ -4027,10 +4087,19 @@ table.hide-c16 tr > :nth-child(16) { display: none; }
     if (cloudHasData) {
       // نحتفظ بنسخة من اللي كان على الجهاز قبل ما السحابة تحل محله
       if (!F.DB.state.demo && !safeGet('florume.preCloud')) safeSet('florume.preCloud', JSON.stringify(F.DB.state));
-      C.synced = JSON.parse(JSON.stringify(C.remote));
-      F.DB.state = F.migrateState(SYNC.decode(C.remote, F.DB.state));
+      // اللي اتسجل على الجهاز ده بعد آخر مزامنة (الصفحة اتقفلت والنت فاصل) يتحط فوق نسخة السحابة
+      const base = readBase();
+      const pend = base && !F.DB.state.demo && !C.readOnly ? SYNC.pendingChanges(base, SYNC.encode(F.DB.state)) : [];
+      C.synced = clone(C.remote);
+      F.DB.state = F.migrateState(SYNC.decode(pend.length ? SYNC.applyChanges(C.remote, pend) : C.remote, F.DB.state));
       F.DB._journal = null; F.DB.saveLocal();
-      setStatus('☁ متزامن', 'ok');
+      saveBase();
+      if (pend.length) {
+        setStatus('بيرفع اللي اتسجل من غير نت…', 'busy');
+        await flush();
+        const n = pend.reduce((a, c) => a + (c.meta ? 1 : Object.keys(c.changes).length), 0);
+        if (C.status === '☁ متزامن') F.UI.toast(`اترفع ${n} تعديل كانوا متسجلين على الجهاز من غير نت ☁`);
+      } else setStatus('☁ متزامن', 'ok');
     } else {
       C.synced = {};
       if (!F.DB.state.demo) {

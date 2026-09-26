@@ -66,6 +66,45 @@
     return out;
   }
 
+  // بصمة آخر نسخة متزامنة: لكل سجل رقم صغير بدل نسخته كاملة، عشان تتحفظ على الجهاز من غير ما تاخد مساحة
+  function fingerprint(docs) {
+    const fp = { meta: docs && docs.meta ? hash(docs.meta.settings || '').toString(36) : '' , docs: {} };
+    Object.entries(docs || {}).forEach(([id, d]) => {
+      if (!d || d.kind !== 'list') return;
+      const m = (fp.docs[id] = {});
+      Object.entries(d.items || {}).forEach(([k, v]) => { if (v != null) m[k] = hash(v).toString(36); });
+    });
+    return fp;
+  }
+  // اللي اتغير على الجهاز بعد آخر مزامنة (اتعمل من غير نت ولسه ما اترفعش)
+  function pendingChanges(fp, local) {
+    if (!fp || !fp.docs) return [];
+    const out = [];
+    const ids = new Set([...Object.keys(fp.docs), ...Object.keys(local || {})]);
+    ids.forEach((docId) => {
+      if (docId === 'meta') return;
+      const base = fp.docs[docId] || {}, cur = ((local || {})[docId] || {}).items || {};
+      const changes = {};
+      Object.entries(cur).forEach(([k, v]) => { if (base[k] !== hash(v).toString(36)) changes[k] = v; });
+      Object.keys(base).forEach((k) => { if (!(k in cur)) changes[k] = null; });
+      if (Object.keys(changes).length) out.push({ docId, list: ((local || {})[docId] || {}).list || listOf(docId), changes });
+    });
+    const lm = local && local.meta;
+    if (lm && hash(lm.settings || '').toString(36) !== fp.meta) out.push({ docId: 'meta', meta: lm });
+    return out;
+  }
+  const listOf = (docId) => String(docId).split('.')[0];
+  // تطبيق التغييرات دي على نسخة السحابة (اللي اتعدل على الجهاز يكسب)
+  function applyChanges(docs, changes) {
+    const out = JSON.parse(JSON.stringify(docs || {}));
+    changes.forEach((c) => {
+      if (c.meta) { out.meta = { ...c.meta }; return; }
+      const d = (out[c.docId] = out[c.docId] || { kind: 'list', list: c.list, items: {} });
+      d.items = { ...(d.items || {}), ...c.changes };
+    });
+    return out;
+  }
+
   // وصف تعديل لسجل التعديلات
   const LIST_LABEL = { sales: 'فاتورة', expenses: 'مصروف', products: 'منتج', customers: 'عميل', shipments: 'شحنة', supplierPayments: 'دفعة مورد', settlements: 'تحصيل شحن', transfers: 'تحويل', equity: 'رأس مال/مسحوبات', adjustments: 'تسوية مخزون', decants: 'تقسيم/بوكس', distributions: 'توزيع أرباح', reconciliations: 'تسوية شركة شحن', coupons: 'كود خصم', commissionPayments: 'سداد عمولة', recurring: 'مصروف ثابت', accounts: 'حساب', couriers: 'شركة شحن', suppliers: 'مورد', campaigns: 'حملة', partners: 'شريك' };
   function describe(list, rec, prefix) {
@@ -96,7 +135,7 @@
   const canWrite = (role) => role !== 'viewer';
   const seesCosts = (role) => role !== 'orders';
 
-  const api = { DATED, LISTS, hash, docIdFor, encode, diff, decode, describe, changesForLog, ROLES, canSeePage, canWrite, seesCosts };
+  const api = { DATED, LISTS, hash, docIdFor, encode, diff, decode, fingerprint, pendingChanges, applyChanges, describe, changesForLog, ROLES, canSeePage, canWrite, seesCosts };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SYNC = api;
 })(typeof window !== 'undefined' ? window : globalThis);

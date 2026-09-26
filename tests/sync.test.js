@@ -85,3 +85,30 @@ test('roles', () => {
   assert.equal(SYNC.canWrite('viewer'), false);
   assert.equal(SYNC.seesCosts('orders'), false);
 });
+
+test('offline edits survive a closed page: pending changes merge onto the newer cloud copy', () => {
+  const SY = require('../js/sync.js');
+  const base = { settings: { businessName: 'F' }, sales: [{ id: 'a', no: 1, date: '2026-09-01', notes: '' }, { id: 'b', no: 2, date: '2026-09-02', notes: '' }], expenses: [{ id: 'e1', date: '2026-09-01', amount: 10 }] };
+  const synced = SY.encode(base);
+  const fp = JSON.parse(JSON.stringify(SY.fingerprint(synced))); // اتحفظت على الجهاز
+  // من غير نت: فاتورة جديدة، تعديل فاتورة، حذف مصروف، وتعديل الإعدادات
+  const local = JSON.parse(JSON.stringify(base));
+  local.sales.push({ id: 'c', no: 3, date: '2026-09-03', notes: 'أوفلاين' });
+  local.sales[0].notes = 'اتعدلت أوفلاين';
+  local.expenses = [];
+  local.settings.businessName = 'Florume';
+  const pend = SY.pendingChanges(fp, SY.encode(local));
+  assert.ok(pend.length >= 3);
+  // في نفس الوقت جهاز تاني ضاف فاتورة d وعدّل b على السحابة
+  const cloudState = JSON.parse(JSON.stringify(base));
+  cloudState.sales.push({ id: 'd', no: 4, date: '2026-09-04', notes: 'من جهاز تاني' });
+  cloudState.sales[1].notes = 'عدلها جهاز تاني';
+  const merged = SY.decode(SY.applyChanges(SY.encode(cloudState), pend), {});
+  const by = Object.fromEntries(merged.sales.map((x) => [x.id, x.notes]));
+  assert.deepEqual(by, { a: 'اتعدلت أوفلاين', b: 'عدلها جهاز تاني', c: 'أوفلاين', d: 'من جهاز تاني' });
+  assert.equal(merged.expenses.length, 0);
+  assert.equal(merged.settings.businessName, 'Florume');
+  // مفيش تغييرات = مفيش حاجة معلقة، ومن غير بصمة = مفيش دمج
+  assert.deepEqual(SY.pendingChanges(SY.fingerprint(synced), synced), []);
+  assert.deepEqual(SY.pendingChanges(null, SY.encode(local)), []);
+});
