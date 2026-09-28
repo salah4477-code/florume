@@ -819,6 +819,27 @@
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- كل المصروفات (اللي بتتسجل بإيدك واللي بتتسجل لوحدها من الفواتير والشحنات وغيرها) ----------
+  // من دفتر اليومية نفسه، فالمجموع لكل بند = اللي في قائمة الدخل بالظبط. خصم الفواتير بيظهر معاهم (بيقلل الإيراد).
+  const EXPENSE_SOURCES = { expense: 'سجلتها بإيدك', sale: 'من فاتورة', saleReturn: 'من مرتجع', shipment: 'من شحنة', supplierPayment: 'من دفعة مورد', transfer: 'من تحويل', settlement: 'من تحصيل شحن', adjustment: 'من تسوية مخزون', decant: 'من تقسيم / بوكس', cashCount: 'من جرد الخزينة', commission: 'من سداد عمولة', equity: 'رأس مال', distribution: 'توزيع أرباح', formation: 'تأسيس', opening: 'افتتاحي' };
+  function allExpenses(state, journal, from, to) {
+    const rows = [];
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      const per = {};
+      e.lines.forEach((l) => {
+        const a = COA_MAP[baseCode(l.acc)];
+        const isDiscount = baseCode(l.acc) === '4110';
+        if (!isDiscount && !(a && a.type === 'expense' && !a.cogs)) return;
+        per[baseCode(l.acc)] = (per[baseCode(l.acc)] || 0) + num(l.dr) - num(l.cr);
+      });
+      Object.entries(per).forEach(([acc, amount]) => {
+        if (Math.abs(amount) < EPS) return;
+        rows.push({ date: e.date, acc, name: acc === '4110' ? 'خصومات الفواتير' : COA_MAP[acc].name, amount: round2(amount), desc: e.desc, source: e.source, ref: e.ref, kind: acc === '4110' ? 'discount' : COA_MAP[acc].other ? 'other' : 'opex' });
+      });
+    });
+    return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }
   // ---------- رأس مال التأسيس ----------
   // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
   function foundingCapital(state, journal, asOf) {
@@ -874,7 +895,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

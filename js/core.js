@@ -197,6 +197,63 @@
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
     },
+    // قايمة اختيار بالبحث: بتتحط فوق <select> عادي (بيفضل موجود ومخفي) فكل الكود اللي بيقرا قيمته شغال زي ما هو
+    combo(select, { items, placeholder = 'اكتب للبحث…', newItem, limit = 40 }) {
+      if (select._combo) return select._combo;
+      const norm = (t) => String(t == null ? '' : t).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').trim();
+      const wrap = document.createElement('div');
+      wrap.className = 'combo';
+      wrap.innerHTML = `<input type="search" class="combo-input" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" placeholder="${esc(placeholder)}"${select.getAttribute('aria-label') ? ` aria-label="${esc(select.getAttribute('aria-label'))}"` : ''}><ul class="combo-list" role="listbox" hidden></ul>`;
+      select.parentNode.insertBefore(wrap, select);
+      wrap.appendChild(select);
+      select.classList.add('combo-native'); select.tabIndex = -1; select.setAttribute('aria-hidden', 'true');
+      const input = wrap.querySelector('input'), list = wrap.querySelector('ul');
+      let shown = [], active = 0;
+      const labelOf = (v) => { const it = items().find((x) => String(x.v) === String(v)); return it ? it.label : ''; };
+      const sync = () => { if (document.activeElement !== input) input.value = labelOf(select.value); };
+      // لو الكود غيّر القيمة مباشرة (زي قارئ الباركود) الخانة تتحدث
+      const proto = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+      Object.defineProperty(select, 'value', { configurable: true, get() { return proto.get.call(this); }, set(v) { proto.set.call(this, v); input.value = labelOf(v); } });
+      select.addEventListener('change', sync);
+      const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); };
+      const pick = (it) => {
+        if (!it) return;
+        close();
+        if (it.run) { it.run(input.value); return; }
+        proto.set.call(select, it.v); input.value = it.label;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const paint = () => {
+        const q = norm(input.value);
+        const all = items().filter((it) => it.v !== '' && !it.hidden);
+        const words = q.split(' ').filter(Boolean);
+        shown = (q && q !== norm(labelOf(select.value)) ? all.filter((it) => { const hay = norm([it.label, it.sub, ...(it.keys || [])].join(' ')); return words.every((w) => hay.includes(w)); }) : all).slice(0, limit);
+        if (newItem && q) { const n = newItem(input.value, shown.length); if (n) shown.push({ ...n, isNew: true }); }
+        active = Math.min(active, Math.max(0, shown.length - 1));
+        list.innerHTML = shown.length ? shown.map((it, i) => `<li role="option" class="${i === active ? 'active' : ''}${it.isNew ? ' is-new' : ''}" data-i="${i}" aria-selected="${i === active}"><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</li>`).join('') : '<li class="combo-empty">مفيش نتايج</li>';
+        // القايمة بتطفو فوق كل حاجة (الجدول جوه صندوق بيتحرك بالعرض وممكن يقصها)
+        const r = input.getBoundingClientRect(), w = Math.max(r.width, Math.min(320, innerWidth - 24));
+        const below = innerHeight - r.bottom, up = below < 220 && r.top > below;
+        Object.assign(list.style, { position: 'fixed', width: `${w}px`, right: `${Math.max(8, innerWidth - r.right)}px`, left: 'auto', top: up ? 'auto' : `${r.bottom + 4}px`, bottom: up ? `${innerHeight - r.top + 4}px` : 'auto', maxHeight: `${Math.max(160, Math.min(300, (up ? r.top : below) - 16))}px` });
+        list.hidden = false; input.setAttribute('aria-expanded', 'true');
+      };
+      // لو الصفحة أو النافذة اتحركت، القايمة تتقفل بدل ما تفضل في مكان غلط
+      const onScroll = (e) => { if (!document.contains(list)) { document.removeEventListener('scroll', onScroll, true); return; } if (!list.hidden && !list.contains(e.target)) close(); };
+      document.addEventListener('scroll', onScroll, true);
+      input.addEventListener('focus', () => { input.select(); active = 0; paint(); });
+      input.addEventListener('input', () => { active = 0; paint(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (list.hidden) paint(); active = (active + (e.key === 'ArrowDown' ? 1 : -1) + shown.length) % Math.max(1, shown.length); list.querySelectorAll('li[data-i]').forEach((li) => { const on = +li.dataset.i === active; li.classList.toggle('active', on); li.setAttribute('aria-selected', on); if (on) li.scrollIntoView({ block: 'nearest' }); }); }
+        else if (e.key === 'Enter') { if (!list.hidden && shown[active]) { e.preventDefault(); pick(shown[active]); } }
+        else if (e.key === 'Escape') { if (!list.hidden) { e.stopPropagation(); e.preventDefault(); close(); input.value = labelOf(select.value); } }
+        else if (e.key === 'Tab') close();
+      });
+      list.addEventListener('mousedown', (e) => { const li = e.target.closest('li[data-i]'); if (li) { e.preventDefault(); pick(shown[+li.dataset.i]); } });
+      input.addEventListener('blur', () => setTimeout(() => { close(); input.value = labelOf(select.value); }, 120));
+      sync();
+      select._combo = { input, sync, close };
+      return select._combo;
+    },
     // على الموبايل الجداول بتتعرض كروت: كل خانة بتاخد اسم عمودها، وأول خانة عنوان الكارت
     labelTables(root) {
       (root || document).querySelectorAll('table.data-table').forEach((t) => {

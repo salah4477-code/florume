@@ -724,3 +724,18 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
   table.data-table tfoot td.serial { display: none; }
 }
 @media print { .row-sel, .sel-all, .bulk-bar { display: none !important; } }
+
+/* ---------- قايمة اختيار بالبحث (المنتج والعميل في الفاتورة) ---------- */
+.combo { position: relative; min-width: 0; }
+.combo-native { position: absolute !important; width: 1px !important; height: 1px !important; opacity: 0; pointer-events: none; overflow: hidden; clip: rect(0 0 0 0); }
+.combo-input { width: 100%; }
+.combo-list { position: fixed; z-index: 80; max-height: 280px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); min-width: min(320px, 90vw); }
+.combo-list li { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
+.combo-list li b { font-weight: 600; }
+.combo-list li small { color: var(--muted); font-size: .78rem; }
+.combo-list li.active, .combo-list li:hover { background: var(--accent-soft); }
+.combo-list li.is-new b { color: var(--accent-strong); }
+.combo-list .combo-empty { color: var(--muted); cursor: default; }
+.phone-hint { display: block; color: var(--warn); font-weight: 600; }
+table.lines .combo-list { min-width: 300px; }
+tr.auto-row td { color: var(--ink-2); }

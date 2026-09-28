@@ -735,6 +735,21 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
 }
 @media print { .row-sel, .sel-all, .bulk-bar { display: none !important; } }
 
+/* ---------- قايمة اختيار بالبحث (المنتج والعميل في الفاتورة) ---------- */
+.combo { position: relative; min-width: 0; }
+.combo-native { position: absolute !important; width: 1px !important; height: 1px !important; opacity: 0; pointer-events: none; overflow: hidden; clip: rect(0 0 0 0); }
+.combo-input { width: 100%; }
+.combo-list { position: fixed; z-index: 80; max-height: 280px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); min-width: min(320px, 90vw); }
+.combo-list li { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
+.combo-list li b { font-weight: 600; }
+.combo-list li small { color: var(--muted); font-size: .78rem; }
+.combo-list li.active, .combo-list li:hover { background: var(--accent-soft); }
+.combo-list li.is-new b { color: var(--accent-strong); }
+.combo-list .combo-empty { color: var(--muted); cursor: default; }
+.phone-hint { display: block; color: var(--warn); font-weight: 600; }
+table.lines .combo-list { min-width: 300px; }
+tr.auto-row td { color: var(--ink-2); }
+
 </style>
 </head>
 <body>
@@ -1631,6 +1646,27 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- كل المصروفات (اللي بتتسجل بإيدك واللي بتتسجل لوحدها من الفواتير والشحنات وغيرها) ----------
+  // من دفتر اليومية نفسه، فالمجموع لكل بند = اللي في قائمة الدخل بالظبط. خصم الفواتير بيظهر معاهم (بيقلل الإيراد).
+  const EXPENSE_SOURCES = { expense: 'سجلتها بإيدك', sale: 'من فاتورة', saleReturn: 'من مرتجع', shipment: 'من شحنة', supplierPayment: 'من دفعة مورد', transfer: 'من تحويل', settlement: 'من تحصيل شحن', adjustment: 'من تسوية مخزون', decant: 'من تقسيم / بوكس', cashCount: 'من جرد الخزينة', commission: 'من سداد عمولة', equity: 'رأس مال', distribution: 'توزيع أرباح', formation: 'تأسيس', opening: 'افتتاحي' };
+  function allExpenses(state, journal, from, to) {
+    const rows = [];
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      const per = {};
+      e.lines.forEach((l) => {
+        const a = COA_MAP[baseCode(l.acc)];
+        const isDiscount = baseCode(l.acc) === '4110';
+        if (!isDiscount && !(a && a.type === 'expense' && !a.cogs)) return;
+        per[baseCode(l.acc)] = (per[baseCode(l.acc)] || 0) + num(l.dr) - num(l.cr);
+      });
+      Object.entries(per).forEach(([acc, amount]) => {
+        if (Math.abs(amount) < EPS) return;
+        rows.push({ date: e.date, acc, name: acc === '4110' ? 'خصومات الفواتير' : COA_MAP[acc].name, amount: round2(amount), desc: e.desc, source: e.source, ref: e.ref, kind: acc === '4110' ? 'discount' : COA_MAP[acc].other ? 'other' : 'opex' });
+      });
+    });
+    return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }
   // ---------- رأس مال التأسيس ----------
   // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
   function foundingCapital(state, journal, asOf) {
@@ -1686,7 +1722,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
@@ -4047,6 +4083,63 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       UI.modal({ title: 'تأكيد', body: `<p class="confirm-text">${message}</p>`, footer: `<button class="btn btn-danger" type="button" id="confirm-yes">${yes}</button><button class="btn" type="button" data-close>تراجع</button>`,
         onOpen: (f) => f.querySelector('#confirm-yes').addEventListener('click', () => { UI.close(); onYes(); }) });
     },
+    // قايمة اختيار بالبحث: بتتحط فوق <select> عادي (بيفضل موجود ومخفي) فكل الكود اللي بيقرا قيمته شغال زي ما هو
+    combo(select, { items, placeholder = 'اكتب للبحث…', newItem, limit = 40 }) {
+      if (select._combo) return select._combo;
+      const norm = (t) => String(t == null ? '' : t).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').trim();
+      const wrap = document.createElement('div');
+      wrap.className = 'combo';
+      wrap.innerHTML = `<input type="search" class="combo-input" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" placeholder="${esc(placeholder)}"${select.getAttribute('aria-label') ? ` aria-label="${esc(select.getAttribute('aria-label'))}"` : ''}><ul class="combo-list" role="listbox" hidden></ul>`;
+      select.parentNode.insertBefore(wrap, select);
+      wrap.appendChild(select);
+      select.classList.add('combo-native'); select.tabIndex = -1; select.setAttribute('aria-hidden', 'true');
+      const input = wrap.querySelector('input'), list = wrap.querySelector('ul');
+      let shown = [], active = 0;
+      const labelOf = (v) => { const it = items().find((x) => String(x.v) === String(v)); return it ? it.label : ''; };
+      const sync = () => { if (document.activeElement !== input) input.value = labelOf(select.value); };
+      // لو الكود غيّر القيمة مباشرة (زي قارئ الباركود) الخانة تتحدث
+      const proto = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+      Object.defineProperty(select, 'value', { configurable: true, get() { return proto.get.call(this); }, set(v) { proto.set.call(this, v); input.value = labelOf(v); } });
+      select.addEventListener('change', sync);
+      const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); };
+      const pick = (it) => {
+        if (!it) return;
+        close();
+        if (it.run) { it.run(input.value); return; }
+        proto.set.call(select, it.v); input.value = it.label;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const paint = () => {
+        const q = norm(input.value);
+        const all = items().filter((it) => it.v !== '' && !it.hidden);
+        const words = q.split(' ').filter(Boolean);
+        shown = (q && q !== norm(labelOf(select.value)) ? all.filter((it) => { const hay = norm([it.label, it.sub, ...(it.keys || [])].join(' ')); return words.every((w) => hay.includes(w)); }) : all).slice(0, limit);
+        if (newItem && q) { const n = newItem(input.value, shown.length); if (n) shown.push({ ...n, isNew: true }); }
+        active = Math.min(active, Math.max(0, shown.length - 1));
+        list.innerHTML = shown.length ? shown.map((it, i) => `<li role="option" class="${i === active ? 'active' : ''}${it.isNew ? ' is-new' : ''}" data-i="${i}" aria-selected="${i === active}"><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</li>`).join('') : '<li class="combo-empty">مفيش نتايج</li>';
+        // القايمة بتطفو فوق كل حاجة (الجدول جوه صندوق بيتحرك بالعرض وممكن يقصها)
+        const r = input.getBoundingClientRect(), w = Math.max(r.width, Math.min(320, innerWidth - 24));
+        const below = innerHeight - r.bottom, up = below < 220 && r.top > below;
+        Object.assign(list.style, { position: 'fixed', width: `${w}px`, right: `${Math.max(8, innerWidth - r.right)}px`, left: 'auto', top: up ? 'auto' : `${r.bottom + 4}px`, bottom: up ? `${innerHeight - r.top + 4}px` : 'auto', maxHeight: `${Math.max(160, Math.min(300, (up ? r.top : below) - 16))}px` });
+        list.hidden = false; input.setAttribute('aria-expanded', 'true');
+      };
+      // لو الصفحة أو النافذة اتحركت، القايمة تتقفل بدل ما تفضل في مكان غلط
+      const onScroll = (e) => { if (!document.contains(list)) { document.removeEventListener('scroll', onScroll, true); return; } if (!list.hidden && !list.contains(e.target)) close(); };
+      document.addEventListener('scroll', onScroll, true);
+      input.addEventListener('focus', () => { input.select(); active = 0; paint(); });
+      input.addEventListener('input', () => { active = 0; paint(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (list.hidden) paint(); active = (active + (e.key === 'ArrowDown' ? 1 : -1) + shown.length) % Math.max(1, shown.length); list.querySelectorAll('li[data-i]').forEach((li) => { const on = +li.dataset.i === active; li.classList.toggle('active', on); li.setAttribute('aria-selected', on); if (on) li.scrollIntoView({ block: 'nearest' }); }); }
+        else if (e.key === 'Enter') { if (!list.hidden && shown[active]) { e.preventDefault(); pick(shown[active]); } }
+        else if (e.key === 'Escape') { if (!list.hidden) { e.stopPropagation(); e.preventDefault(); close(); input.value = labelOf(select.value); } }
+        else if (e.key === 'Tab') close();
+      });
+      list.addEventListener('mousedown', (e) => { const li = e.target.closest('li[data-i]'); if (li) { e.preventDefault(); pick(shown[+li.dataset.i]); } });
+      input.addEventListener('blur', () => setTimeout(() => { close(); input.value = labelOf(select.value); }, 120));
+      sync();
+      select._combo = { input, sync, close };
+      return select._combo;
+    },
     // على الموبايل الجداول بتتعرض كروت: كل خانة بتاخد اسم عمودها، وأول خانة عنوان الكارت
     labelTables(root) {
       (root || document).querySelectorAll('table.data-table').forEach((t) => {
@@ -4671,7 +4764,8 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
   // كل جدول أول عمود فيه رقم مسلسل (م)، وجنبه خانة تحديد لو السطر ينفع يتحذف
   const table = (head0, rows, opts = {}) => {
     const head = ['م', ...head0];
-    const body = rows.map((r, i) => r.replace(/^(\s*<tr[^>]*>)/, `$1<td class="serial">${i + 1}</td>`)).join('');
+    // الجداول المرتبة من الأحدث (desc): المسلسل بيعد من تحت، فأقدم حاجة 1 وآخر حاجة اتسجلت أكبر رقم
+    const body = rows.map((r, i) => r.replace(/^(\s*<tr[^>]*>)/, `$1<td class="serial">${opts.desc ? rows.length - i : i + 1}</td>`)).join('');
     const foot = opts.foot ? opts.foot.replace(/<tr([^>]*)>/g, '<tr$1><td class="serial"></td>') : '';
     return `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h, i) => `<th${i === 0 ? ' class="serial"' : /^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${body || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table></div>`;
   };
@@ -4912,11 +5006,43 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
         ${UI.select('fchannel', { '': 'كل القنوات', ...CHANNELS }, saleFilter.channel, 'data-change="saleChannelFilter" aria-label="القناة"')}
       </div>
       ${table(['الفاتورة', 'التاريخ', 'العميل', 'القناة', '#الإجمالي', '#التكلفة', '#الربح', 'الدفع', 'الحالة', ''], rows, {
-        empty: 'لا توجد طلبات في هذه الفترة',
+        desc: true, empty: 'لا توجد طلبات في هذه الفترة',
         foot: rows.length ? `<tr><td colspan="4">إجمالي البيع (${rows.length - tot.promoCount} طلب)</td>${tdn(fmt(tot.total))}${tdn(fmt(tot.cogs))}${tdn(fmt(tot.profit))}<td colspan="3"></td></tr>${tot.promoCount ? `<tr><td colspan="4">فواتير دعاية (${tot.promoCount}) — محملة على مصروف الإعلانات</td><td></td><td></td>${tdn(fmt(tot.promo))}<td colspan="3"></td></tr>` : ''}` : '',
       })}`;
   }
 
+  // ---------- البحث جوه فاتورة البيع ----------
+  const digitsOf = (t) => IMP.latinDigits(String(t || '')).replace(/\D/g, '');
+  function productCombo(sel) {
+    return UI.combo(sel, { placeholder: 'ابحث باسم المنتج أو الماركة أو الكود…', items: () => S().products.map((p) => { const st = J().inventory.products[p.id] || {}; return { v: p.id, label: productLabel(p), sub: `${p.sku ? p.sku + ' · ' : ''}متاح ${fmt(st.available || 0)} · ${fmt(p.price)} ج.م`, keys: [p.sku, p.barcode, p.brand, p.name] }; }) });
+  }
+  const comboLines = (root) => root.querySelectorAll('select.l-product').forEach(productCombo);
+  function customerCombo(f) {
+    const sel = f.customerId;
+    const risk = (c) => { const r = OPS.customerRisk(S(), c.id); return `${r.orders ? `${r.orders} طلب` : 'مفيش طلبات'}${r.refused ? ` · رفض ${r.refused}` : ''}`; };
+    UI.combo(sel, {
+      placeholder: 'ابحث باسم العميل أو رقم الموبايل…',
+      items: () => [{ v: '__new', label: '+ عميل جديد', sub: 'مش موجود؟ اكتب اسمه أو رقمه وضيفه', hidden: false }, ...S().customers.map((c) => ({ v: c.id, label: c.name, sub: [c.phone, c.city, risk(c)].filter(Boolean).join(' · '), keys: [c.phone, digitsOf(c.phone), OPS.phoneKey(c.phone)] }))],
+      newItem: (text, found) => ({ label: found ? `+ عميل جديد باسم «${text.trim()}»` : `+ مش موجود — ضيف «${text.trim()}» عميل جديد`, sub: /^\+?[\d\s٠-٩-]{6,}$/.test(text.trim()) ? 'هيتحط في خانة الموبايل' : 'هيتحط في خانة الاسم', run: (t) => {
+        sel._combo.input.value = '+ عميل جديد';
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, '__new');
+        const digits = /^\+?[\d\s٠-٩-]{6,}$/.test(t.trim());
+        if (digits) f.cPhone.value = IMP.latinDigits(t.trim()); else f.cName.value = t.trim();
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        setTimeout(() => (digits ? f.cName : f.cPhone).focus(), 30);
+      } }),
+    });
+    // رقم موبايل متسجل قبل كده في خانة العميل الجديد: نقول ونعرض نختاره
+    const hint = f.querySelector('#phone-hint');
+    const check = () => {
+      const k = OPS.phoneKey(f.cPhone.value);
+      const c = k && S().customers.find((x) => OPS.phoneKey(x.phone) === k);
+      hint.hidden = !c;
+      if (c) hint.innerHTML = `الرقم ده متسجل باسم <b>${esc(c.name)}</b>${c.city ? ` (${esc(c.city)})` : ''}. <button type="button" class="link-btn" id="use-existing">اختاره بدل ما تضيفه تاني</button>`;
+      const b = hint.querySelector('#use-existing'); if (b) b.addEventListener('click', () => { sel.value = c.id; sel.dispatchEvent(new Event('change', { bubbles: true })); hint.hidden = true; });
+    };
+    f.cPhone.addEventListener('input', check);
+  }
   function saleLineRow(it = {}) {
     const st = it.productId ? J().inventory.products[it.productId] : null;
     return `<tr class="line">
@@ -4977,7 +5103,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       <p class="promo-note" hidden>فاتورة الدعاية تُخرج القطع من المخزون بتكلفتها، ولا تُحسب مبيعات. التكلفة ومصاريف شحنها تروح على <b>مصروف الإعلانات والتسويق</b>${s.campaigns.length ? ' (ولو ربطتها بحملة تدخل في إنفاق الحملة)' : ''}.</p>
       <div class="form-grid new-customer" hidden>
         ${UI.field('اسم العميل', UI.input('cName', ''), { req: true })}
-        ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'))}
+        ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'), { hint: '<span id="phone-hint" class="phone-hint" hidden></span>' })}
         ${UI.field('المحافظة', UI.select('cCity', govOptions(), ''))}
         ${UI.field('العنوان', UI.input('cAddress', ''))}
       </div>
@@ -5013,6 +5139,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       title: isNew ? (isPromo(sale) ? 'فاتورة دعاية جديدة' : 'طلب جديد') : `تعديل ${isPromo(sale) ? 'فاتورة الدعاية' : 'الطلب'} ${esc(invoiceNo(sale))}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines');
+        comboLines(lines); customerCombo(f);
         const promoMode = () => f.kind.value === 'promo';
         const recalc = () => {
           const promo = promoMode();
@@ -5059,7 +5186,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
           if (same) { const q = same.querySelector('.l-qty'); q.value = num(q.value) + 1; }
           else {
             let row = rows.find((r) => !r.querySelector('.l-product').value);
-            if (!row) { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); row = lines.lastElementChild; }
+            if (!row) { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); row = lines.lastElementChild; comboLines(row); }
             row.querySelector('.l-product').value = p.id;
             row.querySelector('.l-price').value = p.price || '';
           }
@@ -5067,7 +5194,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
           UI.toast(`+1 ${productLabel(p)}`);
         };
         attachScanner(f, (code) => { const p = OPS.findByCode(S().products, code); if (p) addProduct(p); else UI.toast(`مفيش منتج بالكود «${code}»`, 'bad'); });
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
+        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); comboLines(lines.lastElementChild); recalc(); const inp = lines.lastElementChild.querySelector('.combo-input'); if (inp) inp.focus(); });
         lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
         lines.addEventListener('change', (e) => {
           if (e.target.classList.contains('l-product')) { const p = productById(e.target.value); const pr = e.target.closest('tr').querySelector('.l-price'); if (p && !num(pr.value)) pr.value = p.price || ''; }
@@ -5302,6 +5429,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
         <div class="summary" id="ret-sum"></div>`,
       onOpen(f) {
         const lines = f.querySelector('#lines');
+        comboLines(lines);
         const t = Acc.saleTotals(sale), factor = t.gross ? t.net / t.gross : 1;
         const recalc = () => {
           const value = [...f.querySelectorAll('.r-qty')].reduce((a, i) => a + num(i.value) * num(sale.items[i.dataset.line].price) * factor, 0);
@@ -5311,7 +5439,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
           f.querySelector('#ex-box').hidden = !exchange;
           f.querySelector('#ret-sum').innerHTML = `<div class="strong"><span>قيمة المرتجع</span><b>${fmt(value)} ج.م</b></div>${exchange ? `<div><span>قيمة البديل</span><b>${fmt(ex)}</b></div><div class="strong"><span>${ex - value >= 0 ? 'العميل يدفع فرق' : 'نرجّع للعميل فرق'}</span><b>${fmt(Math.abs(ex - value))} ج.م</b></div>` : `<div><span>${prepaid ? 'هيترجع للعميل' : 'المندوب هيحصّل أقل بـ'}</span><b>${fmt(value)}</b></div>`}`;
         };
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
+        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); comboLines(lines.lastElementChild); recalc(); const inp = lines.lastElementChild.querySelector('.combo-input'); if (inp) inp.focus(); });
         lines.addEventListener('change', (e) => { if (e.target.classList.contains('l-product')) { const p = productById(e.target.value); const pr0 = e.target.closest('tr').querySelector('.l-price'); if (p && !num(pr0.value)) pr0.value = p.price || ''; } recalc(); });
         lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
         f.addEventListener('input', recalc); f.addEventListener('change', recalc);
@@ -5357,7 +5485,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
         ${actions(sh.status !== 'received' && sh.status !== 'cancelled' ? btn('استلام', 'receiveShipment', sh.id) : '', btn('تكلفة الوحدة', 'landedShipment', sh.id), btn('حذف', 'delShipment', sh.id, 'danger'))}</tr>`;
     });
     return `${header('شحنات الاستيراد', 'سعر الصرف ومصاريف الشحن والجمارك تتوزع على الأصناف بنسبة قيمتها لتعطيك تكلفة الوحدة الحقيقية بالجنيه.', '<button class="btn btn-primary" data-action="newShipment">+ شحنة جديدة</button>')}
-      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { empty: 'لم تسجل أي شحنة بعد. ابدأ بإضافة مورد ثم شحنة.' })}`;
+      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { desc: true, empty: 'لم تسجل أي شحنة بعد. ابدأ بإضافة مورد ثم شحنة.' })}`;
   }
 
   function shipLineRow(it = {}) {
@@ -5490,9 +5618,9 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       <section class="kpis kpis-3">${kpi('قيمة المخزون بالتكلفة', money0(totals.value))}${kpi('قيمته بسعر البيع', money0(totals.retail))}${kpi('ربح متوقع في المخزون', money0(totals.retail - totals.value), totals.retail ? `هامش ${pct((totals.retail - totals.value) / totals.retail)}` : '')}</section>
       ${table(['الكود', 'المنتج', 'الحجم', 'الفئة', '#سعر البيع', '#الرصيد', '#محجوز', '#متاح', '#متوسط التكلفة', '#قيمة المخزون', '#الهامش', 'الحالة', ''], rows, { empty: 'لا توجد منتجات بعد' })}
       <h2 class="section-title">تسويات المخزون (افتتاحي، تالف، تسترات، هدايا، فروق جرد)</h2>
-      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { empty: 'لا توجد تسويات' })}
+      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { desc: true, empty: 'لا توجد تسويات' })}
       <h2 class="section-title">تقسيم العبوات (ديكانت) وفك البوكسات</h2>
-      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { empty: 'لم تقسم أي عبوة بعد' })}`;
+      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { desc: true, empty: 'لم تقسم أي عبوة بعد' })}`;
   }
 
   function productForm(p) {
@@ -5582,7 +5710,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
     return `${header('الموردين', 'رصيد كل مورد يُتابع بعملته (ريال / درهم)، وفروق سعر الصرف بين وقت الشراء ووقت الدفع تُسجَّل تلقائيًا كربح أو خسارة.', '<button class="btn" data-action="newPayment">دفعة لمورد</button><button class="btn btn-primary" data-action="newSupplier">+ مورد جديد</button>')}
       ${table(['المورد', 'الدولة', 'العملة', 'الهاتف', '#الرصيد بالعملة', '#الرصيد الدفتري (ج.م)', 'الحالة', ''], rows, { empty: 'لا يوجد موردون بعد' })}
       <h2 class="section-title">الدفعات للموردين</h2>
-      ${table(['التاريخ', 'المورد', '#المبلغ', '#سعر الصرف', '#بالجنيه', '#عمولة التحويل', 'من حساب', '#فرق العملة', 'ملاحظات', ''], pays, { empty: 'لا توجد دفعات' })}`;
+      ${table(['التاريخ', 'المورد', '#المبلغ', '#سعر الصرف', '#بالجنيه', '#عمولة التحويل', 'من حساب', '#فرق العملة', 'ملاحظات', ''], pays, { desc: true, empty: 'لا توجد دفعات' })}`;
   }
 
   function supplierForm(x) {
@@ -5710,7 +5838,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       })}
       ${cashCountSection()}
       <h2 class="section-title">التحويلات والتحصيلات ورأس المال</h2>
-      ${table(['التاريخ', 'النوع', 'البيان', '#المبلغ', 'ملاحظات', ''], docs.map((d) => `<tr>${td(fmtDate(d.date))}${td(d.kind)}${td(esc(d.desc))}${tdn(fmt(Math.abs(d.amount)))}${td(esc(d.extra))}${actions(btn('تعديل', 'editDoc', `${d.list}:${d.id}`), btn('حذف', 'delDoc', `${d.list}:${d.id}`, 'danger'))}</tr>`), { empty: 'لا توجد مستندات في هذه الفترة' })}`;
+      ${table(['التاريخ', 'النوع', 'البيان', '#المبلغ', 'ملاحظات', ''], docs.map((d) => `<tr>${td(fmtDate(d.date))}${td(d.kind)}${td(esc(d.desc))}${tdn(fmt(Math.abs(d.amount)))}${td(esc(d.extra))}${actions(btn('تعديل', 'editDoc', `${d.list}:${d.id}`), btn('حذف', 'delDoc', `${d.list}:${d.id}`, 'danger'))}</tr>`), { desc: true, empty: 'لا توجد مستندات في هذه الفترة' })}`;
   }
 
   // ---------- جرد الخزينة ----------
@@ -5718,7 +5846,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
     const s = S(), j = J();
     const list = [...s.cashCounts].sort((a, b) => (a.date < b.date ? 1 : -1));
     if (!list.length) return `<section class="panel count-hint"><h2 class="section-title">جرد الخزينة</h2><p class="muted">مرة في الشهر افتح البنك وفودافون كاش وعدّ الكاش، واكتب الرصيد الحقيقي. السيستم بيقارنه بالرصيد اللي عنده، ولو فيه فرق بيسجله زيادة أو عجز عشان الأرصدة تفضل مظبوطة.</p><button class="btn btn-primary btn-small" data-action="newCashCount" data-id="${treasuryAcc || ''}">أول جرد</button></section>`;
-    return `<h2 class="section-title">جرد الخزينة</h2>${table(['التاريخ', 'الحساب', '#رصيد السيستم', '#الرصيد الحقيقي', '#الفرق', 'ملاحظات', ''], list.map((k) => { const r = j.cashCounts[k.id] || { book: 0, diff: 0 }; return `<tr>${td(fmtDate(k.date))}${td(esc(nameOf('accounts', k.accountId)))}${tdn(fmt(r.book))}${tdn(fmt(k.actual))}${tdn(Math.abs(r.diff) < 0.005 ? UI.pill('مظبوط', 'good') : UI.pill(`${r.diff > 0 ? 'زيادة' : 'عجز'} ${fmt(Math.abs(r.diff))}`, r.diff > 0 ? 'info' : 'bad'))}${td(esc(k.notes || ''))}${actions(btn('تعديل', 'editCashCount', k.id), btn('حذف', 'delCashCount', k.id, 'danger'))}</tr>`; }))}`;
+    return `<h2 class="section-title">جرد الخزينة</h2>${table(['التاريخ', 'الحساب', '#رصيد السيستم', '#الرصيد الحقيقي', '#الفرق', 'ملاحظات', ''], list.map((k) => { const r = j.cashCounts[k.id] || { book: 0, diff: 0 }; return `<tr>${td(fmtDate(k.date))}${td(esc(nameOf('accounts', k.accountId)))}${tdn(fmt(r.book))}${tdn(fmt(k.actual))}${tdn(Math.abs(r.diff) < 0.005 ? UI.pill('مظبوط', 'good') : UI.pill(`${r.diff > 0 ? 'زيادة' : 'عجز'} ${fmt(Math.abs(r.diff))}`, r.diff > 0 ? 'info' : 'bad'))}${td(esc(k.notes || ''))}${actions(btn('تعديل', 'editCashCount', k.id), btn('حذف', 'delCashCount', k.id, 'danger'))}</tr>`; }), { desc: true })}`;
   }
   function cashCountForm(k, accountId) {
     const s = S(); const isNew = !k;
@@ -5794,25 +5922,44 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
   // =====================================================================
   // المصروفات
   // =====================================================================
+  // كل المصروفات: اللي بتسجلها بإيدك + اللي بتتسجل لوحدها من الفواتير والشحنات والتحويلات والجرد… (من دفتر اليومية)
+  const expFilter = { src: '', acc: '' };
+  const SRC_GROUPS = { expense: 'سجلتها بإيدك', sale: 'من الفواتير والمرتجعات', stock: 'من الشحنات والمخزون', money: 'من الخزينة والموردين' };
+  const srcGroup = (src) => (src === 'expense' ? 'expense' : src === 'sale' || src === 'saleReturn' ? 'sale' : ['shipment', 'adjustment', 'decant'].includes(src) ? 'stock' : 'money');
   function expenses() {
     const s = S();
-    const list = s.expenses.filter((e) => inPeriod(e.date)).sort((a, b) => (a.date < b.date ? 1 : -1));
-    const byCat = {};
-    list.forEach((e) => (byCat[e.category] = (byCat[e.category] || 0) + num(e.amount)));
-    const total = list.reduce((a, e) => a + num(e.amount), 0);
-    const max = Math.max(1, ...Object.values(byCat));
+    const all = Acc.allExpenses(s, J(), period.from, period.to);
+    const opex = all.filter((r) => r.kind === 'opex'), disc = all.filter((r) => r.kind === 'discount'), other = all.filter((r) => r.kind === 'other');
+    const sum = (rows) => Acc.round2(rows.reduce((t, r) => t + r.amount, 0));
+    const byName = {};
+    all.forEach((r) => (byName[r.name] = (byName[r.name] || 0) + r.amount));
+    const max = Math.max(1, ...Object.values(byName));
+    const list = all.filter((r) => (!expFilter.src || srcGroup(r.source) === expFilter.src) && (!expFilter.acc || r.acc === expFilter.acc));
+    const accOpts = [{ v: '', l: 'كل البنود' }, ...[...new Map(all.map((r) => [r.acc, r.name])).entries()].map(([v, l]) => ({ v, l }))];
+    const rowActions = (r) => r.source === 'expense' && r.ref && r.ref.type === 'expense' ? actions(btn('تعديل', 'editExpense', r.ref.id), btn('حذف', 'delExpense', r.ref.id, 'danger'))
+      : (r.source === 'sale' || r.source === 'saleReturn') && r.ref ? actions(btn('عرض الفاتورة', 'viewSale', r.ref.id)) : actions();
+    const acctOf = (r) => (r.source === 'expense' && r.ref ? nameOf('accounts', (DB.find('expenses', r.ref.id) || {}).accountId) : '');
     const due = OPS.dueRecurring(s, today());
     const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
-    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+    return `${header('المصروفات', 'كل المصروفات في مكان واحد: اللي بتسجلها بإيدك، واللي السيستم بيسجلها لوحده من الفواتير (الشحن، العينات، فواتير الدعاية، عمولات الدفع، الخصم) والشحنات والتحويلات والجرد.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
       ${due.length ? `<section class="panel due-panel"><h2 class="section-title">مصروفات ثابتة مستحقة (${due.length}) <button class="btn btn-small btn-primary" data-action="postAllRecurring">تسجيل الكل</button></h2><ul class="list">${due.map((d, i) => `<li><span>${esc((Acc.COA_MAP[d.category] || {}).name || '')} — ${esc(d.notes)} · ${monthLong(d.period)}</span><b>${fmt(d.amount)} ج.م</b><button class="link-btn" data-action="postRecurring" data-id="${i}">تسجيل</button></li>`).join('')}</ul></section>` : ''}
+      <section class="kpis">
+        ${kpi('المصروفات التشغيلية', money(sum(opex)), 'زي اللي في قائمة الدخل بالظبط')}
+        ${kpi('منها اتسجلت لوحدها', money(sum(opex.filter((r) => r.source !== 'expense'))), 'شحن، عينات، دعاية، عمولات…')}
+        ${kpi('خصومات الفواتير', money(sum(disc)), 'بتقلل الإيراد في قائمة الدخل')}
+        ${other.length ? kpi('خسائر فروق العملة', money(sum(other))) : ''}
+      </section>
       <section class="grid-2 exp-top">
-        <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(total)}</span></h2>
-          ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
+        <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(sum(all))}</span></h2>
+          ${Object.keys(byName).length ? `<ul class="hbars">${Object.entries(byName).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<li><span>${esc(n)}</span><div class="hbar"><i style="width:${Math.max(0, (v / max) * 100)}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
       ${formationSection()}
       ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
-      ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
+      <h2 class="section-title">كل المصروفات <span class="muted">— ${list.length} بند</span></h2>
+      <div class="filters">${UI.select('expSrc', [{ v: '', l: 'كل المصادر' }, ...Object.entries(SRC_GROUPS).map(([v, l]) => ({ v, l }))], expFilter.src, 'data-change="expSrc" aria-label="المصدر"')}${UI.select('expAcc', accOpts, expFilter.acc, 'data-change="expAcc" aria-label="البند"')}</div>
+      ${table(['التاريخ', 'البند', 'البيان', 'المصدر', 'من حساب', '#المبلغ', ''], list.map((r) => `<tr class="${r.source === 'expense' ? '' : 'auto-row'}">${td(fmtDate(r.date))}${td(`${esc(r.name)}${r.kind === 'discount' ? ' ' + UI.pill('بيقلل الإيراد', 'info') : ''}`)}${td(esc(r.desc))}${td(r.source === 'expense' ? UI.pill('يدوي', 'good') : `<small class="muted">${esc(Acc.EXPENSE_SOURCES[r.source] || 'تلقائي')}</small>`)}${td(esc(acctOf(r)))}${tdn(r.amount < 0 ? `<span class="good-text">${fmt(r.amount)}</span>` : fmt(r.amount))}${rowActions(r)}</tr>`), { desc: true, empty: 'لا توجد مصروفات في هذه الفترة', foot: list.length ? `<tr><td colspan="5">الإجمالي</td>${tdn(`<b>${fmt(sum(list))}</b>`)}<td></td></tr>` : '' })}
+      <p class="muted">البنود اللي مصدرها «من فاتورة» أو «من شحنة» بتتعدل من المستند نفسه. المبلغ بالسالب معناه استرداد (زي عمولة اترجعت مع مرتجع). تكلفة البضاعة المباعة مش هنا، هي في قائمة الدخل تحت «تكلفة البضاعة».</p>`;
   }
   // ---------- التأسيس ورأس المال ----------
   // مصروفات قبل بداية الشغل الفعلي: بتتحسب رأس مال تأسيس ومش بتدخل في أرباح وخسائر أي فترة
@@ -5835,7 +5982,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
           <li class="cap-total"><span>الإجمالي</span><b>${fmt(fc.total)} ج.م</b></li></ul>
           ${fc.formationFromCash ? `<p class="muted">ومنهم ${fmt(fc.formationFromCash)} ج.م مصروفات تأسيس اتدفعت من حسابات النشاط (مش فلوس جديدة).</p>` : ''}</div>
       </div>
-      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
+      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { desc: true, foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
     </section>`;
   }
   function formationForm(x) {
@@ -6158,7 +6305,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
     const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
     const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' || e.action === 'denied' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
     return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
-      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
+      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { desc: true, empty: 'مفيش تعديلات مسجلة لسه' })}`;
   }
   // قسم السحابة والفريق في الإعدادات
   // ---------- حماية بالباسورد ----------
@@ -6420,7 +6567,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       <h2 class="section-title">طلبات اتسلمت مع ${esc(nameOf('couriers', reconCourier))} ولسه ما دخلتش في أي كشف</h2>
       ${table(['الفاتورة', 'التاريخ', 'البوليصة', 'العميل', 'الحالة', '#المحصل المتوقع', '#مصاريف الشحن', '#الصافي المتوقع', '#من كام يوم'], pend.map((x) => { const e = OPS.expectedFor(x); const age = OPS.daysBetween(x.date, today()); return `<tr>${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>`)}${td(fmtDate(x.date))}${td(esc(x.trackingNo || '—'), 'mono')}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}${tdn(`<span class="${age >= S().settings.alerts.settleDays ? 'bad-text' : ''}">${age}</span>`)}</tr>`; }), { empty: 'كل الطلبات المسلّمة اتسوّت 👌' })}
       <h2 class="section-title">الكشوف اللي اتسوّت</h2>
-      ${table(['التاريخ', 'شركة الشحن', 'الملف', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { empty: 'لم ترفع أي كشف بعد' })}`;
+      ${table(['التاريخ', 'شركة الشحن', 'الملف', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { desc: true, empty: 'لم ترفع أي كشف بعد' })}`;
   }
   function pickStatementFile() {
     if (!S().couriers.length) { UI.toast('أضف شركة شحن من الإعدادات', 'bad'); return; }
@@ -6538,7 +6685,7 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
       ${table(['الشريك', '#النسبة', '#رأس المال', '#أرباح موزعة', '#مسحوبات', '#رصيد الجاري', ''], rows, { empty: 'أضف الشركاء ونسبة كل واحد', foot: rows.length ? `<tr><td>الإجمالي</td>${tdn(pct(shares / 100))}${tdn(fmt(acc.reduce((a, r) => a + r.capital, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.distributed, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.drawn, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.balance, 0)))}<td></td></tr>` : '' })}
       <p class="muted">رصيد الجاري الموجب = أرباح مستحقة للشريك لسه ما سحبهاش. رأس المال بيتسجل من الخزينة ← «رأس مال / مسحوبات» مع اختيار الشريك.</p>
       <h2 class="section-title">توزيعات الأرباح</h2>
-      ${table(['تاريخ التوزيع', 'الفترة', '#صافي ربح الفترة', '#محتجز', 'نصيب الشركاء', '#الإجمالي', ''], dist, { empty: 'لم توزع أرباح بعد' })}`;
+      ${table(['تاريخ التوزيع', 'الفترة', '#صافي ربح الفترة', '#محتجز', 'نصيب الشركاء', '#الإجمالي', ''], dist, { desc: true, empty: 'لم توزع أرباح بعد' })}`;
   }
   function partnerForm(p) {
     const isNew = !p;
@@ -7104,6 +7251,8 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
     periodFrom: (el) => { period = { ...period, preset: 'custom', from: el.value }; savePeriod(); render(); },
     periodTo: (el) => { period = { ...period, preset: 'custom', to: el.value }; savePeriod(); render(); },
     saleStatusFilter: (el) => { saleFilter.status = el.value; render(); },
+    expSrc: (el) => { expFilter.src = el.value; render(); },
+    expAcc: (el) => { expFilter.acc = el.value; render(); },
     saleChannelFilter: (el) => { saleFilter.channel = el.value; render(); },
     saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
     setRole: (el) => CLOUD.setRole(el.dataset.id, el.value).then(() => UI.toast('تم تغيير الدور')).catch(() => UI.toast('تعذر تغيير الدور', 'bad')),
