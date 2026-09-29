@@ -1395,7 +1395,7 @@
   // =====================================================================
   // التقارير
   // =====================================================================
-  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
+  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', cashflow: 'التدفقات النقدية', equity: 'التغير في حقوق الملكية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
   let report = 'income', ledgerAcc = '1300';
   function reports() {
     const tabs = `<nav class="tabs" role="tablist">${Object.entries(REPORTS).map(([k, l]) => `<button role="tab" aria-selected="${k === report}" class="tab ${k === report ? 'active' : ''}" data-action="pickReport" data-id="${k}">${l}</button>`).join('')}</nav>`;
@@ -1422,6 +1422,39 @@
       return `<div class="statement"><h2>الميزانية العمومية <small class="muted">في ${fmtDate(to)}</small> ${b.balanced ? UI.pill('متوازنة', 'good') : UI.pill('غير متوازنة', 'bad')}</h2>
         <div class="grid-2">${block('الأصول', b.assets, b.totalAssets)}<div>${block('الالتزامات', b.liabilities, b.totalLiabilities)}${block('حقوق الملكية', b.equity, b.totalEquity)}
         <div class="table-wrap"><table class="fin"><tbody>${line('إجمالي الالتزامات وحقوق الملكية', b.totalLiabilities + b.totalEquity, 'grand')}</tbody></table></div></div></div></div>`;
+    }
+    if (report === 'cashflow') {
+      const cf = Acc.cashFlow(s, j, period.from, period.to);
+      const real = Acc.round2(Acc.cashBalances(s, j, to).reduce((t, a) => t + a.balance, 0));
+      const ok = Math.abs(real - cf.end) < 0.01;
+      const short = { operating: 'التشغيل', goods: 'البضاعة والتأسيس', financing: 'التمويل' };
+      return `<div class="statement"><h2>قائمة التدفقات النقدية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة لرصيد الخزينة', 'good') : UI.pill('مش مطابقة للخزينة', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('رصيد الفلوس أول الفترة', cf.start, 'total')}
+        ${cf.sections.map((x) => `<tr class="head"><td colspan="2">${x.title}</td></tr>${x.rows.map((r) => line(`${esc(r.label)} <small class="muted">(${r.count})</small>`, r.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">مفيش حركة</td></tr>'}${line(`صافي ${short[x.key]}`, x.total, 'total')}`).join('')}
+        ${line('صافي التغير في الفلوس', cf.net, 'total')}
+        <tr class="grand ${cf.end < 0 ? 'neg' : ''}"><td>رصيد الفلوس آخر الفترة</td>${tdn(fmt(cf.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">الفلوس هنا = الخزينة والبنوك والمحافظ. فلوس طلبات الدفع عند الاستلام بتظهر لما شركة الشحن تحولها («تحصيل من شركات الشحن»)، مش يوم البيع — وده الفرق بين الربح والفلوس اللي في إيدك. الرقم بين القوسين عدد المستندات.${ok ? '' : ` رصيد الخزينة الفعلي ${fmt(real)}.`}</p></div>`;
+    }
+    if (report === 'equity') {
+      const q = Acc.equityChanges(s, j, period.from, period.to || to);
+      const bs = Acc.balanceSheet(s, j, to);
+      const ok = Math.abs(bs.totalEquity - q.end) < 0.01;
+      const part = (label, v) => (Math.abs(v) >= 0.005 ? line(label, v, 'sub') : '');
+      return `<div class="statement"><h2>قائمة التغير في حقوق الملكية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة للميزانية', 'good') : UI.pill('مش مطابقة للميزانية', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('حقوق الملكية أول الفترة', q.start, 'total')}
+        <tr class="head"><td colspan="2">(+) رأس مال اتضاف</td></tr>
+        ${part('أرصدة افتتاحية (فلوس أول المدة)', q.added.opening)}${part('بضاعة أول المدة', q.added.stock)}${part('مصروفات تأسيس من الجيب', q.added.formation)}${part('إضافات رأس مال', q.added.capital)}
+        ${line('إجمالي رأس المال اللي اتضاف', q.added.total, 'total')}
+        ${line(q.profit >= 0 ? '(+) صافي ربح الفترة' : '(−) صافي خسارة الفترة', q.profit, 'total')}
+        <tr class="head"><td colspan="2">(−) المسحوبات</td></tr>
+        ${part('مسحوبات شخصية', -q.withdrawn.personal)}${part('مسحوبات الشركاء من حسابهم الجاري', -q.withdrawn.partners)}
+        ${line('إجمالي المسحوبات', -q.withdrawn.total, 'total')}
+        <tr class="grand ${q.end < 0 ? 'neg' : ''}"><td>حقوق الملكية آخر الفترة</td>${tdn(fmt(q.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">حقوق الملكية = اللي حطيته في النشاط + الأرباح اللي اتراكمت − اللي سحبته. آخر الفترة هنا لازم يساوي «إجمالي حقوق الملكية» في الميزانية. توزيع الأرباح على الشركاء مش بيغيّر الإجمالي (بينقل الربح لحسابهم الجاري)، والسحب منه هو اللي بيقلله.</p></div>`;
     }
     if (report === 'trial') {
       const t = Acc.trialBalance(s, j, to);

@@ -1649,6 +1649,76 @@ tr.auto-row td { color: var(--ink-2); }
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- قائمة التدفقات النقدية (الطريقة المباشرة) ----------
+  // كل حركة فلوس (خزينة، بنك، محافظ) في الفترة، متقسمة حسب المستند اللي عملها:
+  // التشغيل (البيع والمصروفات)، البضاعة والتأسيس (الموردين والشحنات)، والتمويل (رأس المال والمسحوبات).
+  // الرصيد أول الفترة + صافي التغير = الرصيد آخر الفترة (نفس رصيد الخزينة).
+  const CF_SECTIONS = { operating: 'التدفقات من التشغيل (البيع والمصروفات)', goods: 'التدفقات على البضاعة والتأسيس', financing: 'التدفقات من التمويل (رأس المال والمسحوبات)' };
+  function cashFlow(state, journal, from, to) {
+    const isCash = (acc) => String(acc).startsWith('1100:');
+    let start = 0;
+    const groups = {};
+    const put = (section, label, amount) => { const k = `${section}|${label}`; const g = (groups[k] = groups[k] || { section, label, amount: 0, count: 0 }); g.amount += amount; g.count += 1; };
+    journal.entries.forEach((e) => {
+      const cash = e.lines.reduce((t, l) => t + (isCash(l.acc) ? num(l.dr) - num(l.cr) : 0), 0);
+      if (from && e.date < from) { start += cash; return; }
+      if (to && e.date > to) return;
+      if (Math.abs(cash) < EPS) return;
+      const other = e.lines.find((l) => !isCash(l.acc) && num(l.dr) > 0);
+      const otherName = other ? (COA_MAP[baseCode(other.acc)] || {}).name : '';
+      switch (e.source) {
+        case 'opening': put('financing', 'أرصدة افتتاحية (رأس مال أول المدة)', cash); break;
+        case 'equity': put('financing', cash > 0 ? 'إضافات رأس مال' : 'مسحوبات (شخصية ومن جاري الشركاء)', cash); break;
+        case 'distribution': put('financing', 'توزيع أرباح', cash); break;
+        case 'settlement': put('operating', cash > 0 ? 'تحصيل من شركات الشحن' : 'سداد لشركات الشحن', cash); break;
+        case 'sale': put('operating', cash > 0 ? 'مبيعات مدفوعة مقدم' : 'رد فلوس للعملاء', cash); break;
+        case 'saleReturn': put('operating', 'رد فلوس للعملاء (مرتجعات)', cash); break;
+        case 'expense': put('operating', `مصروفات — ${otherName || 'أخرى'}`, cash); break;
+        case 'commission': put('operating', 'عمولات المؤثرين المدفوعة', cash); break;
+        case 'transfer': put('operating', 'عمولات التحويل بين الحسابات', cash); break;
+        case 'cashCount': put('operating', 'فروق جرد الخزينة', cash); break;
+        case 'decant': put('operating', 'خامات التقسيم والتغليف', cash); break;
+        case 'supplierPayment': put('goods', 'دفعات للموردين (شامل عمولة التحويل)', cash); break;
+        case 'shipment': put('goods', 'مصاريف شحن وجمارك الشحنات', cash); break;
+        case 'formation': put('goods', 'مصروفات التأسيس من حسابات النشاط', cash); break;
+        default: put('operating', 'حركات أخرى', cash);
+      }
+    });
+    const sections = Object.entries(CF_SECTIONS).map(([key, title]) => {
+      const rows = Object.values(groups).filter((g) => g.section === key).map((g) => ({ label: g.label, amount: round2(g.amount), count: g.count })).sort((a, b) => b.amount - a.amount);
+      return { key, title, rows, total: round2(rows.reduce((t, r) => t + r.amount, 0)) };
+    });
+    const net = round2(sections.reduce((t, x) => t + x.total, 0));
+    return { start: round2(start), sections, net, end: round2(start + net) };
+  }
+
+  // ---------- قائمة التغير في حقوق الملكية ----------
+  // حقوق الملكية أول الفترة + رأس مال اتضاف + صافي الربح − المسحوبات = حقوق الملكية آخر الفترة (نفس الميزانية)
+  function equityChanges(state, journal, from, to) {
+    const eqBal = (asOf, strictlyBefore) => {
+      let t = 0;
+      journal.entries.forEach((e) => {
+        if (asOf && (strictlyBefore ? e.date >= asOf : e.date > asOf)) return;
+        e.lines.forEach((l) => { const a = COA_MAP[baseCode(l.acc)]; if (!a) return; if (a.type === 'equity' || a.type === 'revenue' || a.type === 'expense') t += num(l.cr) - num(l.dr); });
+      });
+      return round2(t);
+    };
+    const start = from ? eqBal(from, true) : 0;
+    const add = { opening: 0, stock: 0, formation: 0, capital: 0 }, out = { personal: 0, partners: 0 };
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      e.lines.forEach((l) => {
+        const c = baseCode(l.acc), v = num(l.cr) - num(l.dr);
+        if (c === '3100') { const k = e.source === 'opening' ? 'opening' : e.source === 'adjustment' ? 'stock' : e.source === 'formation' ? 'formation' : 'capital'; add[k] += v; }
+        if (c === '3200') out.personal += -v;
+        if (c === '3500' && e.source === 'equity') out.partners += -v;
+      });
+    });
+    const profit = incomeStatement(state, journal, from, to).netProfit;
+    const r = (x) => round2(x);
+    const added = r(add.opening + add.stock + add.formation + add.capital), withdrawn = r(out.personal + out.partners);
+    return { start, added: { opening: r(add.opening), stock: r(add.stock), formation: r(add.formation), capital: r(add.capital), total: added }, profit, withdrawn: { personal: r(out.personal), partners: r(out.partners), total: withdrawn }, end: r(start + added + profit - withdrawn), actual: to ? eqBal(to) : eqBal(null) };
+  }
   // ---------- كل المصروفات (اللي بتتسجل بإيدك واللي بتتسجل لوحدها من الفواتير والشحنات وغيرها) ----------
   // من دفتر اليومية نفسه، فالمجموع لكل بند = اللي في قائمة الدخل بالظبط. خصم الفواتير بيظهر معاهم (بيقلل الإيراد).
   const EXPENSE_SOURCES = { expense: 'سجلتها بإيدك', sale: 'من فاتورة', saleReturn: 'من مرتجع', shipment: 'من شحنة', supplierPayment: 'من دفعة مورد', transfer: 'من تحويل', settlement: 'من تحصيل شحن', adjustment: 'من تسوية مخزون', decant: 'من تقسيم / بوكس', cashCount: 'من جرد الخزينة', commission: 'من سداد عمولة', equity: 'رأس مال', distribution: 'توزيع أرباح', formation: 'تأسيس', opening: 'افتتاحي' };
@@ -1725,7 +1795,7 @@ tr.auto-row td { color: var(--ink-2); }
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
@@ -6114,7 +6184,7 @@ tr.auto-row td { color: var(--ink-2); }
   // =====================================================================
   // التقارير
   // =====================================================================
-  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
+  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', cashflow: 'التدفقات النقدية', equity: 'التغير في حقوق الملكية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
   let report = 'income', ledgerAcc = '1300';
   function reports() {
     const tabs = `<nav class="tabs" role="tablist">${Object.entries(REPORTS).map(([k, l]) => `<button role="tab" aria-selected="${k === report}" class="tab ${k === report ? 'active' : ''}" data-action="pickReport" data-id="${k}">${l}</button>`).join('')}</nav>`;
@@ -6141,6 +6211,39 @@ tr.auto-row td { color: var(--ink-2); }
       return `<div class="statement"><h2>الميزانية العمومية <small class="muted">في ${fmtDate(to)}</small> ${b.balanced ? UI.pill('متوازنة', 'good') : UI.pill('غير متوازنة', 'bad')}</h2>
         <div class="grid-2">${block('الأصول', b.assets, b.totalAssets)}<div>${block('الالتزامات', b.liabilities, b.totalLiabilities)}${block('حقوق الملكية', b.equity, b.totalEquity)}
         <div class="table-wrap"><table class="fin"><tbody>${line('إجمالي الالتزامات وحقوق الملكية', b.totalLiabilities + b.totalEquity, 'grand')}</tbody></table></div></div></div></div>`;
+    }
+    if (report === 'cashflow') {
+      const cf = Acc.cashFlow(s, j, period.from, period.to);
+      const real = Acc.round2(Acc.cashBalances(s, j, to).reduce((t, a) => t + a.balance, 0));
+      const ok = Math.abs(real - cf.end) < 0.01;
+      const short = { operating: 'التشغيل', goods: 'البضاعة والتأسيس', financing: 'التمويل' };
+      return `<div class="statement"><h2>قائمة التدفقات النقدية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة لرصيد الخزينة', 'good') : UI.pill('مش مطابقة للخزينة', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('رصيد الفلوس أول الفترة', cf.start, 'total')}
+        ${cf.sections.map((x) => `<tr class="head"><td colspan="2">${x.title}</td></tr>${x.rows.map((r) => line(`${esc(r.label)} <small class="muted">(${r.count})</small>`, r.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">مفيش حركة</td></tr>'}${line(`صافي ${short[x.key]}`, x.total, 'total')}`).join('')}
+        ${line('صافي التغير في الفلوس', cf.net, 'total')}
+        <tr class="grand ${cf.end < 0 ? 'neg' : ''}"><td>رصيد الفلوس آخر الفترة</td>${tdn(fmt(cf.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">الفلوس هنا = الخزينة والبنوك والمحافظ. فلوس طلبات الدفع عند الاستلام بتظهر لما شركة الشحن تحولها («تحصيل من شركات الشحن»)، مش يوم البيع — وده الفرق بين الربح والفلوس اللي في إيدك. الرقم بين القوسين عدد المستندات.${ok ? '' : ` رصيد الخزينة الفعلي ${fmt(real)}.`}</p></div>`;
+    }
+    if (report === 'equity') {
+      const q = Acc.equityChanges(s, j, period.from, period.to || to);
+      const bs = Acc.balanceSheet(s, j, to);
+      const ok = Math.abs(bs.totalEquity - q.end) < 0.01;
+      const part = (label, v) => (Math.abs(v) >= 0.005 ? line(label, v, 'sub') : '');
+      return `<div class="statement"><h2>قائمة التغير في حقوق الملكية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة للميزانية', 'good') : UI.pill('مش مطابقة للميزانية', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('حقوق الملكية أول الفترة', q.start, 'total')}
+        <tr class="head"><td colspan="2">(+) رأس مال اتضاف</td></tr>
+        ${part('أرصدة افتتاحية (فلوس أول المدة)', q.added.opening)}${part('بضاعة أول المدة', q.added.stock)}${part('مصروفات تأسيس من الجيب', q.added.formation)}${part('إضافات رأس مال', q.added.capital)}
+        ${line('إجمالي رأس المال اللي اتضاف', q.added.total, 'total')}
+        ${line(q.profit >= 0 ? '(+) صافي ربح الفترة' : '(−) صافي خسارة الفترة', q.profit, 'total')}
+        <tr class="head"><td colspan="2">(−) المسحوبات</td></tr>
+        ${part('مسحوبات شخصية', -q.withdrawn.personal)}${part('مسحوبات الشركاء من حسابهم الجاري', -q.withdrawn.partners)}
+        ${line('إجمالي المسحوبات', -q.withdrawn.total, 'total')}
+        <tr class="grand ${q.end < 0 ? 'neg' : ''}"><td>حقوق الملكية آخر الفترة</td>${tdn(fmt(q.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">حقوق الملكية = اللي حطيته في النشاط + الأرباح اللي اتراكمت − اللي سحبته. آخر الفترة هنا لازم يساوي «إجمالي حقوق الملكية» في الميزانية. توزيع الأرباح على الشركاء مش بيغيّر الإجمالي (بينقل الربح لحسابهم الجاري)، والسحب منه هو اللي بيقلله.</p></div>`;
     }
     if (report === 'trial') {
       const t = Acc.trialBalance(s, j, to);

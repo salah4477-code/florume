@@ -819,6 +819,76 @@
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- قائمة التدفقات النقدية (الطريقة المباشرة) ----------
+  // كل حركة فلوس (خزينة، بنك، محافظ) في الفترة، متقسمة حسب المستند اللي عملها:
+  // التشغيل (البيع والمصروفات)، البضاعة والتأسيس (الموردين والشحنات)، والتمويل (رأس المال والمسحوبات).
+  // الرصيد أول الفترة + صافي التغير = الرصيد آخر الفترة (نفس رصيد الخزينة).
+  const CF_SECTIONS = { operating: 'التدفقات من التشغيل (البيع والمصروفات)', goods: 'التدفقات على البضاعة والتأسيس', financing: 'التدفقات من التمويل (رأس المال والمسحوبات)' };
+  function cashFlow(state, journal, from, to) {
+    const isCash = (acc) => String(acc).startsWith('1100:');
+    let start = 0;
+    const groups = {};
+    const put = (section, label, amount) => { const k = `${section}|${label}`; const g = (groups[k] = groups[k] || { section, label, amount: 0, count: 0 }); g.amount += amount; g.count += 1; };
+    journal.entries.forEach((e) => {
+      const cash = e.lines.reduce((t, l) => t + (isCash(l.acc) ? num(l.dr) - num(l.cr) : 0), 0);
+      if (from && e.date < from) { start += cash; return; }
+      if (to && e.date > to) return;
+      if (Math.abs(cash) < EPS) return;
+      const other = e.lines.find((l) => !isCash(l.acc) && num(l.dr) > 0);
+      const otherName = other ? (COA_MAP[baseCode(other.acc)] || {}).name : '';
+      switch (e.source) {
+        case 'opening': put('financing', 'أرصدة افتتاحية (رأس مال أول المدة)', cash); break;
+        case 'equity': put('financing', cash > 0 ? 'إضافات رأس مال' : 'مسحوبات (شخصية ومن جاري الشركاء)', cash); break;
+        case 'distribution': put('financing', 'توزيع أرباح', cash); break;
+        case 'settlement': put('operating', cash > 0 ? 'تحصيل من شركات الشحن' : 'سداد لشركات الشحن', cash); break;
+        case 'sale': put('operating', cash > 0 ? 'مبيعات مدفوعة مقدم' : 'رد فلوس للعملاء', cash); break;
+        case 'saleReturn': put('operating', 'رد فلوس للعملاء (مرتجعات)', cash); break;
+        case 'expense': put('operating', `مصروفات — ${otherName || 'أخرى'}`, cash); break;
+        case 'commission': put('operating', 'عمولات المؤثرين المدفوعة', cash); break;
+        case 'transfer': put('operating', 'عمولات التحويل بين الحسابات', cash); break;
+        case 'cashCount': put('operating', 'فروق جرد الخزينة', cash); break;
+        case 'decant': put('operating', 'خامات التقسيم والتغليف', cash); break;
+        case 'supplierPayment': put('goods', 'دفعات للموردين (شامل عمولة التحويل)', cash); break;
+        case 'shipment': put('goods', 'مصاريف شحن وجمارك الشحنات', cash); break;
+        case 'formation': put('goods', 'مصروفات التأسيس من حسابات النشاط', cash); break;
+        default: put('operating', 'حركات أخرى', cash);
+      }
+    });
+    const sections = Object.entries(CF_SECTIONS).map(([key, title]) => {
+      const rows = Object.values(groups).filter((g) => g.section === key).map((g) => ({ label: g.label, amount: round2(g.amount), count: g.count })).sort((a, b) => b.amount - a.amount);
+      return { key, title, rows, total: round2(rows.reduce((t, r) => t + r.amount, 0)) };
+    });
+    const net = round2(sections.reduce((t, x) => t + x.total, 0));
+    return { start: round2(start), sections, net, end: round2(start + net) };
+  }
+
+  // ---------- قائمة التغير في حقوق الملكية ----------
+  // حقوق الملكية أول الفترة + رأس مال اتضاف + صافي الربح − المسحوبات = حقوق الملكية آخر الفترة (نفس الميزانية)
+  function equityChanges(state, journal, from, to) {
+    const eqBal = (asOf, strictlyBefore) => {
+      let t = 0;
+      journal.entries.forEach((e) => {
+        if (asOf && (strictlyBefore ? e.date >= asOf : e.date > asOf)) return;
+        e.lines.forEach((l) => { const a = COA_MAP[baseCode(l.acc)]; if (!a) return; if (a.type === 'equity' || a.type === 'revenue' || a.type === 'expense') t += num(l.cr) - num(l.dr); });
+      });
+      return round2(t);
+    };
+    const start = from ? eqBal(from, true) : 0;
+    const add = { opening: 0, stock: 0, formation: 0, capital: 0 }, out = { personal: 0, partners: 0 };
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      e.lines.forEach((l) => {
+        const c = baseCode(l.acc), v = num(l.cr) - num(l.dr);
+        if (c === '3100') { const k = e.source === 'opening' ? 'opening' : e.source === 'adjustment' ? 'stock' : e.source === 'formation' ? 'formation' : 'capital'; add[k] += v; }
+        if (c === '3200') out.personal += -v;
+        if (c === '3500' && e.source === 'equity') out.partners += -v;
+      });
+    });
+    const profit = incomeStatement(state, journal, from, to).netProfit;
+    const r = (x) => round2(x);
+    const added = r(add.opening + add.stock + add.formation + add.capital), withdrawn = r(out.personal + out.partners);
+    return { start, added: { opening: r(add.opening), stock: r(add.stock), formation: r(add.formation), capital: r(add.capital), total: added }, profit, withdrawn: { personal: r(out.personal), partners: r(out.partners), total: withdrawn }, end: r(start + added + profit - withdrawn), actual: to ? eqBal(to) : eqBal(null) };
+  }
   // ---------- كل المصروفات (اللي بتتسجل بإيدك واللي بتتسجل لوحدها من الفواتير والشحنات وغيرها) ----------
   // من دفتر اليومية نفسه، فالمجموع لكل بند = اللي في قائمة الدخل بالظبط. خصم الفواتير بيظهر معاهم (بيقلل الإيراد).
   const EXPENSE_SOURCES = { expense: 'سجلتها بإيدك', sale: 'من فاتورة', saleReturn: 'من مرتجع', shipment: 'من شحنة', supplierPayment: 'من دفعة مورد', transfer: 'من تحويل', settlement: 'من تحصيل شحن', adjustment: 'من تسوية مخزون', decant: 'من تقسيم / بوكس', cashCount: 'من جرد الخزينة', commission: 'من سداد عمولة', equity: 'رأس مال', distribution: 'توزيع أرباح', formation: 'تأسيس', opening: 'افتتاحي' };
@@ -895,7 +965,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
