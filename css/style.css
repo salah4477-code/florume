@@ -739,3 +739,6 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
 .phone-hint { display: block; color: var(--warn); font-weight: 600; }
 table.lines .combo-list { min-width: 300px; }
 tr.auto-row td { color: var(--ink-2); }
+/* نافذة صغيرة فوق نافذة مفتوحة (تكويد صنف من جوه الشحنة) */
+.sub-layer { z-index: 62; }
+.sub-layer .modal-card { width: min(560px, 100%); }

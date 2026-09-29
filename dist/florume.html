@@ -749,6 +749,9 @@ body[data-role="viewer"] .row-sel, body[data-role="viewer"] .sel-all { display: 
 .phone-hint { display: block; color: var(--warn); font-weight: 600; }
 table.lines .combo-list { min-width: 300px; }
 tr.auto-row td { color: var(--ink-2); }
+/* نافذة صغيرة فوق نافذة مفتوحة (تكويد صنف من جوه الشحنة) */
+.sub-layer { z-index: 62; }
+.sub-layer .modal-card { width: min(560px, 100%); }
 
 </style>
 </head>
@@ -5013,10 +5016,70 @@ tr.auto-row td { color: var(--ink-2); }
 
   // ---------- البحث جوه فاتورة البيع ----------
   const digitsOf = (t) => IMP.latinDigits(String(t || '')).replace(/\D/g, '');
-  function productCombo(sel) {
-    return UI.combo(sel, { placeholder: 'ابحث باسم المنتج أو الماركة أو الكود…', items: () => S().products.map((p) => { const st = J().inventory.products[p.id] || {}; return { v: p.id, label: productLabel(p), sub: `${p.sku ? p.sku + ' · ' : ''}متاح ${fmt(st.available || 0)} · ${fmt(p.price)} ج.م`, keys: [p.sku, p.barcode, p.brand, p.name] }; }) });
+  function productCombo(sel, opts = {}) {
+    return UI.combo(sel, { placeholder: opts.allowNew ? 'ابحث عن الصنف… أو كوّد صنف جديد' : 'ابحث باسم المنتج أو الماركة أو الكود…',
+      newItem: opts.allowNew ? (text, found) => ({ label: found ? `+ صنف جديد «${text.trim()}»` : `+ مش موجود — كوّد صنف جديد «${text.trim()}»`, sub: 'هيفتح تكويد صنف جديد، وبعد الحفظ يتحط في السطر ده', run: (t) => newProductForLine(sel, t) }) : null,
+      items: () => S().products.map((p) => { const st = J().inventory.products[p.id] || {}; return { v: p.id, label: productLabel(p), sub: `${p.sku ? p.sku + ' · ' : ''}متاح ${fmt(st.available || 0)} · ${fmt(p.price)} ج.م`, keys: [p.sku, p.barcode, p.brand, p.name] }; }) });
   }
-  const comboLines = (root) => root.querySelectorAll('select.l-product').forEach(productCombo);
+  const comboLines = (root, opts) => root.querySelectorAll('select.l-product').forEach((sel) => productCombo(sel, opts));
+  // صنف اتكود جديد: يتضاف لكل قوايم المنتجات المفتوحة ويتحط في السطر
+  function addProductOption(root, p) {
+    root.querySelectorAll('select.l-product').forEach((sel) => { if (![...sel.options].some((o) => o.value === p.id)) sel.add(new Option(productLabel(p), p.id)); });
+  }
+  async function newProductForLine(sel, text) {
+    const p = await quickProductForm(text);
+    const combo = sel._combo;
+    if (!p) { if (combo) combo.input.value = ''; return; }
+    addProductOption(sel.closest('form') || document, p);
+    sel.value = p.id;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    UI.toast(`تم تكويد ${productLabel(p)}`);
+  }
+  // تكويد صنف جديد في نافذة صغيرة فوق الفاتورة المفتوحة (الفاتورة ماتتقفلش ولا بياناتها تضيع)
+  function quickProductForm(text = '') {
+    return new Promise((resolve) => {
+      const t = String(text || '').trim();
+      const looksCode = t && /^[A-Za-z0-9._\-\s]+$/.test(t) && /\d/.test(t);
+      const layer = document.createElement('div');
+      layer.className = 'lock-layer sub-layer';
+      layer.innerHTML = `<div class="modal-backdrop"></div>
+        <form class="modal-card" novalidate role="dialog" aria-modal="true" aria-labelledby="qp-title">
+          <header class="modal-head"><h2 id="qp-title">تكويد صنف جديد</h2></header>
+          <div class="modal-body">
+            <div class="form-grid">
+              ${UI.field('الماركة', '<input id="qp-brand" name="brand" placeholder="لطافة، أرماف…">')}
+              ${UI.field('اسم الصنف', `<input id="qp-name" name="name" required value="${looksCode ? '' : esc(t)}">`, { req: true })}
+              ${UI.field('الحجم (مل)', '<input id="qp-size" name="sizeMl" type="number" min="0" step="1" value="100">')}
+              ${UI.field('كود الصنف (SKU)', `<input id="qp-sku" name="sku" dir="ltr" value="${looksCode ? esc(t) : ''}">`)}
+              ${UI.field('سعر البيع', '<input id="qp-price" name="price" type="number" min="0" step="0.01">', { hint: 'تقدر تحطه بعدين' })}
+              ${UI.field('وزن الشحن (جرام)', '<input id="qp-weight" name="weightG" type="number" min="0" step="1">', { hint: 'اختياري — لتوزيع مصاريف الشحن' })}
+            </div>
+            <p class="lock-err" role="alert" hidden></p>
+            <p class="muted">باقي بيانات الصنف (الباركود، الفئة، حد إعادة الطلب) تقدر تكملها بعدين من «المنتجات».</p>
+          </div>
+          <footer class="modal-foot"><button class="btn btn-primary" type="submit">حفظ الصنف</button><button class="btn" type="button" data-qp-cancel>إلغاء</button></footer>
+        </form>`;
+      document.body.appendChild(layer);
+      const f = layer.querySelector('form'), err = f.querySelector('.lock-err');
+      const done = (p) => { layer.remove(); document.removeEventListener('keydown', onKey, true); resolve(p); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(null); } };
+      document.addEventListener('keydown', onKey, true);
+      f.querySelector('[data-qp-cancel]').addEventListener('click', () => done(null));
+      f.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const g = (n) => f.querySelector(`[name="${n}"]`).value.trim();
+        const show = (m, el) => { err.textContent = m; err.hidden = false; if (el) el.focus(); };
+        if (!g('name')) return show('اكتب اسم الصنف', f.querySelector('#qp-name'));
+        if (!UI.numbersOk(f)) return;
+        const p = { id: uid(), sku: g('sku'), brand: g('brand'), name: g('name'), sizeMl: num(g('sizeMl')), weightG: num(g('weightG')), gender: 'unisex', price: num(g('price')), minStock: S().settings.lowStock };
+        const dup = RULES.productDuplicate(S(), p);
+        if (dup) return show(dup.field === 'sku' ? `الكود «${p.sku}» مستخدم قبل كده للصنف ${productLabel(dup.other)}` : `الصنف ده متسجل قبل كده: ${productLabel(dup.other)} — اختاره من البحث بدل ما تكوّده تاني`, f.querySelector(dup.field === 'sku' ? '#qp-sku' : '#qp-name'));
+        DB.upsert('products', p);
+        done(p);
+      });
+      setTimeout(() => f.querySelector(looksCode || !t ? (looksCode ? '#qp-name' : '#qp-brand') : '#qp-brand').focus(), 30);
+    });
+  }
   function customerCombo(f) {
     const sel = f.customerId;
     const risk = (c) => { const r = OPS.customerRisk(S(), c.id); return `${r.orders ? `${r.orders} طلب` : 'مفيش طلبات'}${r.refused ? ` · رفض ${r.refused}` : ''}`; };
@@ -5525,7 +5588,7 @@ tr.auto-row td { color: var(--ink-2); }
       <h3 class="sub-title">الأصناف (بسعر المورد)</h3>
       <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة <span class="cur-label"></span></th><th class="num">بالجنيه</th><th class="num">تكلفة الوحدة الواصلة</th><th></th></tr></thead>
         <tbody id="lines">${sh.items.map(shipLineRow).join('')}</tbody></table></div>
-      <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
+      <div class="btn-row"><button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button><button type="button" class="btn btn-small" id="new-product">+ تكويد صنف جديد</button></div>
       <h3 class="sub-title">مصاريف الشحن والجمارك بالجنيه</h3>
       <p class="muted">لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
       <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>يتوزع حسب</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
@@ -5544,6 +5607,7 @@ tr.auto-row td { color: var(--ink-2); }
       title: isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines'), costs = f.querySelector('#costs');
+        comboLines(lines, { allowNew: true });
         const recalc = () => {
           const draft = read(f);
           const allRows = [...lines.querySelectorAll('.line')];
@@ -5557,7 +5621,16 @@ tr.auto-row td { color: var(--ink-2); }
           f.querySelector('.recv-field').hidden = draft.status !== 'received';
           f.querySelector('#ship-summary').innerHTML = `<div><span>قيمة البضاعة</span><b>${fmt(c.goodsForeign)} ${draft.currency}</b></div><div><span>بالجنيه</span><b>${fmt(c.goodsEGP)}</b></div><div><span>مصاريف إضافية</span><b>${fmt(c.extras)}</b></div><div class="strong"><span>التكلفة الكلية الواصلة</span><b>${fmt(c.landedTotal)} ج.م</b></div><div><span>عدد القطع</span><b>${fmt(c.totalQty)}</b></div><div><span>نسبة المصاريف للبضاعة</span><b>${pct(c.goodsEGP ? c.extras / c.goodsEGP : 0)}</b></div>`;
         };
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', shipLineRow({ qty: 1 })); recalc(); });
+        const addLine = () => { lines.insertAdjacentHTML('beforeend', shipLineRow({ qty: 1 })); comboLines(lines.lastElementChild, { allowNew: true }); recalc(); return lines.lastElementChild; };
+        f.querySelector('#add-line').addEventListener('click', () => { const r = addLine(); const inp = r.querySelector('.combo-input'); if (inp) inp.focus(); });
+        // صنف جديد: يتكود، ويتحط في أول سطر فاضي أو في سطر جديد
+        f.querySelector('#new-product').addEventListener('click', async () => {
+          const p = await quickProductForm(''); if (!p) return;
+          addProductOption(f, p);
+          const row = [...lines.querySelectorAll('.line')].find((r) => !r.querySelector('.l-product').value) || addLine();
+          const sel = row.querySelector('.l-product'); sel.value = p.id; sel.dispatchEvent(new Event('change', { bubbles: true }));
+          UI.toast(`تم تكويد ${productLabel(p)}`); const q = row.querySelector('.l-cost'); if (q) q.focus();
+        });
         f.querySelector('#add-cost').addEventListener('click', () => { costs.insertAdjacentHTML('beforeend', costRow({})); recalc(); });
         f.addEventListener('click', (e) => { const b = e.target.closest('[data-line-remove]'); if (b) { const tr = b.closest('tr'); if (tr.classList.contains('cost') || lines.children.length > 1) { tr.remove(); recalc(); } } });
         f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) { f.currency.value = sp.currency; f.rate.value = S().settings.rates[sp.currency] || 1; } recalc(); });
