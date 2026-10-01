@@ -200,6 +200,20 @@ test('bosta cash-cycle export: total fees, online payments and matching by custo
   near(r.totals.statementNet, 994.3 + 954.97 + 977.2 - 11.4);
 });
 
+test('courier fee calculator matches bosta cash-cycle rows', () => {
+  const calc = { enabled: true, shippingFree: true };
+  // كل سطر من كشف بوسطة: [التحصيل، القيمة المعلنة، فتح الشحنة، إجمالي المستحقات في الكشف]
+  [[850, 850, false, 5.7], [2350, 2350, false, 17.39], [8000, 8000, false, 91.2], [3700, 2000, true, 38.76],
+    [4250, 2000, true, 45.03], [4070, 2000, true, 42.98], [3900, 1500, true, 38.19], [0, 1200, false, 6.84]]
+    .forEach(([cod, value, open, total]) => near(OPS.courierFeeCalc(calc, { shipping: 107, cod, value, open }).total, total, `cod ${cod}`));
+  const r = OPS.courierFeeCalc(calc, { cod: 4250, value: 2000, open: true });
+  assert.deepEqual([r.insurance, r.collection, r.open, r.vat], [10, 22.5, 7, 5.53]);
+  // من غير باقة: سعر الشحن بيدخل وعليه ضريبة
+  near(OPS.courierFeeCalc({ shippingFree: false }, { shipping: 100, cod: 1000, value: 1000 }).total, (100 + 5) * 1.14);
+  // أقصى قيمة معلنة
+  near(OPS.courierFeeCalc({ shippingFree: true, declaredMax: 2000 }, { cod: 4250, value: 4250, open: true }).total, 45.03);
+});
+
 test('alerts: late orders, supplier due dates, stagnant stock', () => {
   const s = baseState();
   s.shipments.push({ id: 'sh1', ref: 'SA-1', supplierId: 'sa1', currency: 'SAR', rate: 13, orderDate: '2026-01-01', dueDate: '2026-03-05', status: 'received', receivedDate: '2026-01-03', items: [{ productId: 'p1', qty: 10, unitCost: 100 }, { productId: 'p2', qty: 10, unitCost: 50 }], costs: [] });

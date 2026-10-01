@@ -2694,6 +2694,28 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
     return { matched, unmatched, duplicates, missing, totals, maxDate };
   }
 
+  // =====================================================================
+  // حاسبة مستحقات شركة الشحن (بطريقة بوسطة)
+  // الشحن + تأمين ٪ من قيمة الشحنة + رسوم تحصيل ٪ على اللي فوق حد معين + فتح الشحنة، وعلى كله ضريبة القيمة المضافة
+  // =====================================================================
+  const FEE_CALC_DEFAULTS = { enabled: false, shippingFree: false, insurancePct: 0.5, insuranceMin: 5, insuranceMax: 20, declaredMax: 0, codFreeUpTo: 2000, codPct: 1, openFee: 7, openDefault: true, vatPct: 14 };
+  function courierFeeCalc(calc, { shipping = 0, cod = 0, value = 0, open = false } = {}) {
+    const c = { ...FEE_CALC_DEFAULTS, ...(calc || {}) };
+    const ship = c.shippingFree ? 0 : Math.max(0, num(shipping));
+    // القيمة المعلنة لشركة الشحن: قيمة الطلب، إلا لو انت بتعلن أقل منها بحد أقصى
+    const declared = num(c.declaredMax) ? Math.min(num(value), num(c.declaredMax)) : num(value);
+    // التقريب لأقرب قرش، والنص بيطلع لفوق زي بوسطة
+    const up = (n) => Math.round(n * 100 + 1e-6) / 100;
+    let insurance = declared > 0 ? up(declared * num(c.insurancePct) / 100) : 0;
+    if (declared > 0 && num(c.insuranceMin)) insurance = Math.max(insurance, num(c.insuranceMin));
+    if (num(c.insuranceMax)) insurance = Math.min(insurance, num(c.insuranceMax));
+    const collection = up(Math.max(0, num(cod) - num(c.codFreeUpTo)) * num(c.codPct) / 100);
+    const openFee = open ? num(c.openFee) : 0;
+    const net = round2(ship + insurance + collection + openFee);
+    const vat = up(net * num(c.vatPct) / 100);
+    return { shipping: ship, insurance, collection, open: openFee, net, vat, total: round2(net + vat) };
+  }
+
   // طلبات الدفع عند الاستلام اللي اتسلمت ولسه ما دخلتش في أي تسوية، لكل شركة شحن
   function unsettledByCourier(state, asOf) {
     const done = reconciledSales(state);
@@ -2932,7 +2954,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
     return { total: { ...total, loss: round2(total.loss), rate: total.orders ? total.returned / total.orders : 0 }, gov: rows('gov'), courier: rows('courier'), channel: rows('channel'), reason: rows('reason') };
   }
 
-  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, FEE_CALC_DEFAULTS, courierFeeCalc, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -4960,6 +4982,8 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
         ${UI.field('شركة الشحن', UI.select('courierId', [{ v: '', l: '—' }, ...s.couriers.map((c) => ({ v: c.id, l: c.name }))], sale.courierId || ''))}
         ${UI.field('رقم البوليصة', UI.input('trackingNo', sale.trackingNo || '', 'dir="ltr" autocomplete="off"'), { hint: 'يُستخدم في مطابقة كشف شركة الشحن' })}
         ${UI.field('تكلفة الشحن علينا', UI.input('courierFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'), { hint: '<span id="ship-hint">تخصمها شركة الشحن من التحصيل</span>' })}
+        ${UI.field('القيمة المعلنة لشركة الشحن', UI.input('declaredValue', sale.declaredValue != null ? sale.declaredValue : '', 'type="number" min="0" step="1"'), { cls: 'calc-only', hint: 'التأمين بيتحسب عليها. فاضية = حسب إعداد الشركة' })}
+        <label class="check calc-only"><input type="checkbox" name="openPackage" ${sale.openPackage != null ? (sale.openPackage ? 'checked' : '') : 'data-default'}> العميل يقدر يفتح الشحنة</label>
         ${UI.field('عينة هدية مع الطلب', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))], sample0.productId || ''), { cls: 'sale-only', hint: 'تتخصم من المخزون وتتحسب مصروف عينات' })}
         ${UI.field('عدد العينات', UI.input('sampleQty', sample0.qty || 1, 'type="number" min="1" step="1"'), { cls: 'sale-only sample-qty' })}
       </div>
@@ -4981,6 +5005,23 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
       onOpen(f) {
         const lines = f.querySelector('#lines');
         const promoMode = () => f.kind.value === 'promo';
+        let feeTouched = !isNew, chargeTouched = !isNew, retTouched = !isNew;
+        // حاسبة مستحقات شركة الشحن: بتملا «تكلفة الشحن علينا» لوحدها لحد ما تكتبها بإيدك
+        const courierCalc = () => { const c = DB.find('couriers', f.courierId.value); return c && c.calc && c.calc.enabled ? c : null; };
+        const cityNow = () => (f.customerId.value === '__new' ? f.cCity.value : (DB.find('customers', f.customerId.value) || {}).city);
+        const autoFee = ({ value, cod }) => {
+          const c = courierCalc();
+          f.querySelectorAll('.calc-only').forEach((el) => (el.hidden = !c));
+          if (!c) return num(f.courierFee.value);
+          const r = shipRate(c.id, cityNow()) || {};
+          const dv = f.declaredValue.value;
+          const res = OPS.courierFeeCalc(dv !== '' ? { ...c.calc, declaredMax: 0 } : c.calc, { shipping: num(r.fee), cod, value: dv !== '' ? num(dv) : value, open: f.openPackage.checked });
+          if (!feeTouched) f.courierFee.value = res.total;
+          const parts = [res.shipping ? `شحن ${fmt(res.shipping)}` : '', res.insurance ? `تأمين ${fmt(res.insurance)}` : '', res.collection ? `تحصيل ${fmt(res.collection)}` : '', res.open ? `فتح ${fmt(res.open)}` : '', res.vat ? `ضريبة ${fmt(res.vat)}` : ''].filter(Boolean).join(' + ');
+          const off = feeTouched && Math.abs(num(f.courierFee.value) - res.total) > 0.005;
+          f.querySelector('#ship-hint').innerHTML = `${esc(c.name)}: ${parts || '0'} = <b>${fmt(res.total)}</b>${off ? ` <button type="button" class="link-btn" data-use-fee="${res.total}">استخدمه</button>` : ''}`;
+          return num(f.courierFee.value);
+        };
         const recalc = () => {
           const promo = promoMode();
           let gross = 0, cost = 0;
@@ -4993,8 +5034,8 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
             r.querySelector('.l-total').textContent = fmt(promo ? q * unit : q * pr);
             r.querySelector('.l-stock').textContent = st ? `متاح: ${fmt(st.available)} · تكلفة ${fmt(st.avgCost, 0)}` : '';
           });
-          const fee = num(f.courierFee.value);
           if (promo) {
+            const fee = autoFee({ value: cost, cod: 0 });
             f.querySelector('#sale-summary').innerHTML = `<div><span>تكلفة القطع</span><b>${fmt(cost)}</b></div><div><span>شحن علينا</span><b>${fmt(fee)}</b></div><div class="strong"><span>يُحمَّل على مصروف الدعاية</span><b>${fmt(cost + fee)} ج.م</b></div><div><span>المطلوب من المستلم</span><b>0</b></div>`;
             return;
           }
@@ -5013,6 +5054,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
           } else hint.textContent = 'كود مؤثر أو عرض — بيحسب الخصم لوحده';
           const disc = num(f.discount.value), ship = num(f.shippingCharged.value);
           const total = gross - disc + ship;
+          const fee = autoFee({ value: total, cod: f.payment.value === 'cod' ? total : 0 });
           const payFee = f.payment.value !== 'cod' ? accountFee(f.payment.value, total) : 0;
           const sp = f.sampleProductId.value && J().inventory.products[f.sampleProductId.value];
           const sampleCost = sp ? sp.avgCost * (num(f.sampleQty.value) || 1) : 0;
@@ -5056,17 +5098,19 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
           recalc();
         };
         // سعر الشحن حسب محافظة العميل، إلا لو كتبته بإيدك
-        let feeTouched = !isNew, chargeTouched = !isNew, retTouched = !isNew;
         f.courierFee.addEventListener('input', () => (feeTouched = true));
+        f.querySelector('#ship-hint').addEventListener('click', (e) => { const b = e.target.closest('[data-use-fee]'); if (b) { f.courierFee.value = b.dataset.useFee; feeTouched = false; recalc(); } });
         f.shippingCharged.addEventListener('input', () => (chargeTouched = true));
         f.returnFee.addEventListener('input', () => (retTouched = true));
         const autoShip = () => {
           const city = f.customerId.value === '__new' ? f.cCity.value : (DB.find('customers', f.customerId.value) || {}).city;
           const r = shipRate(f.courierId.value, city);
           const hint = f.querySelector('#ship-hint');
-          if (!r) { hint.textContent = 'تخصمها شركة الشحن من التحصيل'; return; }
-          hint.textContent = `حسب ${govOf(city) || 'السعر الافتراضي'}: ${fmt(r.fee)}${r.returnFee ? ` · مرتجع ${fmt(r.returnFee)}` : ''}`;
-          if (!feeTouched) f.courierFee.value = num(r.fee);
+          const calcC = courierCalc();
+          if (calcC && isNew && f.openPackage.hasAttribute('data-default')) { f.openPackage.checked = !!calcC.calc.openDefault; f.openPackage.removeAttribute('data-default'); }
+          if (!r) { if (!calcC) hint.textContent = 'تخصمها شركة الشحن من التحصيل'; recalc(); return; }
+          if (!calcC) hint.textContent = `حسب ${govOf(city) || 'السعر الافتراضي'}: ${fmt(r.fee)}${r.returnFee ? ` · مرتجع ${fmt(r.returnFee)}` : ''}`;
+          if (!feeTouched && !calcC) f.courierFee.value = num(r.fee);
           if (!chargeTouched && r.charge != null && r.charge !== '') f.shippingCharged.value = num(r.charge);
           if (!retTouched) f.returnFee.value = num(r.returnFee);
           recalc();
@@ -5086,7 +5130,7 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
         if (status === 'returned' && !fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
         const obj = { ...sale, returnReason: status === 'returned' ? fd.get('returnReason') : '', kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
           discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
-          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
+          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), openPackage: fd.get('openPackage') === 'on', declaredValue: fd.get('declaredValue') === '' ? null : num(fd.get('declaredValue')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
           refundAccountId: status === 'returned' ? fd.get('refundAccountId') : '', lostDate: status === 'lost' ? fd.get('lostDate') : '', compensation: status === 'lost' ? num(fd.get('compensation')) : 0, lostRefundAccountId: status === 'lost' ? fd.get('lostRefundAccountId') : '',
           samples: !promo && fd.get('sampleProductId') ? [{ productId: fd.get('sampleProductId'), qty: num(fd.get('sampleQty')) || 1 }] : [] };
         // كود الخصم وعمولة المؤثر وعمولة الدفع بتتحفظ رقم ثابت وقت الحفظ
@@ -6040,17 +6084,35 @@ kbd { font-family: var(--mono); font-size: .7rem; padding: 2px 6px; border-radiu
     const isNew = !c; c = c || { id: uid(), name: '' };
     const r = (g) => (g ? (c.rates || {})[g] : c.defaultRate) || {};
     const v = (x) => (x == null || x === '' ? '' : x);
+    const calc = { ...OPS.FEE_CALC_DEFAULTS, ...(c.calc || {}) };
     const row = (g) => `<tr data-gov="${esc(g)}"><td>${g ? esc(g) : '<b>أي محافظة تانية</b>'}</td><td><input class="r-fee" type="number" min="0" step="0.01" value="${v(r(g).fee)}" aria-label="تكلفة الشحن علينا"></td><td><input class="r-ret" type="number" min="0" step="0.01" value="${v(r(g).returnFee)}" aria-label="مصاريف المرتجع"></td><td><input class="r-charge" type="number" min="0" step="0.01" value="${v(r(g).charge)}" aria-label="نحصّل من العميل"></td></tr>`;
     UI.modal({ title: isNew ? 'شركة شحن جديدة' : 'تعديل شركة الشحن', wide: true,
       body: `${UI.field('الاسم', UI.input('name', c.name, 'required'), { req: true })}
         <h3 class="sub-title">أسعار الشحن حسب المحافظة</h3>
         <p class="muted">بتتحط في الطلب لوحدها أول ما تختار العميل وشركة الشحن. سيب الخانة فاضية لو المحافظة بتاخد السعر الافتراضي.</p>
-        <div class="table-wrap rates-wrap"><table class="lines"><thead><tr><th>المحافظة</th><th>الشحن علينا</th><th>مصاريف المرتجع</th><th>نحصّل من العميل</th></tr></thead><tbody>${row('')}${GOVERNORATES.map(row).join('')}</tbody></table></div>`,
+        <div class="table-wrap rates-wrap"><table class="lines"><thead><tr><th>المحافظة</th><th>الشحن علينا</th><th>مصاريف المرتجع</th><th>نحصّل من العميل</th></tr></thead><tbody>${row('')}${GOVERNORATES.map(row).join('')}</tbody></table></div>
+        <h3 class="sub-title">حاسبة المستحقات (زي بوسطة)</h3>
+        <label class="check"><input type="checkbox" name="calcEnabled" ${calc.enabled ? 'checked' : ''}> احسب مستحقات الشركة في كل طلب: الشحن + التأمين + رسوم التحصيل + فتح الشحنة + ضريبة القيمة المضافة</label>
+        <p class="muted">لما تشغّلها، «الشحن علينا» في الجدول فوق يبقى سعر الشحن <b>قبل</b> الضريبة. الأرقام دي من كشف بوسطة؛ لو عقدك مختلف عدّلها.</p>
+        <div class="form-grid calc-fields">
+          <label class="check"><input type="checkbox" name="shippingFree" ${calc.shippingFree ? 'checked' : ''}> سعر الشحن عليه خصم كامل (باقة)</label>
+          ${UI.field('التأمين ٪ من القيمة المعلنة', UI.input('insurancePct', calc.insurancePct, 'type="number" min="0" step="0.01"'))}
+          ${UI.field('أقل تأمين (ج.م)', UI.input('insuranceMin', calc.insuranceMin, 'type="number" min="0" step="0.01"'))}
+          ${UI.field('أقصى تأمين (ج.م)', UI.input('insuranceMax', calc.insuranceMax, 'type="number" min="0" step="0.01"'), { hint: '0 = من غير حد' })}
+          ${UI.field('أقصى قيمة بتعلنها للشركة', UI.input('declaredMax', calc.declaredMax, 'type="number" min="0" step="1"'), { hint: '0 = قيمة الطلب كاملة. الشحنة بتتأمّن على المعلن بس' })}
+          ${UI.field('التحصيل مجاني لحد (ج.م)', UI.input('codFreeUpTo', calc.codFreeUpTo, 'type="number" min="0" step="1"'))}
+          ${UI.field('رسوم التحصيل ٪ على اللي فوقه', UI.input('codPct', calc.codPct, 'type="number" min="0" step="0.01"'))}
+          ${UI.field('رسوم فتح الشحنة (ج.م)', UI.input('openFee', calc.openFee, 'type="number" min="0" step="0.01"'))}
+          <label class="check"><input type="checkbox" name="openDefault" ${calc.openDefault ? 'checked' : ''}> العميل يقدر يفتح الشحنة (افتراضي في الطلبات الجديدة)</label>
+          ${UI.field('ضريبة القيمة المضافة ٪', UI.input('vatPct', calc.vatPct, 'type="number" min="0" step="0.01"'))}
+        </div>`,
       onSubmit(f, fd) {
         const read = (tr) => { const x = { fee: tr.querySelector('.r-fee').value, returnFee: tr.querySelector('.r-ret').value, charge: tr.querySelector('.r-charge').value }; return x.fee === '' && x.returnFee === '' && x.charge === '' ? null : { fee: num(x.fee), returnFee: num(x.returnFee), charge: x.charge === '' ? null : num(x.charge) }; };
         const rates = {}; let def = null;
         f.querySelectorAll('tr[data-gov]').forEach((tr) => { const x = read(tr); if (!x) return; if (tr.dataset.gov) rates[tr.dataset.gov] = x; else def = x; });
-        DB.upsert('couriers', { ...c, name: fd.get('name').trim(), rates, defaultRate: def }); UI.toast('تم الحفظ'); render();
+        const calcOut = { enabled: fd.get('calcEnabled') === 'on', shippingFree: fd.get('shippingFree') === 'on', openDefault: fd.get('openDefault') === 'on' };
+        ['insurancePct', 'insuranceMin', 'insuranceMax', 'declaredMax', 'codFreeUpTo', 'codPct', 'openFee', 'vatPct'].forEach((k) => (calcOut[k] = num(fd.get(k))));
+        DB.upsert('couriers', { ...c, name: fd.get('name').trim(), rates, defaultRate: def, calc: calcOut }); UI.toast('تم الحفظ'); render();
       } });
   }
   function importState(text) {

@@ -143,6 +143,28 @@
     return { matched, unmatched, duplicates, missing, totals, maxDate };
   }
 
+  // =====================================================================
+  // حاسبة مستحقات شركة الشحن (بطريقة بوسطة)
+  // الشحن + تأمين ٪ من قيمة الشحنة + رسوم تحصيل ٪ على اللي فوق حد معين + فتح الشحنة، وعلى كله ضريبة القيمة المضافة
+  // =====================================================================
+  const FEE_CALC_DEFAULTS = { enabled: false, shippingFree: false, insurancePct: 0.5, insuranceMin: 5, insuranceMax: 20, declaredMax: 0, codFreeUpTo: 2000, codPct: 1, openFee: 7, openDefault: true, vatPct: 14 };
+  function courierFeeCalc(calc, { shipping = 0, cod = 0, value = 0, open = false } = {}) {
+    const c = { ...FEE_CALC_DEFAULTS, ...(calc || {}) };
+    const ship = c.shippingFree ? 0 : Math.max(0, num(shipping));
+    // القيمة المعلنة لشركة الشحن: قيمة الطلب، إلا لو انت بتعلن أقل منها بحد أقصى
+    const declared = num(c.declaredMax) ? Math.min(num(value), num(c.declaredMax)) : num(value);
+    // التقريب لأقرب قرش، والنص بيطلع لفوق زي بوسطة
+    const up = (n) => Math.round(n * 100 + 1e-6) / 100;
+    let insurance = declared > 0 ? up(declared * num(c.insurancePct) / 100) : 0;
+    if (declared > 0 && num(c.insuranceMin)) insurance = Math.max(insurance, num(c.insuranceMin));
+    if (num(c.insuranceMax)) insurance = Math.min(insurance, num(c.insuranceMax));
+    const collection = up(Math.max(0, num(cod) - num(c.codFreeUpTo)) * num(c.codPct) / 100);
+    const openFee = open ? num(c.openFee) : 0;
+    const net = round2(ship + insurance + collection + openFee);
+    const vat = up(net * num(c.vatPct) / 100);
+    return { shipping: ship, insurance, collection, open: openFee, net, vat, total: round2(net + vat) };
+  }
+
   // طلبات الدفع عند الاستلام اللي اتسلمت ولسه ما دخلتش في أي تسوية، لكل شركة شحن
   function unsettledByCourier(state, asOf) {
     const done = reconciledSales(state);
@@ -381,7 +403,7 @@
     return { total: { ...total, loss: round2(total.loss), rate: total.orders ? total.returned / total.orders : 0 }, gov: rows('gov'), courier: rows('courier'), channel: rows('channel'), reason: rows('reason') };
   }
 
-  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, FEE_CALC_DEFAULTS, courierFeeCalc, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);
