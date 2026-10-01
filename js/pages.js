@@ -1976,16 +1976,27 @@
     const s = S();
     const opts = { courierId: reconCourier || s.couriers[0].id, updateFees: true, updateStatus: true, settle: true, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), amount: null };
     let res;
-    const run = () => { res = OPS.reconcile(S(), opts.courierId, parsed.rows, S().settings.invoicePrefix); if (opts.amount == null) opts.amount = res.totals.statementNet; };
+    // التحويلات اللي اتعملت فعلًا (تاريخها النهارده أو قبل كده)؛ لو تحويل واحد تقدر تعدل مبلغه
+    // سطور تحويل تاريخه لسه ما جاش: زي «Not Paid» — تستنى الكشف اللي هتتحول فيه عشان فلوسها تتسجل معاها
+    parsed.rows.forEach((r) => { const d = OPS.batchDate(r.batch); if (d && d > today()) r.pending = true; });
+    const run = () => {
+      res = OPS.reconcile(S(), opts.courierId, parsed.rows, S().settings.invoicePrefix);
+      const tr = res.transfers.filter((t) => !t.date || t.date <= today());
+      if (opts.amount == null) opts.amount = tr.length === 1 ? tr[0].net : res.totals.statementNet;
+      if (tr.length === 1 && tr[0].date && opts.dateSet !== true) opts.date = tr[0].date;
+    };
     run();
+    const doneTransfers = () => res.transfers.filter((x) => !x.date || x.date <= today());
+    const multi = () => doneTransfers().length > 1;
     const saleCell = (id) => { const x = DB.find('sales', id); return x ? `<button type="button" class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>` : '—'; };
     const view = () => {
       const t = res.totals;
       const bad = res.matched.filter((m) => m.issues.length), ok = res.matched.filter((m) => !m.issues.length);
-      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(esc(m.ref), 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td(m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good'))}</tr>`;
+      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(`${esc(m.ref)}${m.via === 'phone' ? ` ${UI.pill('بالموبايل', 'info')}` : ''}`, 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td(m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good'))}</tr>`;
       const head = ['البوليصة / الرقم', 'الفاتورة', 'الحالة في الكشف', '#المحصل', '#المتوقع', '#مصاريف الكشف', '#مصاريفنا', 'الملاحظة'];
       return `
-        <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} سطر</p>
+        <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} سطر${parsed.batches && parsed.batches.length ? ` — دورة التحويل ${parsed.batches.map(esc).join('، ')}` : ''}${parsed.paidAt ? ` — اتحول يوم ${fmtDate(parsed.paidAt)}` : ''}</p>
+        ${t.byPhone ? `<div class="imp-box"><b>${t.byPhone} ${t.byPhone === 1 ? 'طلب' : t.byPhone === 2 ? 'طلبين' : 'طلبات'} اتطابقوا بموبايل العميل والمبلغ</b> لأن رقم البوليصة مش متسجل عليهم. عند الحفظ رقم البوليصة هيتسجل على الفاتورة عشان المرة الجاية تتطابق على طول.</div>` : ''}
         <div class="form-grid">${UI.field('شركة الشحن', UI.select('rcCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-rc="courierId"'))}</div>
         <div class="summary">
           <div><span>إجمالي المحصل في الكشف</span><b>${fmt(t.statementCod)}</b></div>
@@ -1996,15 +2007,19 @@
           <div class="${t.feeDiff > 0.5 ? 'bad-text' : ''}"><span>فرق المصاريف</span><b>${fmt(t.feeDiff)}</b></div>
         </div>
         ${bad.length ? `<h3 class="sub-title bad-text">طلبات فيها فروق (${bad.length})</h3>${table(head, bad.map(mrow))}` : '<p class="good-text"><b>كل الطلبات اللي في الكشف مطابقة ✔</b></p>'}
-        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}</tr>`))}<p class="muted">سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
+        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'موبايل العميل', 'الحالة', '#المحصل', '#المصاريف', 'ليه مالقيتوش'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.phone || '—'), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}${td(`<small class="muted">${esc(r.hint || (r.phone ? 'مفيش طلب لعميل بالموبايل ده' : 'رقم البوليصة مش متسجل على أي طلب'))}</small>`)}</tr>`))}<p class="muted">سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
         ${res.missing.length ? `<h3 class="sub-title warn-text">طلبات اتسلمت ومش موجودة في الكشف (${res.missing.length}) — صافي ${fmt(t.missingNet)} ج.م</h3>${table(['الفاتورة', 'التاريخ', 'الحالة', '#الصافي المتوقع'], res.missing.map((m) => { const x = DB.find('sales', m.saleId); return `<tr>${td(saleCell(m.saleId))}${td(fmtDate(m.date))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(m.expected.net))}</tr>`; }))}` : ''}
         ${ok.length ? `<details class="imp-box"><summary>${ok.length} طلب مطابق (اضغط للتفاصيل)</summary>${table(head, ok.map(mrow))}</details>` : ''}
         ${res.duplicates.length ? `<div class="imp-box warn"><b>${res.duplicates.length} سطر مكرر في الكشف لنفس الطلب — اتحسب مرة واحدة.</b></div>` : ''}
+        ${res.pending.length ? `<div class="imp-box"><b>${res.pending.length === 1 ? 'سطر واحد' : `${res.pending.length} سطور`} لسه ما اتحولتش — صافي ${fmt(t.pendingNet)} ج.م.</b> (مكتوب عليها «Not Paid» أو تاريخ تحويلها لسه ما جاش) مش هيتسووا دلوقتي، وهيتسووا مع الكشف اللي هيتحولوا فيه.</div>` : ''}
         <h3 class="sub-title">عند الحفظ</h3>
         <label class="check"><input type="checkbox" data-rc="updateFees" ${opts.updateFees ? 'checked' : ''}> عدّل مصاريف الشحن والمرتجع في الطلبات حسب الكشف</label>
         <label class="check"><input type="checkbox" data-rc="updateStatus" ${opts.updateStatus ? 'checked' : ''}> عدّل حالة الطلبات (تم التسليم / مرتجع) حسب الكشف</label>
         <label class="check"><input type="checkbox" data-rc="settle" ${opts.settle ? 'checked' : ''}> سجّل التحصيل في الخزينة</label>
-        <div class="form-grid" ${opts.settle ? '' : 'hidden'}>
+        ${multi() ? `<div ${opts.settle ? '' : 'hidden'}><p class="muted">الكشف فيه <b>${doneTransfers().length} تحويلات</b> — كل تحويل هيتسجل لوحده بتاريخه:</p>
+          ${table(['دورة التحويل', 'التاريخ', '#عدد الطلبات', '#الصافي'], doneTransfers().map((x) => `<tr>${td(esc(x.batch || '—'), 'mono')}${td(x.date ? fmtDate(x.date) : '—')}${tdn(x.count)}${tdn(fmt(x.net))}</tr>`), { foot: `<tr><td colspan="3">الإجمالي</td>${tdn(fmt(doneTransfers().reduce((a, x) => a + x.net, 0)))}</tr>` })}
+          <div class="form-grid">${UI.field('إلى حساب', UI.select('rcAccount', accountOptions(), opts.accountId, 'data-rc="accountId"'))}</div></div>` : ''}
+        <div class="form-grid" ${opts.settle && !multi() ? '' : 'hidden'}>
           ${UI.field('المبلغ اللي وصلك فعلًا', UI.input('rcAmount', opts.amount, 'type="number" step="0.01" data-rc="amount"'), { hint: 'صافي التحويل من شركة الشحن' })}
           ${UI.field('إلى حساب', UI.select('rcAccount', accountOptions(), opts.accountId, 'data-rc="accountId"'))}
           ${UI.field('تاريخ التحويل', UI.input('rcDate', opts.date, 'type="date" data-rc="date"'))}
@@ -2017,6 +2032,7 @@
           const k = e.target.dataset.rc;
           if (!k) return;
           opts[k] = e.target.type === 'checkbox' ? e.target.checked : k === 'amount' ? num(e.target.value) : e.target.value;
+          if (k === 'date') opts.dateSet = true;
           if (k === 'courierId') { opts.amount = null; run(); }
           if (k !== 'amount' && k !== 'date' && k !== 'accountId') box.innerHTML = view();
         });
@@ -2025,10 +2041,14 @@
         const fresh = res.matched.filter((m) => !m.alreadyReconciled);
         if (!fresh.length && !opts.settle) { UI.toast('مفيش طلبات جديدة في الكشف', 'bad'); return false; }
         if (!dateOk(opts.date || today(), 'تاريخ التسوية')) return false;
+        if (opts.settle && multi() && doneTransfers().some((x) => x.date && !dateOk(x.date, `تاريخ تحويل ${x.batch || ''}`))) return false;
         let changed = 0;
         fresh.forEach((m) => {
           const sale = DB.find('sales', m.saleId);
           const upd = { ...sale };
+          // اتطابق بالموبايل أو بالرقم: رقم البوليصة وشركة الشحن يتسجلوا على الفاتورة لو ناقصين
+          if (!upd.trackingNo && m.ref) upd.trackingNo = m.ref;
+          if (!upd.courierId) upd.courierId = opts.courierId;
           if (opts.updateStatus && m.statementStatus && m.statementStatus !== sale.status && sale.status !== 'cancelled') {
             upd.status = m.statementStatus;
             if (m.statementStatus === 'returned' && !upd.returnDate) upd.returnDate = m.date || today();
@@ -2041,14 +2061,21 @@
         });
         const rec = { id: uid(), date: opts.date || today(), courierId: opts.courierId, fileName, net: res.totals.statementNet,
           lines: fresh.map((m) => ({ saleId: m.saleId, ref: m.ref, cod: m.cod, fee: m.fee, status: m.status })), unmatched: res.unmatched.map((r) => ({ ref: r.ref, cod: r.cod, fee: r.fee, status: r.status })) };
-        if (opts.settle && num(opts.amount)) {
-          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), notes: `تسوية كشف ${fileName}` };
+        if (opts.settle && multi()) {
+          // كل دورة تحويل تحصيل لوحده بتاريخه وصافيه
+          rec.settlementIds = doneTransfers().filter((x) => Math.abs(x.net) >= 0.005).map((x) => {
+            const st = { id: uid(), date: x.date || opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: x.net, notes: `تسوية كشف ${fileName}${x.batch ? ` — ${x.batch}` : ''}` };
+            S().settlements.push(st); return st.id;
+          });
+          rec.settlementId = rec.settlementIds[0];
+        } else if (opts.settle && num(opts.amount)) {
+          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), notes: `تسوية كشف ${fileName}${parsed.batches && parsed.batches.length ? ` (${parsed.batches.join('، ')})` : ''}` };
           S().settlements.push(st); rec.settlementId = st.id;
         }
         S().reconciliations.push(rec);
         DB.save();
         reconCourier = opts.courierId;
-        UI.toast(`تمت تسوية ${fresh.length} طلب${changed ? ` وتعديل ${changed}` : ''}${rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
+        UI.toast(`تمت تسوية ${fresh.length} طلب${changed ? ` وتعديل ${changed}` : ''}${rec.settlementIds ? ` وتسجيل ${rec.settlementIds.length} تحويلات` : rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
         render();
       } });
   }

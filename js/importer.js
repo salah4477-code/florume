@@ -135,7 +135,8 @@
   function toDate(v) {
     if (v == null || v === '') return '';
     if (typeof v === 'number' && v > 20000 && v < 80000) {
-      const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      // الجزء العشري هو الساعة: ناخد اليوم بس (التقريب كان بيقلب أي وقت بعد الضهر لليوم اللي بعده)
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v + 1e-9) * 86400000);
       return d.toISOString().slice(0, 10);
     }
     const s = latinDigits(str(v));
