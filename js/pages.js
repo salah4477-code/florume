@@ -39,6 +39,9 @@
   const nameOf = (list, id) => (DB.find(list, id) || {}).name || '—';
   const invoiceNo = (sale) => `${S().settings.invoicePrefix || ''}${sale.no || ''}`;
   const accountOptions = () => S().accounts.map((a) => ({ v: a.id, l: a.name }));
+  // المصروف ممكن يتدفع من حساب، أو تخصمه شركة الشحن من رصيدك عندها
+  const payFromOptions = () => [...accountOptions(), ...S().couriers.map((c) => ({ v: 'courier:' + c.id, l: `خصم من رصيدك عند ${c.name}` }))];
+  const paidFromName = (e) => (e.courierId ? `رصيد ${nameOf('couriers', e.courierId)}` : nameOf('accounts', e.accountId));
   const productOptions = () => [{ v: '', l: 'اختر المنتج…' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))];
   const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', lost: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
   const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '—');
@@ -1292,7 +1295,7 @@
     const accOpts = [{ v: '', l: 'كل البنود' }, ...[...new Map(all.map((r) => [r.acc, r.name])).entries()].map(([v, l]) => ({ v, l }))];
     const rowActions = (r) => r.source === 'expense' && r.ref && r.ref.type === 'expense' ? actions(btn('تعديل', 'editExpense', r.ref.id), btn('حذف', 'delExpense', r.ref.id, 'danger'))
       : (r.source === 'sale' || r.source === 'saleReturn') && r.ref ? actions(btn('عرض الفاتورة', 'viewSale', r.ref.id)) : actions();
-    const acctOf = (r) => (r.source === 'expense' && r.ref ? nameOf('accounts', (DB.find('expenses', r.ref.id) || {}).accountId) : '');
+    const acctOf = (r) => (r.source === 'expense' && r.ref ? paidFromName(DB.find('expenses', r.ref.id) || {}) : '');
     const due = OPS.dueRecurring(s, today());
     const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
     return `${header('المصروفات', 'كل المصروفات في مكان واحد: اللي بتسجلها بإيدك، واللي السيستم بيسجلها لوحده من الفواتير (الشحن، العينات، فواتير الدعاية، عمولات الدفع، الخصم) والشحنات والتحويلات والجرد.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
@@ -1382,10 +1385,11 @@
     const s = S(); const isNew = !e;
     e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', campaignId: '' };
     UI.modal({ title: isNew ? 'مصروف جديد' : 'تعديل المصروف',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', accountOptions(), e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', payFromOptions(), e.courierId ? 'courier:' + e.courierId : e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
       onOpen(f) { const t = () => { f.querySelector('.camp-field').hidden = f.category.value !== '5300'; }; f.category.addEventListener('change', t); t(); },
       onSubmit(f, fd) {
-        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
+        const from = String(fd.get('accountId') || '');
+        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: from.startsWith('courier:') ? '' : from, courierId: from.startsWith('courier:') ? from.slice(8) : '', campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'expenses', obj))) return false;
         DB.upsert('expenses', obj); UI.toast('تم حفظ المصروف'); render();
@@ -1964,8 +1968,11 @@
       const file = input.files[0]; input.remove();
       if (!file) return;
       try {
-        const parsed = OPS.parseStatement(await IMP.readWorkbook(file));
-        if (!parsed || !parsed.rows.length) { UI.toast('مش لاقي عمود «رقم البوليصة» أو «رقم الطلب» ومعاه «المبلغ المحصل» أو «مصاريف الشحن» في الملف', 'bad'); return; }
+        const sheets = await IMP.readWorkbook(file);
+        const wallet = OPS.parseWallet(sheets);
+        if (wallet) { walletPreview(file.name, wallet); return; }
+        const parsed = OPS.parseStatement(sheets);
+        if (!parsed || !parsed.rows.length) { UI.toast('الملف مش كشف طلبات (رقم البوليصة + المحصل/المصاريف) ولا كشف حركات محفظة (النوع + المبلغ + الرصيد)', 'bad'); return; }
         reconcilePreview(file.name, parsed);
       } catch (err) { UI.toast(err.message || 'تعذرت قراءة الملف', 'bad'); }
     });
@@ -1981,12 +1988,16 @@
     parsed.rows.forEach((r) => { const d = OPS.batchDate(r.batch); if (d && d > today()) r.pending = true; });
     const run = () => {
       res = OPS.reconcile(S(), opts.courierId, parsed.rows, S().settings.invoicePrefix);
-      const tr = res.transfers.filter((t) => !t.date || t.date <= today());
-      if (opts.amount == null) opts.amount = tr.length === 1 ? tr[0].net : res.totals.statementNet;
+      const tr = res.transfers.filter((t) => (!t.date || t.date <= today()) && !OPS.batchSettlement(S(), opts.courierId, t.batch));
+      const known = res.transfers.length - tr.length;
+      if (opts.amount == null) opts.amount = tr.length === 1 ? tr[0].net : known && !tr.length ? 0 : res.totals.statementNet;
+      if (known && !tr.length && opts.settleSet !== true) opts.settle = false;
       if (tr.length === 1 && tr[0].date && opts.dateSet !== true) opts.date = tr[0].date;
     };
     run();
-    const doneTransfers = () => res.transfers.filter((x) => !x.date || x.date <= today());
+    const doneTransfers = () => res.transfers.filter((x) => (!x.date || x.date <= today()) && !OPS.batchSettlement(S(), opts.courierId, x.batch));
+    // تحويلات اتسجلت قبل كده (من كشف المحفظة أو كشف طلبات قبله) — مش هتتسجل تاني
+    const recordedTransfers = () => res.transfers.filter((x) => (!x.date || x.date <= today()) && OPS.batchSettlement(S(), opts.courierId, x.batch));
     const multi = () => doneTransfers().length > 1;
     const saleCell = (id) => { const x = DB.find('sales', id); return x ? `<button type="button" class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>` : '—'; };
     const view = () => {
@@ -2011,6 +2022,7 @@
         ${res.missing.length ? `<h3 class="sub-title warn-text">طلبات اتسلمت ومش موجودة في الكشف (${res.missing.length}) — صافي ${fmt(t.missingNet)} ج.م</h3>${table(['الفاتورة', 'التاريخ', 'الحالة', '#الصافي المتوقع'], res.missing.map((m) => { const x = DB.find('sales', m.saleId); return `<tr>${td(saleCell(m.saleId))}${td(fmtDate(m.date))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(m.expected.net))}</tr>`; }))}` : ''}
         ${ok.length ? `<details class="imp-box"><summary>${ok.length} طلب مطابق (اضغط للتفاصيل)</summary>${table(head, ok.map(mrow))}</details>` : ''}
         ${res.duplicates.length ? `<div class="imp-box warn"><b>${res.duplicates.length} سطر مكرر في الكشف لنفس الطلب — اتحسب مرة واحدة.</b></div>` : ''}
+        ${recordedTransfers().length ? `<div class="imp-box"><b>${recordedTransfers().map((x) => esc(x.batch)).join('، ')} اتسجل تحصيله قبل كده</b> — مش هيتسجل تاني.</div>` : ''}
         ${res.pending.length ? `<div class="imp-box"><b>${res.pending.length === 1 ? 'سطر واحد' : `${res.pending.length} سطور`} لسه ما اتحولتش — صافي ${fmt(t.pendingNet)} ج.م.</b> (مكتوب عليها «Not Paid» أو تاريخ تحويلها لسه ما جاش) مش هيتسووا دلوقتي، وهيتسووا مع الكشف اللي هيتحولوا فيه.</div>` : ''}
         <h3 class="sub-title">عند الحفظ</h3>
         <label class="check"><input type="checkbox" data-rc="updateFees" ${opts.updateFees ? 'checked' : ''}> عدّل مصاريف الشحن والمرتجع في الطلبات حسب الكشف</label>
@@ -2033,6 +2045,7 @@
           if (!k) return;
           opts[k] = e.target.type === 'checkbox' ? e.target.checked : k === 'amount' ? num(e.target.value) : e.target.value;
           if (k === 'date') opts.dateSet = true;
+          if (k === 'settle') opts.settleSet = true;
           if (k === 'courierId') { opts.amount = null; run(); }
           if (k !== 'amount' && k !== 'date' && k !== 'accountId') box.innerHTML = view();
         });
@@ -2064,18 +2077,91 @@
         if (opts.settle && multi()) {
           // كل دورة تحويل تحصيل لوحده بتاريخه وصافيه
           rec.settlementIds = doneTransfers().filter((x) => Math.abs(x.net) >= 0.005).map((x) => {
-            const st = { id: uid(), date: x.date || opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: x.net, notes: `تسوية كشف ${fileName}${x.batch ? ` — ${x.batch}` : ''}` };
+            const st = { id: uid(), date: x.date || opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: x.net, batch: x.batch || '', notes: `تسوية كشف ${fileName}${x.batch ? ` — ${x.batch}` : ''}` };
             S().settlements.push(st); return st.id;
           });
           rec.settlementId = rec.settlementIds[0];
         } else if (opts.settle && num(opts.amount)) {
-          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), notes: `تسوية كشف ${fileName}${parsed.batches && parsed.batches.length ? ` (${parsed.batches.join('، ')})` : ''}` };
+          const one = doneTransfers().length === 1 ? doneTransfers()[0].batch : '';
+          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), batch: one || '', notes: `تسوية كشف ${fileName}${parsed.batches && parsed.batches.length ? ` (${parsed.batches.join('، ')})` : ''}` };
           S().settlements.push(st); rec.settlementId = st.id;
         }
         S().reconciliations.push(rec);
         DB.save();
         reconCourier = opts.courierId;
         UI.toast(`تمت تسوية ${fresh.length} طلب${changed ? ` وتعديل ${changed}` : ''}${rec.settlementIds ? ` وتسجيل ${rec.settlementIds.length} تحويلات` : rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
+        render();
+      } });
+  }
+  // كشف حركات المحفظة: يسجل اللي شركة الشحن خصمته من رصيدك (رسوم استلام، تغليف، اشتراك، رسوم تحويل)،
+  // وشحن الرصيد اللي دفعته لهم، والتحويلات اللي وصلتك بمبلغها الفعلي (ويصحح التحويل لو اتسجل بصافي الطلبات)
+  function walletPreview(fileName, parsed) {
+    const s = S();
+    const opts = { courierId: reconCourier || s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, charges: true, recharges: true, cashouts: true, cats: {} };
+    let plan;
+    const run = () => { plan = OPS.walletPlan(S(), opts.courierId, parsed); };
+    run();
+    const catOptions = Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name }));
+    const future = (r) => r.date && r.date > today();
+    const view = () => {
+      const t = plan.totals;
+      const newCharges = plan.charges.filter((c) => !c.done && !future(c)), newRech = plan.recharges.filter((r) => !r.done && !future(r));
+      const co = plan.cashouts.filter((c) => !future(c));
+      const coState = (c) => (c.state === 'new' ? UI.pill('جديد', 'info') : c.state === 'same' ? UI.pill('متسجل ✔', 'good') : `<span class="warn-text">متسجل ${fmt(c.recorded)} — هيتصحح لـ ${fmt(c.value)}</span>`);
+      return `
+        <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} حركة${parsed.from ? ` من ${fmtDate(parsed.from)} لـ ${fmtDate(parsed.to)}` : ''}</p>
+        <div class="imp-box">ده <b>كشف حركات المحفظة</b> مش كشف الطلبات: التحصيل ومصاريف الشحن فيه مجمّعين بالدورة (${fmt(t.cycleCod)} تحصيل − ${fmt(t.cycleFees)} مصاريف) ودول بيتسجلوا من الفواتير ومن مطابقة كشف الطلبات.
+          اللي هيتسجل من هنا: <b>الحاجات اللي اتخصمت من رصيدك ومش في كشف الطلبات</b>، والفلوس اللي دفعتها لهم، والتحويلات بمبلغها الفعلي.</div>
+        <div class="form-grid">${UI.field('شركة الشحن', UI.select('wpCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-wp="courierId"'))}
+          ${UI.field('الحساب (اللي بيستلم التحويلات وبتشحن منه الرصيد)', UI.select('wpAccount', accountOptions(), opts.accountId, 'data-wp="accountId"'))}</div>
+        <div class="summary">
+          <div><span>مصروفات اتخصمت من الرصيد (جديدة)</span><b>${fmt(newCharges.reduce((a, c) => a + c.value, 0))}</b></div>
+          <div><span>شحن رصيد دفعته</span><b>${fmt(newRech.reduce((a, c) => a + c.value, 0))}</b></div>
+          <div><span>تحويلات وصلتك</span><b>${fmt(co.reduce((a, c) => a + c.value, 0))}</b></div>
+          ${parsed.balance != null ? `<div class="strong"><span>رصيدك عندهم دلوقتي حسب الكشف</span><b>${fmt(parsed.balance)} ج.م</b></div>` : ''}
+        </div>
+        <h3 class="sub-title">مصروفات خصموها من رصيدك</h3>
+        ${plan.groups.length ? `${table(['البند في الكشف', '#عدد', '#المبلغ', 'يتسجل على'], plan.groups.map((g) => `<tr>${td(esc(g.label))}${tdn(g.count)}${tdn(fmt(g.total))}${td(UI.select('wpCat', catOptions, opts.cats[g.label] || g.acc, `data-cat="${esc(g.label)}"`))}</tr>`))}
+          <label class="check"><input type="checkbox" data-wp="charges" ${opts.charges ? 'checked' : ''}> سجّلهم مصروفات (من رصيدك عند شركة الشحن، مش من الخزينة)</label>` : '<p class="good-text">مفيش مصروفات جديدة — كله متسجل قبل كده ✔</p>'}
+        ${t.doneCharges ? `<p class="muted">${plan.charges.filter((c) => c.done).length} مصروف (${fmt(t.doneCharges)} ج.م) اتسجلوا قبل كده من كشف سابق — مش هيتكرروا.</p>` : ''}
+        ${co.length ? `<h3 class="sub-title">التحويلات اللي وصلتك (Cash Out)</h3>${table(['دورة التحويل', 'التاريخ', '#المبلغ الفعلي', 'في السيستم'], co.map((c) => `<tr>${td(esc(c.id), 'mono')}${td(fmtDate(c.date))}${tdn(fmt(c.value))}${td(coState(c))}</tr>`))}
+          ${co.some((c) => c.state === 'fix') ? '<p class="muted">التحويل اتسجل قبل كده بصافي كشف الطلبات، بس اللي وصلك فعلًا أقل لأن شركة الشحن خصمت منه المصروفات اللي فوق — هيتعدل للمبلغ الفعلي.</p>' : ''}
+          ${co.some((c) => c.state !== 'same') ? `<label class="check"><input type="checkbox" data-wp="cashouts" ${opts.cashouts ? 'checked' : ''}> سجّل / صحّح التحويلات</label>` : ''}` : ''}
+        ${newRech.length ? `<h3 class="sub-title">شحن رصيد دفعته لشركة الشحن</h3>${table(['التاريخ', '#المبلغ'], newRech.map((r) => `<tr>${td(fmtDate(r.date))}${tdn(fmt(r.value))}</tr>`))}
+          <label class="check"><input type="checkbox" data-wp="recharges" ${opts.recharges ? 'checked' : ''}> سجّلها (طالعة من الحساب اللي فوق)</label>` : ''}
+        ${plan.credits.length ? `<div class="imp-box warn"><b>${plan.credits.length} حركة بالموجب مش عارف نوعها</b> (${plan.credits.map((c) => esc(c.category)).join('، ')}) — مش هتتسجل، راجعها وسجلها بإيدك لو محتاج.</div>` : ''}`;
+    };
+    UI.modal({ title: 'كشف حركات محفظة شركة الشحن', wide: true, submit: 'حفظ', body: `<div id="wp-view">${view()}</div>`,
+      onOpen(f) {
+        const box = f.querySelector('#wp-view');
+        box.addEventListener('change', (e) => {
+          if (e.target.dataset.cat) { opts.cats[e.target.dataset.cat] = e.target.value; return; }
+          const k = e.target.dataset.wp;
+          if (!k) return;
+          opts[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+          if (k === 'courierId') { run(); box.innerHTML = view(); }
+        });
+      },
+      onSubmit() {
+        const st = S();
+        const charges = opts.charges ? plan.charges.filter((c) => !c.done && !future(c)) : [];
+        const rech = opts.recharges ? plan.recharges.filter((r) => !r.done && !future(r)) : [];
+        const co = opts.cashouts ? plan.cashouts.filter((c) => c.state !== 'same' && !future(c)) : [];
+        if (!charges.length && !rech.length && !co.length) { UI.toast('مفيش حاجة جديدة تتسجل من الكشف', 'bad'); return false; }
+        if ([...charges, ...rech, ...co].some((x) => x.date && !dateOk(x.date, `تاريخ ${x.category}`))) return false;
+        const cname = nameOf('couriers', opts.courierId);
+        charges.forEach((c) => st.expenses.push({ id: uid(), date: c.date || today(), category: opts.cats[c.label] || c.acc, amount: c.value, accountId: '', courierId: opts.courierId, walletRef: c.id, notes: `${c.category} — خصم من رصيد ${cname}` }));
+        rech.forEach((r) => st.settlements.push({ id: uid(), date: r.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: -r.value, walletRef: r.id, notes: `شحن رصيد ${cname} (${r.id})` }));
+        let fixed = 0;
+        co.forEach((c) => {
+          const old = c.settlementId && DB.find('settlements', c.settlementId);
+          if (old) { old.amount = c.value; old.batch = old.batch || c.id; old.notes = `${old.notes || ''} — اتصحح للمبلغ الفعلي من كشف المحفظة`.replace(/^ — /, ''); fixed++; }
+          else st.settlements.push({ id: uid(), date: c.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: c.value, batch: c.id, walletRef: c.id, notes: `تحويل ${cname} — ${c.id} (كشف المحفظة)` });
+        });
+        DB.save();
+        reconCourier = opts.courierId;
+        const parts = [charges.length && `${charges.length} مصروف`, rech.length && `${rech.length} شحن رصيد`, co.length - fixed && `${co.length - fixed} تحويل`, fixed && `تصحيح ${fixed} تحويل`].filter(Boolean);
+        UI.toast(`اتسجل: ${parts.join(' و')}`);
         render();
       } });
   }
@@ -2625,7 +2711,7 @@
     newAccount: () => accountForm(), editAccount: (id) => accountForm(DB.find('accounts', id)),
     delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)], ['decants', (x, i) => x.accountId === i]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
     newCourier: () => courierForm(), editCourier: (id) => courierForm(DB.find('couriers', id)),
-    delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i]])),
+    delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i], ['expenses', (x, i) => x.courierId === i]])),
     importExcel: pickImportFile,
     importTemplate: () => FX.exportExcel('florume-import-template.xlsx', [
       { name: 'المبيعات', plain: true, header: ['orderNo', 'trackingNo', 'type', 'date', 'customerName', 'customerPhone', 'customerAddress', 'productName', 'qty', 'netTotal', 'cogs', 'profit', 'account'], rows: [] },
@@ -2884,7 +2970,7 @@
     if (costs) {
       sheets.push(sheet('شحنات الاستيراد', ['م', 'المرجع', 'المورد', 'العملة', 'سعر الصرف', 'تاريخ الطلب', 'الحالة', 'تاريخ الاستلام', 'قيمة البضاعة بالعملة', 'مصاريف إضافية ج.م'], s.shipments.map((x, i) => [i + 1, x.ref || '', nm('suppliers', x.supplierId), x.currency, num(x.rate), x.orderDate, SHIP_STATUSES[x.status] || x.status, x.receivedDate || '', Acc.round2(x.items.reduce((a, l) => a + num(l.qty) * num(l.unitCost), 0)), Acc.round2((x.costs || []).reduce((a, c) => a + num(c.amount), 0))])));
       sheets.push(sheet('دفعات الموردين', ['م', 'التاريخ', 'المورد', 'المبلغ بالعملة', 'سعر الصرف', 'بالجنيه', 'من حساب'], s.supplierPayments.map((x, i) => [i + 1, x.date, nm('suppliers', x.supplierId), num(x.amount), num(x.rate), Acc.round2(num(x.amount) * (num(x.rate) || 1)), nm('accounts', x.accountId)])));
-      sheets.push(sheet('المصروفات', ['م', 'التاريخ', 'البند', 'المبلغ', 'من حساب', 'الحملة', 'البيان'], s.expenses.map((x, i) => [i + 1, x.date, (Acc.COA_MAP[x.category] || {}).name || x.category, num(x.amount), nm('accounts', x.accountId), nm('campaigns', x.campaignId), x.notes || ''])));
+      sheets.push(sheet('المصروفات', ['م', 'التاريخ', 'البند', 'المبلغ', 'من حساب', 'الحملة', 'البيان'], s.expenses.map((x, i) => [i + 1, x.date, (Acc.COA_MAP[x.category] || {}).name || x.category, num(x.amount), x.courierId ? `رصيد ${nm('couriers', x.courierId)}` : nm('accounts', x.accountId), nm('campaigns', x.campaignId), x.notes || ''])));
       sheets.push(sheet('مصروفات التأسيس', ['م', 'التاريخ', 'البند', 'المبلغ', 'اتدفع', 'البيان'], s.formation.map((x, i) => [i + 1, x.date, Acc.FORMATION_KINDS[x.kind] || '', num(x.amount), payerLabel(x), x.notes || ''])));
       sheets.push(sheet('الحسابات', ['م', 'الحساب', 'النوع', 'رصيد افتتاحي', 'الرصيد الحالي'], Acc.cashBalances(s, j).map((a, i) => [i + 1, a.name, ACCOUNT_TYPES[a.type] || '', num(a.opening), Acc.round2(a.balance)])));
       const moves = [...s.transfers.map((t) => [t.date, 'تحويل', `${nm('accounts', t.fromId)} ← ${nm('accounts', t.toId)}`, num(t.amount), t.notes || '']), ...s.settlements.map((t) => [t.date, 'تحصيل شحن', `${nm('couriers', t.courierId)} → ${nm('accounts', t.accountId)}`, num(t.amount), t.notes || '']), ...s.equity.map((t) => [t.date, t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', nm('accounts', t.accountId), num(t.amount), t.notes || ''])].sort((a, b) => (a[0] < b[0] ? -1 : 1));

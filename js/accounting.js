@@ -518,7 +518,9 @@
     // المصروفات
     (state.expenses || []).forEach((e) => {
       add(e.date, 'expense', { type: 'expense', id: e.id }, `${(COA_MAP[e.category] || {}).name || 'مصروف'}${e.notes ? ' — ' + e.notes : ''}`, [
-        { acc: e.category || '5990', dr: num(e.amount), cr: 0 }, { acc: cashCode(e.accountId), dr: 0, cr: num(e.amount) },
+        { acc: e.category || '5990', dr: num(e.amount), cr: 0 },
+        // مصروف شركة الشحن خصمته من رصيدك عندها (رسوم استلام، تغليف، اشتراك…) — مش من الخزينة
+        e.courierId ? { acc: '1200', dr: 0, cr: num(e.amount), party: { type: 'courier', id: e.courierId } } : { acc: cashCode(e.accountId), dr: 0, cr: num(e.amount) },
       ]);
     });
 

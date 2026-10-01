@@ -72,6 +72,92 @@
     }
     return null;
   }
+  // =====================================================================
+  // كشف حركات المحفظة (Transactions) — زي كشف بوسطة: كل حركة على رصيدك عند شركة الشحن
+  // =====================================================================
+  // ده مش كشف طلبات: فيه التحصيل والمصاريف مجمّعين بالدورة (اتسجلوا من الفواتير وكشف الطلبات)،
+  // وفيه حاجات مش في كشف الطلبات: رسوم الاستلام، التغليف، الاشتراك، رسوم التحويل، شحن الرصيد، والتحويل الفعلي (Cash Out)
+  const WALLET_FIELDS = {
+    id: ['transactionsid', 'transactionid', 'رقمالعمليه', 'رقمالحركه'],
+    date: ['date', 'createdat', 'التاريخ'],
+    category: ['category', 'type', 'transactiontype', 'نوعالعمليه', 'نوعالحركه', 'البند'],
+    amount: ['amount', 'المبلغ', 'القيمه'],
+    balance: ['balance', 'الرصيد'],
+    cashout: ['cashoutid', 'رقمالتحويل'],
+  };
+  // نوع كل حركة: cycle = متغطية من الفواتير وكشف الطلبات، cashout = تحويل وصلك، recharge = فلوس انت دفعتها لهم، charge = مصروف خصموه
+  const WALLET_CHARGES = [
+    [/pick ?up|استلام|بيك ?اب/i, '5200', 'رسوم الاستلام (Pickup)'],
+    [/pack|material|تغليف|كرتون/i, '5400', 'خامات تغليف'],
+    [/subscri|bundle|plan|اشتراك|باق/i, '5950', 'اشتراك شركة الشحن'],
+    [/transfer|bank|تحويل/i, '5700', 'رسوم تحويل'],
+    [/ship|deliver|return|شحن|مرتجع/i, '5200', 'مصاريف شحن'],
+  ];
+  function walletKind(category, amount) {
+    const c = str(category);
+    if (/cash ?collection|تحصيل/i.test(c) || /fees? ?cycle/i.test(c)) return { kind: 'cycle' };
+    if (/cash ?out|payout|سحب|تحويل لك/i.test(c)) return { kind: 'cashout' };
+    if (/recharge|top ?up|deposit|شحن رصيد|ايداع|إيداع/i.test(c)) return { kind: 'recharge' };
+    if (!amount) return { kind: 'zero' };
+    if (amount > 0) return { kind: 'credit' };
+    const hit = WALLET_CHARGES.find(([re]) => re.test(c));
+    return { kind: 'charge', acc: hit ? hit[1] : '5990', label: hit ? hit[2] : c || 'مصروف شركة الشحن' };
+  }
+  function parseWallet(sheets) {
+    for (const sh of sheets) {
+      const rows = sh.rows || [];
+      for (let h = 0; h < Math.min(rows.length, 10); h++) {
+        const keys = (rows[h] || []).map(IMP.normKey);
+        const map = {};
+        Object.entries(WALLET_FIELDS).forEach(([f, aliases]) => { for (const a of aliases) { const i = keys.indexOf(a); if (i >= 0) { map[f] = i; break; } } });
+        if (map.category == null || map.amount == null || (map.balance == null && map.id == null)) continue;
+        const asDate = (v) => { const n = typeof v === 'string' && /^\d{5}(\.\d+)?$/.test(v.trim()) ? Number(v) : v; const d = IMP.toDate(n); return d === 'invalid' ? '' : d; };
+        const out = [];
+        rows.slice(h + 1).forEach((cells, i) => {
+          const category = str(cells[map.category]);
+          if (!category) return;
+          const amount = round2(num(IMP.toNumber(cells[map.amount])));
+          const id = map.id != null ? str(cells[map.id]) : '';
+          out.push({ row: h + i + 2, id: id || `row${h + i + 2}`, date: map.date != null ? asDate(cells[map.date]) : '', category, amount,
+            balance: map.balance != null && str(cells[map.balance]) !== '' ? round2(num(IMP.toNumber(cells[map.balance]))) : null,
+            cashout: map.cashout != null ? str(cells[map.cashout]) : '', ...walletKind(category, amount) });
+        });
+        if (!out.length) continue;
+        // الكشف بيبدأ بالأحدث عادة: الرصيد الحالي = رصيد أحدث حركة
+        const newestFirst = (out[0].date || '') >= (out[out.length - 1].date || '');
+        const last = newestFirst ? out[0] : out[out.length - 1];
+        return { type: 'wallet', sheet: sh.name, rows: out, balance: last.balance, from: out.reduce((m, r) => (r.date && (!m || r.date < m) ? r.date : m), ''), to: out.reduce((m, r) => (r.date > m ? r.date : m), '') };
+      }
+    }
+    return null;
+  }
+  // التحصيل المتسجل قبل كده لدورة تحويل معينة (من كشف الطلبات أو كشف المحفظة)
+  function batchSettlement(state, courierId, batch) {
+    if (!batch) return null;
+    const b = String(batch).toUpperCase();
+    const re = new RegExp(`(^|[^A-Z0-9])${b.replace(/[^A-Z0-9]/g, '')}([^A-Z0-9]|$)`);
+    return (state.settlements || []).find((st) => st.courierId === courierId && (String(st.batch || '').toUpperCase() === b || String(st.walletRef || '').toUpperCase() === b || re.test(String(st.notes || '').toUpperCase()))) || null;
+  }
+  // إيه اللي هيتسجل من كشف المحفظة؟ كل حركة ليها رقم، فلو اتسجلت قبل كده مش هتتكرر
+  function walletPlan(state, courierId, parsed) {
+    const has = (list, r) => (state[list] || []).some((x) => x.courierId === courierId && x.walletRef === r.id);
+    const charges = [], recharges = [], cashouts = [], credits = [], cycles = [];
+    parsed.rows.forEach((r) => {
+      if (r.kind === 'charge') charges.push({ ...r, value: round2(-r.amount), done: has('expenses', r) });
+      else if (r.kind === 'recharge') recharges.push({ ...r, value: round2(Math.abs(r.amount)), done: has('settlements', r) });
+      else if (r.kind === 'cashout') {
+        const value = round2(Math.abs(r.amount));
+        const st = batchSettlement(state, courierId, r.id);
+        cashouts.push({ ...r, value, settlementId: st ? st.id : null, recorded: st ? round2(num(st.amount)) : null, state: !st ? 'new' : Math.abs(num(st.amount) - value) < 0.01 ? 'same' : 'fix' });
+      } else if (r.kind === 'credit') credits.push(r);
+      else if (r.kind === 'cycle') cycles.push(r);
+    });
+    const sum = (rows) => round2(rows.reduce((t, r) => t + num(r.value != null ? r.value : r.amount), 0));
+    const groups = {};
+    charges.filter((c) => !c.done).forEach((c) => { const g = (groups[c.label] = groups[c.label] || { label: c.label, acc: c.acc, count: 0, total: 0 }); g.count += 1; g.total = round2(g.total + c.value); });
+    return { charges, recharges, cashouts, credits, cycles, groups: Object.values(groups).sort((a, b) => b.total - a.total),
+      totals: { newCharges: sum(charges.filter((c) => !c.done)), doneCharges: sum(charges.filter((c) => c.done)), newRecharges: sum(recharges.filter((c) => !c.done)), cashout: sum(cashouts), cycleCod: sum(cycles.filter((c) => c.amount > 0)), cycleFees: round2(-sum(cycles.filter((c) => c.amount < 0))) } };
+  }
   // التحويلات اللي في الكشف: كل دورة تحويل (Cash-out ID) تحويل لوحدها بتاريخها وصافيها
   const MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
   function batchDate(batch) {
@@ -412,7 +498,7 @@
     return { total: { ...total, loss: round2(total.loss), rate: total.orders ? total.returned / total.orders : 0 }, gov: rows('gov'), courier: rows('courier'), channel: rows('channel'), reason: rows('reason') };
   }
 
-  const api = { batchDate, statementTransfers, RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  const api = { parseWallet, walletKind, walletPlan, batchSettlement, batchDate, statementTransfers, RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);
