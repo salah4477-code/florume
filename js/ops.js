@@ -17,11 +17,15 @@
   // تسوية كشف حساب شركة الشحن
   // =====================================================================
   const STATEMENT_FIELDS = {
-    ref: ['trackingno', 'tracking', 'awb', 'رقمالبوليصه', 'البوليصه', 'رقمالشحنه', 'orderno', 'order', 'reference', 'ref', 'رقمالطلب', 'رقمالفاتوره', 'الفاتوره', 'المرجع', 'businessreference'],
+    ref: ['trackingno', 'trackingnumber', 'tracking', 'awb', 'رقمالبوليصه', 'البوليصه', 'رقمالشحنه', 'orderid', 'orderno', 'order', 'reference', 'ref', 'رقمالطلب', 'رقمالفاتوره', 'الفاتوره', 'المرجع', 'businessreference'],
     cod: ['cod', 'codamount', 'collected', 'collectedamount', 'المحصل', 'المبلغالمحصل', 'التحصيل', 'قيمهالتحصيل', 'مبلغالتحصيل', 'المبلغ'],
-    fee: ['fees', 'fee', 'shippingfee', 'shippingfees', 'deliveryfee', 'مصاريفالشحن', 'تكلفهالشحن', 'الرسوم', 'رسومالشحن', 'مصاريف'],
-    status: ['status', 'state', 'الحاله', 'حالهالشحنه'],
-    date: ['date', 'deliverydate', 'التاريخ', 'تاريخالتسليم'],
+    // بوسطة: الدفع الأونلاين اللي حصّلته هي بيتحول مع التحصيل
+    online: ['onlinepaymentamount', 'onlinepayment'],
+    // إجمالي المصاريف (بعد الخصومات وشامل الضريبة) قبل سعر الشحن لوحده
+    fee: ['totalfees', 'اجماليالمصاريف', 'اجماليالرسوم', 'fees', 'fee', 'shippingfee', 'shippingfees', 'deliveryfee', 'مصاريفالشحن', 'تكلفهالشحن', 'الرسوم', 'رسومالشحن', 'مصاريف'],
+    status: ['status', 'orderstatus', 'state', 'الحاله', 'حالهالشحنه'],
+    date: ['date', 'completedat', 'deliverydate', 'التاريخ', 'تاريخالتسليم'],
+    phone: ['customerphone', 'receiverphone', 'phone', 'رقمالتليفون', 'التليفون', 'رقمالموبايل', 'الموبايل', 'تليفونالعميل'],
   };
   function mapStatementHeader(cells) {
     const keys = cells.map(IMP.normKey);
@@ -46,10 +50,10 @@
         rows.slice(h + 1).forEach((cells, i) => {
           const ref = cleanRef(cells[map.ref]);
           if (!ref) return;
-          const cod = map.cod != null ? IMP.toNumber(cells[map.cod]) : 0;
+          const cod = (map.cod != null ? num(IMP.toNumber(cells[map.cod])) : 0) + (map.online != null ? num(IMP.toNumber(cells[map.online])) : 0);
           const fee = map.fee != null ? IMP.toNumber(cells[map.fee]) : 0;
           const date = map.date != null ? IMP.toDate(cells[map.date]) : '';
-          out.push({ row: h + i + 2, ref, cod: round2(Math.abs(num(cod))), fee: round2(Math.abs(num(fee))), status: map.status != null ? str(cells[map.status]) : '', date: date === 'invalid' ? '' : date });
+          out.push({ row: h + i + 2, ref, cod: round2(Math.abs(num(cod))), fee: round2(Math.abs(num(fee))), status: map.status != null ? str(cells[map.status]) : '', date: date === 'invalid' ? '' : date, phone: map.phone != null ? phoneKey(cells[map.phone]) : '' });
         });
         return { sheet: sh.name, columns: Object.keys(map), rows: out };
       }
@@ -87,10 +91,7 @@
     });
     const seen = new Set();
     const matched = [], unmatched = [], duplicates = [];
-    rows.forEach((r) => {
-      const sale = index.get(r.ref) || (prefix && r.ref.startsWith(prefix) ? index.get(r.ref.slice(prefix.length)) : null);
-      if (!sale) { unmatched.push(r); return; }
-      if (seen.has(sale.id)) { duplicates.push({ ...r, saleId: sale.id }); return; }
+    const check = (r, sale, matchedBy) => {
       seen.add(sale.id);
       const statementStatus = statusFromText(r.status);
       const exp = expectedFor(statementStatus === 'returned' ? { ...sale, status: 'returned' } : sale);
@@ -101,7 +102,29 @@
       if (statementStatus && statementStatus !== sale.status) issues.push(`الحالة في الكشف «${r.status}» والنظام «${sale.status}»`);
       if (!Acc.BOOKED.has(sale.status)) issues.push('الطلب لسه ما خرجش في النظام');
       if (done.has(sale.id)) issues.push('اتسوّى قبل كده في كشف سابق');
-      matched.push({ ...r, saleId: sale.id, statementStatus, expected: exp, codDiff, feeDiff, issues, alreadyReconciled: done.has(sale.id) });
+      matched.push({ ...r, saleId: sale.id, statementStatus, expected: exp, codDiff, feeDiff, issues, alreadyReconciled: done.has(sale.id), matchedBy });
+    };
+    // 1) برقم البوليصة أو رقم الفاتورة
+    const leftover = [];
+    rows.forEach((r) => {
+      const sale = index.get(r.ref) || (prefix && r.ref.startsWith(prefix) ? index.get(r.ref.slice(prefix.length)) : null);
+      if (!sale) { leftover.push(r); return; }
+      if (seen.has(sale.id)) { duplicates.push({ ...r, saleId: sale.id }); return; }
+      check(r, sale, 'ref');
+    });
+    // 2) الباقي بتليفون العميل: نفضّل الطلب اللي مبلغه زي المحصل، وبعدين الأقرب في التاريخ
+    const phoneOf = new Map((state.customers || []).map((c) => [c.id, phoneKey(c.phone)]));
+    leftover.forEach((r) => {
+      const cands = r.phone ? (state.sales || []).filter((x) => (!courierId || x.courierId === courierId) && !Acc.isPromo(x) && !seen.has(x.id) && !done.has(x.id)
+        && x.status !== 'cancelled' && phoneOf.get(x.customerId) === r.phone && (!r.date || !x.date || x.date <= r.date)) : [];
+      if (!cands.length) { unmatched.push(r); return; }
+      const st = statusFromText(r.status);
+      const codOf = (x) => expectedFor(st === 'returned' ? { ...x, status: 'returned' } : x).cod;
+      const same = cands.filter((x) => Math.abs(codOf(x) - r.cod) <= 0.5);
+      const pool = same.length ? same : cands.length === 1 ? cands : [];
+      if (!pool.length) { unmatched.push(r); return; }
+      pool.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      check(r, pool[0], 'phone');
     });
     const maxDate = rows.reduce((m, r) => (r.date > m ? r.date : m), '');
     // طلبات اتسلمت أو رجعت (دفع عند الاستلام) ومش موجودة في الكشف ولا في كشف سابق

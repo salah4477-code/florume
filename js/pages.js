@@ -1816,7 +1816,7 @@
     const view = () => {
       const t = res.totals;
       const bad = res.matched.filter((m) => m.issues.length), ok = res.matched.filter((m) => !m.issues.length);
-      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(esc(m.ref), 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td(m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good'))}</tr>`;
+      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(esc(m.ref), 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td((m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good')) + (m.matchedBy === 'phone' ? `<br><span class="muted">اتعرف عليه بتليفون العميل</span>` : ''))}</tr>`;
       const head = ['البوليصة / الرقم', 'الفاتورة', 'الحالة في الكشف', '#المحصل', '#المتوقع', '#مصاريف الكشف', '#مصاريفنا', 'الملاحظة'];
       return `
         <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} سطر</p>
@@ -1830,7 +1830,7 @@
           <div class="${t.feeDiff > 0.5 ? 'bad-text' : ''}"><span>فرق المصاريف</span><b>${fmt(t.feeDiff)}</b></div>
         </div>
         ${bad.length ? `<h3 class="sub-title bad-text">طلبات فيها فروق (${bad.length})</h3>${table(head, bad.map(mrow))}` : '<p class="good-text"><b>كل الطلبات اللي في الكشف مطابقة ✔</b></p>'}
-        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}</tr>`))}<p class="muted">سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
+        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}</tr>`))}<p class="muted">مش لاقي طلب بنفس رقم البوليصة ولا بنفس تليفون العميل ومبلغه. سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
         ${res.missing.length ? `<h3 class="sub-title warn-text">طلبات اتسلمت ومش موجودة في الكشف (${res.missing.length}) — صافي ${fmt(t.missingNet)} ج.م</h3>${table(['الفاتورة', 'التاريخ', 'الحالة', '#الصافي المتوقع'], res.missing.map((m) => { const x = DB.find('sales', m.saleId); return `<tr>${td(saleCell(m.saleId))}${td(fmtDate(m.date))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(m.expected.net))}</tr>`; }))}` : ''}
         ${ok.length ? `<details class="imp-box"><summary>${ok.length} طلب مطابق (اضغط للتفاصيل)</summary>${table(head, ok.map(mrow))}</details>` : ''}
         ${res.duplicates.length ? `<div class="imp-box warn"><b>${res.duplicates.length} سطر مكرر في الكشف لنفس الطلب — اتحسب مرة واحدة.</b></div>` : ''}
@@ -1863,6 +1863,8 @@
         fresh.forEach((m) => {
           const sale = DB.find('sales', m.saleId);
           const upd = { ...sale };
+          // اتعرف عليه بالتليفون: نحفظ رقم البوليصة عشان الكشف الجاي يتطابق على طول
+          if (m.matchedBy === 'phone' && !upd.trackingNo) upd.trackingNo = m.ref;
           if (opts.updateStatus && m.statementStatus && m.statementStatus !== sale.status && sale.status !== 'cancelled') {
             upd.status = m.statementStatus;
             if (m.statementStatus === 'returned' && !upd.returnDate) upd.returnDate = m.date || today();

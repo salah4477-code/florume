@@ -135,7 +135,7 @@
   function toDate(v) {
     if (v == null || v === '') return '';
     if (typeof v === 'number' && v > 20000 && v < 80000) {
-      const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000);
+      const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v + 1e-6) * 86400000); // الكسر هو الساعة: بعد الضهر ما يزودش يوم
       return d.toISOString().slice(0, 10);
     }
     const s = latinDigits(str(v));
