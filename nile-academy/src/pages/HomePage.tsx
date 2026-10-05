@@ -1,6 +1,7 @@
 import { company, episodes, program } from '../content';
 import { href } from '../router';
 import { episodeRatio, useProgress } from '../store/progress';
+import { useState } from 'react';
 import { ProgressBar } from '../components/ProgressBar';
 
 export function HomePage() {
@@ -112,17 +113,7 @@ export function HomePage() {
         </div>
       </section>
 
-      <section className="text-center text-sm">
-        <button
-          type="button"
-          className="btn-ghost text-red-700 dark:text-red-400"
-          onClick={() => {
-            if (window.confirm('هل تريد مسح كل تقدمك ونتائج الاختبارات؟ لا يمكن التراجع.')) progress.reset();
-          }}
-        >
-          إعادة ضبط التقدم
-        </button>
-      </section>
+      <ResetProgress onReset={progress.reset} />
     </div>
   );
 }
@@ -133,5 +124,29 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="text-sm text-stone-600 dark:text-stone-400">{label}</span>
       <span className="num text-lg font-bold text-stone-900 dark:text-white">{value}</span>
     </div>
+  );
+}
+
+// تأكيد داخل الصفحة بدل window.confirm (بعض بيئات العرض بتمنع نوافذ التأكيد)
+function ResetProgress({ onReset }: { onReset: () => void }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <section className="flex flex-wrap items-center justify-center gap-2 text-center text-sm">
+      {asking ? (
+        <>
+          <span>هل تريد مسح كل تقدمك ونتائج الاختبارات؟ لا يمكن التراجع.</span>
+          <button type="button" className="btn-secondary text-red-700 dark:text-red-400" onClick={() => { onReset(); setAsking(false); }}>
+            نعم، امسح التقدم
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => setAsking(false)}>
+            إلغاء
+          </button>
+        </>
+      ) : (
+        <button type="button" className="btn-ghost text-red-700 dark:text-red-400" onClick={() => setAsking(true)}>
+          إعادة ضبط التقدم
+        </button>
+      )}
+    </section>
   );
 }
