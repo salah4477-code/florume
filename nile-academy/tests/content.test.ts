@@ -29,6 +29,7 @@ describe('هيكل البرنامج', () => {
     expect(episodes.filter((e) => e.part === 1)).toHaveLength(6);
     expect(episodes.filter((e) => e.part === 2)).toHaveLength(6);
     expect(episodes.filter((e) => e.part === 3)).toHaveLength(6);
+    expect(episodes.filter((e) => e.part === 4)).toHaveLength(6);
   });
   it('معرّف كل حلقة يطابق تسجيلها في program.json', () => {
     for (const p of program.parts.filter((p) => p.status === 'available')) {
@@ -111,6 +112,7 @@ describe('بنود القاموس', () => {
 const part1 = episodes.filter((e) => e.part === 1).map((e) => e.id);
 const part2 = episodes.filter((e) => e.part === 2).map((e) => e.id);
 const part3 = episodes.filter((e) => e.part === 3).map((e) => e.id);
+const part4 = episodes.filter((e) => e.part === 4).map((e) => e.id);
 
 describe('الدفاتر التراكمية', () => {
   it('ميزان المراجعة وقائمة المركز المالي متوازنان بعد كل حلقة', () => {
@@ -174,6 +176,12 @@ describe('الدفاتر التراكمية', () => {
       p3e4: 40_889_628,
       p3e5: 57_589_628,
       p3e6: 53_687_128,
+      p4e1: 47_701_700,
+      p4e2: 46_932_008,
+      p4e3: 45_025_628,
+      p4e4: 45_025_628,
+      p4e5: 45_025_628,
+      p4e6: 43_875_628,
     };
     const done: string[] = [];
     for (const ep of episodes) {
@@ -266,6 +274,31 @@ describe('الدفاتر التراكمية', () => {
     expect(after.revenue.total - before.revenue.total).toBe(33_513_000);
     expect(after.costOfSales.total - before.costOfSales.total).toBe(23_157_250);
     expect(after.netProfit - before.netProfit).toBe(7_122_975);
+  });
+
+  it('أرصدة نهاية الجزء الرابع تطابق الأرقام المذكورة في المحتوى', () => {
+    const entries = entriesFor([...part1, ...part2, ...part3, ...part4]);
+    const tb = trialBalance(entries, coa);
+    const bal = (code: string) => {
+      const r = tb.rows.find((x) => x.code === code);
+      return r ? r.debit - r.credit : 0;
+    };
+    // الاستقطاعات وُرّدت بالكامل، والمخصص استُخدم ورُدّ
+    expect(bal('2209')).toBe(0);
+    expect(bal('2210')).toBe(0);
+    expect(bal('2212')).toBe(0);
+    expect(bal('2211')).toBe(-3_400_000);
+    expect(bal('1240')).toBe(3_700_000);
+    // تكاليف المصنع لنوفمبر في انتظار التحميل (الجزء السادس)
+    expect(bal('1204')).toBe(630_000 + 4_560_000 + 855_000);
+    expect(bal('1205')).toBe(1_150_000 + 125_250 + 700_000 + 1_800_000);
+    expect(balanceSheet(entries, coa).balanced).toBe(true);
+  });
+
+  it('صافي المرتب + الاستقطاعات = الإجمالي في كشف نوفمبر', () => {
+    const e = episodes.find((x) => x.id === 'p4e1')!.application.entries[0];
+    const debit = e.lines.reduce((s, l) => s + (l.debit ?? 0), 0);
+    expect(debit).toBe(7_460_000);
   });
 
   it('القيود التوضيحية (post: false) لا تُرحَّل', () => {

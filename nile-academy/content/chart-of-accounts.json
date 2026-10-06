@@ -454,6 +454,46 @@
       "description": "مبالغ يُتوقع ردها للعملاء (خصومات كمية، مرتجعات متوقعة)."
     },
     {
+      "code": "2209",
+      "name": "مصلحة الضرائب - ضريبة كسب العمل المستقطعة",
+      "nameEn": "Payroll tax withheld",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 4,
+      "description": "ضريبة استقطعتها الشركة من مرتبات العاملين وتلتزم بتوريدها لمصلحة الضرائب."
+    },
+    {
+      "code": "2210",
+      "name": "الهيئة القومية للتأمين الاجتماعي",
+      "nameEn": "Social insurance payable",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 4,
+      "description": "حصة العاملين المستقطعة وحصة الشركة في اشتراكات التأمينات المستحقة التوريد."
+    },
+    {
+      "code": "2211",
+      "name": "مكافآت ومزايا عاملين مستحقة",
+      "nameEn": "Accrued employee benefits",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 4,
+      "description": "إجازات مستحقة غير مستخدمة ومكافآت أداء تراكمت للعاملين ولم تُصرف."
+    },
+    {
+      "code": "2212",
+      "name": "مخصص استدعاء منتجات",
+      "nameEn": "Provision for product recall",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 4,
+      "description": "التزام توقيته أو مبلغه غير مؤكد، ناتج عن قرار استدعاء دفعة منتجات."
+    },
+    {
       "code": "3101",
       "name": "رأس المال المصدر والمدفوع",
       "nameEn": "Issued and paid-up share capital",
@@ -670,6 +710,25 @@
       "introducedIn": 3
     },
     {
+      "code": "5215",
+      "name": "حصة الشركة في التأمينات الاجتماعية",
+      "nameEn": "Employer social insurance contributions",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 4
+    },
+    {
+      "code": "5216",
+      "name": "مصروفات مزايا العاملين",
+      "nameEn": "Employee benefits expense",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 4,
+      "description": "إجازات مستحقة ومكافآت لغير العاملين بالمصنع."
+    },
+    {
       "code": "5220",
       "name": "خسائر اضمحلال الأصول",
       "nameEn": "Impairment losses",
@@ -713,6 +772,24 @@
       "group": "selling-expenses",
       "normal": "debit",
       "introducedIn": 3
+    },
+    {
+      "code": "5304",
+      "name": "تأمينات ومزايا فريق المبيعات",
+      "nameEn": "Sales staff social insurance and benefits",
+      "type": "expense",
+      "group": "selling-expenses",
+      "normal": "debit",
+      "introducedIn": 4
+    },
+    {
+      "code": "5305",
+      "name": "مصروفات استدعاء منتجات",
+      "nameEn": "Product recall expense",
+      "type": "expense",
+      "group": "selling-expenses",
+      "normal": "debit",
+      "introducedIn": 4
     },
     {
       "code": "5401",
