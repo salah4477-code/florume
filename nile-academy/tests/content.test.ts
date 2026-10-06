@@ -22,10 +22,12 @@ describe('دليل الحسابات', () => {
 });
 
 describe('هيكل البرنامج', () => {
-  it('فيه 6 أجزاء والجزء الأول متاح بـ6 حلقات', () => {
+  it('فيه 6 أجزاء، والجزءان الأول والثاني متاحان بـ6 حلقات لكل منهما', () => {
     expect(program.parts).toHaveLength(6);
     expect(program.parts[0].status).toBe('available');
-    expect(episodes.length).toBe(6);
+    expect(program.parts[1].status).toBe('available');
+    expect(episodes.filter((e) => e.part === 1)).toHaveLength(6);
+    expect(episodes.filter((e) => e.part === 2)).toHaveLength(6);
   });
   it('معرّف كل حلقة يطابق تسجيلها في program.json', () => {
     for (const p of program.parts.filter((p) => p.status === 'available')) {
@@ -105,6 +107,9 @@ describe('بنود القاموس', () => {
   });
 });
 
+const part1 = episodes.filter((e) => e.part === 1).map((e) => e.id);
+const part2 = episodes.filter((e) => e.part === 2).map((e) => e.id);
+
 describe('الدفاتر التراكمية', () => {
   it('ميزان المراجعة وقائمة المركز المالي متوازنان بعد كل حلقة', () => {
     const done: string[] = [];
@@ -118,7 +123,7 @@ describe('الدفاتر التراكمية', () => {
   });
 
   it('أرصدة نهاية الجزء الأول تطابق الأرقام المذكورة في المحتوى', () => {
-    const entries = entriesFor(episodes.map((e) => e.id));
+    const entries = entriesFor(part1);
     const tb = trialBalance(entries, coa);
     const bal = (code: string) => {
       const r = tb.rows.find((x) => x.code === code);
@@ -155,6 +160,12 @@ describe('الدفاتر التراكمية', () => {
       p1e4: 227_850_000,
       p1e5: 229_100_000,
       p1e6: 229_100_000,
+      p2e1: 63_450_000,
+      p2e2: 63_450_000,
+      p2e3: 63_450_000,
+      p2e4: 55_250_000,
+      p2e5: 52_750_000,
+      p2e6: 52_750_000,
     };
     const done: string[] = [];
     for (const ep of episodes) {
@@ -168,6 +179,54 @@ describe('الدفاتر التراكمية', () => {
     const tb = trialBalance(entriesFor(episodes.slice(0, 5).map((e) => e.id)), coa);
     expect(tb.totalDebit).toBe(311_500_000);
     expect(incomeStatement(entriesFor(episodes.slice(0, 5).map((e) => e.id)), coa).netProfit).toBe(-1_535_000);
+  });
+
+  it('أرصدة نهاية الجزء الثاني تطابق الأرقام المذكورة في المحتوى', () => {
+    const entries = entriesFor([...part1, ...part2]);
+    const tb = trialBalance(entries, coa);
+    const bal = (code: string) => {
+      const r = tb.rows.find((x) => x.code === code);
+      return r ? r.debit - r.credit : 0;
+    };
+    expect(bal('1101')).toBe(58_000_000);
+    expect(bal('1102')).toBe(84_000_000);
+    expect(bal('1103')).toBe(101_000_000);
+    expect(bal('1182')).toBe(-175_000);
+    expect(bal('1183')).toBe(-800_000);
+    expect(bal('1189')).toBe(-2_450_000);
+    expect(bal('1190')).toBe(61_400_000);
+    expect(bal('1150')).toBe(6_000_000);
+    expect(bal('1151')).toBe(1_300_000);
+    expect(bal('1159')).toBe(-100_000);
+    expect(bal('1160')).toBe(8_712_963);
+    expect(bal('1169')).toBe(-145_216);
+    expect(bal('1220')).toBe(900_000);
+    expect(bal('1240')).toBe(1_350_000);
+    expect(bal('1260')).toBe(90_000_000);
+    expect(bal('2101')).toBe(-120_000_000);
+    expect(bal('2102')).toBe(-6_316_512);
+    expect(bal('2206')).toBe(-30_000_000);
+    expect(bal('2207')).toBe(-2_750_000);
+    expect(bal('3105')).toBe(-11_650_000);
+
+    const is = incomeStatement(entries, coa);
+    expect(is.financeCosts.total).toBe(103_549);
+    expect(is.totalOci).toBe(11_650_000);
+    expect(is.totalComprehensiveIncome).toBe(is.netProfit + 11_650_000);
+    expect(is.netProfit).toBe(-8_203_765);
+    const bs = balanceSheet(entries, coa);
+    expect(bs.balanced).toBe(true);
+    expect(bs.totalAssets).toBe(467_857_747);
+    expect(bs.totalLiabilities).toBe(165_011_512);
+    expect(bs.totalEquity).toBe(302_846_235);
+  });
+
+  it('رصيد مشروعات تحت التنفيذ قبل التحويل = 185,000,000 ويصفر بعده', () => {
+    const ep = episodes.find((e) => e.id === 'p2e1')!;
+    const before = entriesFor(part1).concat(ep.application.entries.filter((e) => e.id !== 'p2e1-j10'));
+    expect(trialBalance(before, coa).rows.find((r) => r.code === '1190')?.debit).toBe(185_000_000);
+    const after = entriesFor([...part1, 'p2e1']);
+    expect(trialBalance(after, coa).rows.find((r) => r.code === '1190')).toBeUndefined();
   });
 
   it('القيود التوضيحية (post: false) لا تُرحَّل', () => {

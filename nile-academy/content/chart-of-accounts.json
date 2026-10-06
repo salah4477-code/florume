@@ -1,52 +1,630 @@
 {
   "groups": [
-    { "id": "non-current-assets", "name": "الأصول غير المتداولة", "nameEn": "Non-current assets", "type": "asset", "statement": "balance-sheet", "order": 1 },
-    { "id": "current-assets", "name": "الأصول المتداولة", "nameEn": "Current assets", "type": "asset", "statement": "balance-sheet", "order": 2 },
-    { "id": "equity", "name": "حقوق الملكية", "nameEn": "Equity", "type": "equity", "statement": "balance-sheet", "order": 3 },
-    { "id": "non-current-liabilities", "name": "الالتزامات غير المتداولة", "nameEn": "Non-current liabilities", "type": "liability", "statement": "balance-sheet", "order": 4 },
-    { "id": "current-liabilities", "name": "الالتزامات المتداولة", "nameEn": "Current liabilities", "type": "liability", "statement": "balance-sheet", "order": 5 },
-    { "id": "revenue", "name": "الإيرادات", "nameEn": "Revenue", "type": "revenue", "statement": "income-statement", "order": 6 },
-    { "id": "cost-of-sales", "name": "تكلفة المبيعات", "nameEn": "Cost of sales", "type": "expense", "statement": "income-statement", "order": 7 },
-    { "id": "selling-expenses", "name": "مصروفات البيع والتوزيع", "nameEn": "Selling and distribution expenses", "type": "expense", "statement": "income-statement", "order": 8 },
-    { "id": "admin-expenses", "name": "المصروفات العمومية والإدارية", "nameEn": "General and administrative expenses", "type": "expense", "statement": "income-statement", "order": 9 },
-    { "id": "other-income", "name": "إيرادات أخرى", "nameEn": "Other income", "type": "revenue", "statement": "income-statement", "order": 10 }
+    {
+      "id": "non-current-assets",
+      "name": "الأصول غير المتداولة",
+      "nameEn": "Non-current assets",
+      "type": "asset",
+      "statement": "balance-sheet",
+      "order": 1
+    },
+    {
+      "id": "current-assets",
+      "name": "الأصول المتداولة",
+      "nameEn": "Current assets",
+      "type": "asset",
+      "statement": "balance-sheet",
+      "order": 2
+    },
+    {
+      "id": "equity",
+      "name": "حقوق الملكية",
+      "nameEn": "Equity",
+      "type": "equity",
+      "statement": "balance-sheet",
+      "order": 3
+    },
+    {
+      "id": "non-current-liabilities",
+      "name": "الالتزامات غير المتداولة",
+      "nameEn": "Non-current liabilities",
+      "type": "liability",
+      "statement": "balance-sheet",
+      "order": 4
+    },
+    {
+      "id": "current-liabilities",
+      "name": "الالتزامات المتداولة",
+      "nameEn": "Current liabilities",
+      "type": "liability",
+      "statement": "balance-sheet",
+      "order": 5
+    },
+    {
+      "id": "revenue",
+      "name": "الإيرادات",
+      "nameEn": "Revenue",
+      "type": "revenue",
+      "statement": "income-statement",
+      "order": 6
+    },
+    {
+      "id": "cost-of-sales",
+      "name": "تكلفة المبيعات",
+      "nameEn": "Cost of sales",
+      "type": "expense",
+      "statement": "income-statement",
+      "order": 7
+    },
+    {
+      "id": "selling-expenses",
+      "name": "مصروفات البيع والتوزيع",
+      "nameEn": "Selling and distribution expenses",
+      "type": "expense",
+      "statement": "income-statement",
+      "order": 8
+    },
+    {
+      "id": "admin-expenses",
+      "name": "المصروفات العمومية والإدارية",
+      "nameEn": "General and administrative expenses",
+      "type": "expense",
+      "statement": "income-statement",
+      "order": 9
+    },
+    {
+      "id": "finance-costs",
+      "name": "التكاليف التمويلية",
+      "nameEn": "Finance costs",
+      "type": "expense",
+      "statement": "income-statement",
+      "order": 10
+    },
+    {
+      "id": "other-income",
+      "name": "إيرادات أخرى",
+      "nameEn": "Other income",
+      "type": "revenue",
+      "statement": "income-statement",
+      "order": 11
+    }
   ],
   "accounts": [
-    { "code": "1101", "name": "أراضي", "nameEn": "Land", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 1, "description": "أرض المصنع والمقر. الأرض لا تُهلك لأن عمرها غير محدد." },
-    { "code": "1102", "name": "مباني وإنشاءات", "nameEn": "Buildings", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 2, "description": "مباني المصنع والمخازن والمقر بعد اكتمالها وصلاحيتها للاستخدام." },
-    { "code": "1103", "name": "آلات ومعدات", "nameEn": "Machinery and equipment", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 2, "description": "خطوط الإنتاج والتعبئة والمعدات الصناعية." },
-    { "code": "1104", "name": "أثاث وتجهيزات مكتبية", "nameEn": "Furniture and office equipment", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 2 },
-    { "code": "1105", "name": "وسائل نقل وانتقال", "nameEn": "Vehicles", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 2 },
-    { "code": "1190", "name": "مشروعات تحت التنفيذ", "nameEn": "Projects under construction", "type": "asset", "group": "non-current-assets", "normal": "debit", "introducedIn": 1, "description": "تكاليف أصول ثابتة لم تكتمل بعد (مثل مبنى المصنع أثناء الإنشاء). لا تُهلك حتى تصبح جاهزة للاستخدام." },
-    { "code": "1201", "name": "مخزون خامات", "nameEn": "Raw materials inventory", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 3 },
-    { "code": "1202", "name": "مخزون مواد تعبئة وتغليف", "nameEn": "Packaging materials inventory", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 3 },
-    { "code": "1203", "name": "مخزون إنتاج تام", "nameEn": "Finished goods inventory", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1, "description": "منتجات جاهزة للبيع." },
-    { "code": "1210", "name": "العملاء", "nameEn": "Trade receivables", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1, "description": "مبالغ مستحقة على الموزعين والسلاسل عن مبيعات آجلة." },
-    { "code": "1220", "name": "مصروفات مدفوعة مقدماً", "nameEn": "Prepaid expenses", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1, "description": "مبالغ دُفعت عن خدمات لم تُستهلك بعد، مثل إيجار شهور قادمة." },
-    { "code": "1230", "name": "المساهمون - حساب الاكتتاب", "nameEn": "Shareholders - subscription receivable", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1, "description": "قيمة الأسهم التي اكتتب فيها المساهمون ولم يسددوها بعد." },
-    { "code": "1240", "name": "مدينون متنوعون", "nameEn": "Other receivables", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1 },
-    { "code": "1250", "name": "البنك - الحساب الجاري", "nameEn": "Bank - current account", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1 },
-    { "code": "1251", "name": "الخزينة (النقدية بالصندوق)", "nameEn": "Cash on hand", "type": "asset", "group": "current-assets", "normal": "debit", "introducedIn": 1, "description": "عهدة نقدية صغيرة للمصروفات النثرية." },
-    { "code": "2101", "name": "قروض طويلة الأجل", "nameEn": "Long-term loans", "type": "liability", "group": "non-current-liabilities", "normal": "credit", "introducedIn": 2 },
-    { "code": "2201", "name": "الموردون", "nameEn": "Trade payables", "type": "liability", "group": "current-liabilities", "normal": "credit", "introducedIn": 1, "description": "مبالغ مستحقة للموردين عن مشتريات آجلة." },
-    { "code": "2202", "name": "دفعات مقدمة من العملاء", "nameEn": "Contract liabilities - customer advances", "type": "liability", "group": "current-liabilities", "normal": "credit", "introducedIn": 1, "description": "فلوس استلمناها من عملاء قبل ما نسلّمهم البضاعة. التزام علينا بالتسليم." },
-    { "code": "2203", "name": "مصروفات مستحقة", "nameEn": "Accrued expenses", "type": "liability", "group": "current-liabilities", "normal": "credit", "introducedIn": 1, "description": "مصروفات استفدنا منها ولم ندفعها بعد (كهرباء، أتعاب مراجعة...)." },
-    { "code": "2204", "name": "دائنون متنوعون", "nameEn": "Other payables", "type": "liability", "group": "current-liabilities", "normal": "credit", "introducedIn": 1 },
-    { "code": "3101", "name": "رأس المال المصدر والمدفوع", "nameEn": "Issued and paid-up share capital", "type": "equity", "group": "equity", "normal": "credit", "introducedIn": 1, "description": "القيمة الاسمية للأسهم المصدرة والمسددة." },
-    { "code": "3102", "name": "احتياطي قانوني", "nameEn": "Legal reserve", "type": "equity", "group": "equity", "normal": "credit", "introducedIn": 6 },
-    { "code": "3103", "name": "أرباح (خسائر) مرحلة", "nameEn": "Retained earnings (accumulated losses)", "type": "equity", "group": "equity", "normal": "credit", "introducedIn": 1 },
-    { "code": "3104", "name": "تكاليف إصدار أسهم", "nameEn": "Share issue costs", "type": "equity", "group": "equity", "normal": "debit", "contra": true, "introducedIn": 1, "description": "تكاليف مرتبطة مباشرة بإصدار الأسهم. تُخصم من حقوق الملكية ولا تُحمَّل على قائمة الدخل." },
-    { "code": "4101", "name": "إيرادات المبيعات", "nameEn": "Sales revenue", "type": "revenue", "group": "revenue", "normal": "credit", "introducedIn": 1 },
-    { "code": "4901", "name": "إيرادات أخرى", "nameEn": "Other income", "type": "revenue", "group": "other-income", "normal": "credit", "introducedIn": 1 },
-    { "code": "5101", "name": "تكلفة المبيعات", "nameEn": "Cost of sales", "type": "expense", "group": "cost-of-sales", "normal": "debit", "introducedIn": 1, "description": "تكلفة البضاعة التي بيعت فعلاً خلال الفترة." },
-    { "code": "5201", "name": "مصروفات التأسيس", "nameEn": "Formation expenses", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1, "description": "تكاليف إنشاء الكيان القانوني للشركة. تُحمَّل كمصروف عند حدوثها." },
-    { "code": "5202", "name": "أتعاب مهنية وقانونية", "nameEn": "Professional and legal fees", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5203", "name": "رسوم قيد وتسجيل واشتراكات", "nameEn": "Listing, registration and subscription fees", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5204", "name": "مرتبات وأجور إدارية", "nameEn": "Administrative salaries and wages", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5205", "name": "مصروف إيجار", "nameEn": "Rent expense", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5206", "name": "كهرباء ومياه", "nameEn": "Utilities", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5209", "name": "مصروفات إدارية متنوعة", "nameEn": "Sundry administrative expenses", "type": "expense", "group": "admin-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5301", "name": "مصروفات دعاية وتسويق", "nameEn": "Advertising and marketing", "type": "expense", "group": "selling-expenses", "normal": "debit", "introducedIn": 1 },
-    { "code": "5302", "name": "مصروفات نقل للعملاء", "nameEn": "Delivery expenses", "type": "expense", "group": "selling-expenses", "normal": "debit", "introducedIn": 1 }
+    {
+      "code": "1101",
+      "name": "أراضي",
+      "nameEn": "Land",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "أرض المصنع والمقر. الأرض لا تُهلك لأن عمرها غير محدد."
+    },
+    {
+      "code": "1102",
+      "name": "مباني وإنشاءات",
+      "nameEn": "Buildings",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "مباني المصنع والمخازن والمقر بعد اكتمالها وصلاحيتها للاستخدام."
+    },
+    {
+      "code": "1103",
+      "name": "آلات ومعدات",
+      "nameEn": "Machinery and equipment",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "خطوط الإنتاج والتعبئة والمعدات الصناعية."
+    },
+    {
+      "code": "1104",
+      "name": "أثاث وتجهيزات مكتبية",
+      "nameEn": "Furniture and office equipment",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "1105",
+      "name": "وسائل نقل وانتقال",
+      "nameEn": "Vehicles",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "1190",
+      "name": "مشروعات تحت التنفيذ",
+      "nameEn": "Projects under construction",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "تكاليف أصول ثابتة لم تكتمل بعد (مثل مبنى المصنع أثناء الإنشاء). لا تُهلك حتى تصبح جاهزة للاستخدام."
+    },
+    {
+      "code": "1150",
+      "name": "برامج حاسب آلي وتراخيص",
+      "nameEn": "Computer software and licences",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "أصل غير ملموس مقتنى: ترخيص نظام ERP وتكاليف تجهيزه للاستخدام."
+    },
+    {
+      "code": "1151",
+      "name": "تكاليف تطوير منتجات",
+      "nameEn": "Capitalised development costs",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "نفقات مرحلة التطوير التي استوفت شروط الرسملة في المعيار 23."
+    },
+    {
+      "code": "1159",
+      "name": "مجمع استهلاك الأصول غير الملموسة",
+      "nameEn": "Accumulated amortisation",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 2
+    },
+    {
+      "code": "1160",
+      "name": "أصول حق الاستخدام",
+      "nameEn": "Right-of-use assets",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "حق استخدام أصل مستأجر (مثل مخزن) طوال مدة عقد التأجير."
+    },
+    {
+      "code": "1169",
+      "name": "مجمع إهلاك أصول حق الاستخدام",
+      "nameEn": "Accumulated depreciation - right-of-use",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 2
+    },
+    {
+      "code": "1182",
+      "name": "مجمع إهلاك المباني",
+      "nameEn": "Accumulated depreciation - buildings",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 2,
+      "description": "حساب مقابل يُخصم من تكلفة المباني."
+    },
+    {
+      "code": "1183",
+      "name": "مجمع إهلاك الآلات والمعدات",
+      "nameEn": "Accumulated depreciation - machinery",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 2
+    },
+    {
+      "code": "1189",
+      "name": "مجمع خسائر الاضمحلال",
+      "nameEn": "Accumulated impairment losses",
+      "type": "asset",
+      "group": "non-current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 2,
+      "description": "حساب مقابل يُخصم من الأصل الذي انخفضت قيمته الاستردادية عن قيمته الدفترية."
+    },
+    {
+      "code": "1201",
+      "name": "مخزون خامات",
+      "nameEn": "Raw materials inventory",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 3
+    },
+    {
+      "code": "1202",
+      "name": "مخزون مواد تعبئة وتغليف",
+      "nameEn": "Packaging materials inventory",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 3
+    },
+    {
+      "code": "1203",
+      "name": "مخزون إنتاج تام",
+      "nameEn": "Finished goods inventory",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "منتجات جاهزة للبيع."
+    },
+    {
+      "code": "1210",
+      "name": "العملاء",
+      "nameEn": "Trade receivables",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "مبالغ مستحقة على الموزعين والسلاسل عن مبيعات آجلة."
+    },
+    {
+      "code": "1220",
+      "name": "مصروفات مدفوعة مقدماً",
+      "nameEn": "Prepaid expenses",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "مبالغ دُفعت عن خدمات لم تُستهلك بعد، مثل إيجار شهور قادمة."
+    },
+    {
+      "code": "1230",
+      "name": "المساهمون - حساب الاكتتاب",
+      "nameEn": "Shareholders - subscription receivable",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "قيمة الأسهم التي اكتتب فيها المساهمون ولم يسددوها بعد."
+    },
+    {
+      "code": "1240",
+      "name": "مدينون متنوعون",
+      "nameEn": "Other receivables",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "1250",
+      "name": "البنك - الحساب الجاري",
+      "nameEn": "Bank - current account",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "1251",
+      "name": "الخزينة (النقدية بالصندوق)",
+      "nameEn": "Cash on hand",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "عهدة نقدية صغيرة للمصروفات النثرية."
+    },
+    {
+      "code": "1260",
+      "name": "ودائع بنكية لأجل",
+      "nameEn": "Time deposits",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "2101",
+      "name": "قروض طويلة الأجل",
+      "nameEn": "Long-term loans",
+      "type": "liability",
+      "group": "non-current-liabilities",
+      "normal": "credit",
+      "introducedIn": 2
+    },
+    {
+      "code": "2102",
+      "name": "التزامات عقود التأجير",
+      "nameEn": "Lease liabilities",
+      "type": "liability",
+      "group": "non-current-liabilities",
+      "normal": "credit",
+      "introducedIn": 2,
+      "description": "القيمة الحالية لدفعات الإيجار التي لم تُسدد بعد."
+    },
+    {
+      "code": "2201",
+      "name": "الموردون",
+      "nameEn": "Trade payables",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 1,
+      "description": "مبالغ مستحقة للموردين عن مشتريات آجلة."
+    },
+    {
+      "code": "2202",
+      "name": "دفعات مقدمة من العملاء",
+      "nameEn": "Contract liabilities - customer advances",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 1,
+      "description": "فلوس استلمناها من عملاء قبل ما نسلّمهم البضاعة. التزام علينا بالتسليم."
+    },
+    {
+      "code": "2203",
+      "name": "مصروفات مستحقة",
+      "nameEn": "Accrued expenses",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 1,
+      "description": "مصروفات استفدنا منها ولم ندفعها بعد (كهرباء، أتعاب مراجعة...)."
+    },
+    {
+      "code": "2204",
+      "name": "دائنون متنوعون",
+      "nameEn": "Other payables",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 1
+    },
+    {
+      "code": "2206",
+      "name": "الجزء المتداول من القروض طويلة الأجل",
+      "nameEn": "Current portion of long-term loans",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 2,
+      "description": "أقساط القروض المستحقة السداد خلال 12 شهراً من تاريخ القوائم."
+    },
+    {
+      "code": "2207",
+      "name": "فوائد مستحقة",
+      "nameEn": "Accrued interest",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 2
+    },
+    {
+      "code": "3101",
+      "name": "رأس المال المصدر والمدفوع",
+      "nameEn": "Issued and paid-up share capital",
+      "type": "equity",
+      "group": "equity",
+      "normal": "credit",
+      "introducedIn": 1,
+      "description": "القيمة الاسمية للأسهم المصدرة والمسددة."
+    },
+    {
+      "code": "3102",
+      "name": "احتياطي قانوني",
+      "nameEn": "Legal reserve",
+      "type": "equity",
+      "group": "equity",
+      "normal": "credit",
+      "introducedIn": 6
+    },
+    {
+      "code": "3103",
+      "name": "أرباح (خسائر) مرحلة",
+      "nameEn": "Retained earnings (accumulated losses)",
+      "type": "equity",
+      "group": "equity",
+      "normal": "credit",
+      "introducedIn": 1
+    },
+    {
+      "code": "3104",
+      "name": "تكاليف إصدار أسهم",
+      "nameEn": "Share issue costs",
+      "type": "equity",
+      "group": "equity",
+      "normal": "debit",
+      "contra": true,
+      "introducedIn": 1,
+      "description": "تكاليف مرتبطة مباشرة بإصدار الأسهم. تُخصم من حقوق الملكية ولا تُحمَّل على قائمة الدخل."
+    },
+    {
+      "code": "3105",
+      "name": "فائض إعادة التقييم",
+      "nameEn": "Revaluation surplus",
+      "type": "equity",
+      "group": "equity",
+      "normal": "credit",
+      "oci": true,
+      "introducedIn": 2,
+      "description": "زيادة القيمة العادلة لأصل يُقاس بنموذج إعادة التقييم؛ تمر بالدخل الشامل الآخر ولا تمر بالأرباح أو الخسائر."
+    },
+    {
+      "code": "4101",
+      "name": "إيرادات المبيعات",
+      "nameEn": "Sales revenue",
+      "type": "revenue",
+      "group": "revenue",
+      "normal": "credit",
+      "introducedIn": 1
+    },
+    {
+      "code": "4901",
+      "name": "إيرادات أخرى",
+      "nameEn": "Other income",
+      "type": "revenue",
+      "group": "other-income",
+      "normal": "credit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5101",
+      "name": "تكلفة المبيعات",
+      "nameEn": "Cost of sales",
+      "type": "expense",
+      "group": "cost-of-sales",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "تكلفة البضاعة التي بيعت فعلاً خلال الفترة."
+    },
+    {
+      "code": "5201",
+      "name": "مصروفات التأسيس",
+      "nameEn": "Formation expenses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1,
+      "description": "تكاليف إنشاء الكيان القانوني للشركة. تُحمَّل كمصروف عند حدوثها."
+    },
+    {
+      "code": "5202",
+      "name": "أتعاب مهنية وقانونية",
+      "nameEn": "Professional and legal fees",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5203",
+      "name": "رسوم قيد وتسجيل واشتراكات",
+      "nameEn": "Listing, registration and subscription fees",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5204",
+      "name": "مرتبات وأجور إدارية",
+      "nameEn": "Administrative salaries and wages",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5205",
+      "name": "مصروف إيجار",
+      "nameEn": "Rent expense",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5206",
+      "name": "كهرباء ومياه",
+      "nameEn": "Utilities",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5209",
+      "name": "مصروفات إدارية متنوعة",
+      "nameEn": "Sundry administrative expenses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5210",
+      "name": "مصروف الإهلاك",
+      "nameEn": "Depreciation expense",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 2,
+      "description": "إهلاك الأصول غير المحمّل على تكلفة الإنتاج (مثل فترة ما قبل بدء التشغيل التجاري)."
+    },
+    {
+      "code": "5211",
+      "name": "مصروفات تدريب",
+      "nameEn": "Training expenses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "5212",
+      "name": "استهلاك الأصول غير الملموسة",
+      "nameEn": "Amortisation expense",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "5213",
+      "name": "مصروفات بحوث",
+      "nameEn": "Research expenses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "5220",
+      "name": "خسائر اضمحلال الأصول",
+      "nameEn": "Impairment losses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "5301",
+      "name": "مصروفات دعاية وتسويق",
+      "nameEn": "Advertising and marketing",
+      "type": "expense",
+      "group": "selling-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5302",
+      "name": "مصروفات نقل للعملاء",
+      "nameEn": "Delivery expenses",
+      "type": "expense",
+      "group": "selling-expenses",
+      "normal": "debit",
+      "introducedIn": 1
+    },
+    {
+      "code": "5401",
+      "name": "فوائد التزامات التأجير",
+      "nameEn": "Interest on lease liabilities",
+      "type": "expense",
+      "group": "finance-costs",
+      "normal": "debit",
+      "introducedIn": 2
+    },
+    {
+      "code": "5402",
+      "name": "فوائد القروض",
+      "nameEn": "Interest on loans",
+      "type": "expense",
+      "group": "finance-costs",
+      "normal": "debit",
+      "introducedIn": 2
+    }
   ]
 }

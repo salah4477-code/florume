@@ -54,7 +54,7 @@ export function StatementsPage() {
             <TotalRow label="إجمالي حقوق الملكية والالتزامات" value={bs.totalEquityAndLiabilities} strong />
           </Statement>
 
-          <Statement title="قائمة الدخل" sub={`عن الفترة من ${formatDate(first.date)} حتى ${formatDate(last.date)}`} termId="term:income">
+          <Statement title={is.oci.length > 0 ? "قائمة الدخل والدخل الشامل" : "قائمة الدخل"} sub={`عن الفترة من ${formatDate(first.date)} حتى ${formatDate(last.date)}`} termId="term:income">
             <Row label="إيرادات المبيعات" value={is.revenue.total} />
             <Row label="تكلفة المبيعات" value={-is.costOfSales.total} />
             <TotalRow label="مجمل الربح" value={is.grossProfit} />
@@ -65,7 +65,27 @@ export function StatementsPage() {
             <SectionRows title="مصروفات البيع والتوزيع" s={is.selling} negate />
             <SectionRows title="المصروفات العمومية والإدارية" s={is.admin} negate />
             {is.otherIncome.lines.length > 0 && <SectionRows title="إيرادات أخرى" s={is.otherIncome} />}
+            {is.financeCosts.lines.length > 0 && (
+              <>
+                <TotalRow label="نتيجة النشاط" value={is.operatingProfit} />
+                <SectionRows title="التكاليف التمويلية" s={is.financeCosts} negate />
+              </>
+            )}
             <TotalRow label="صافي ربح (خسارة) الفترة قبل الضرائب" value={is.netProfit} strong />
+            {is.oci.length > 0 && (
+              <>
+                <Spacer />
+                <tr>
+                  <td colSpan={2} className="pt-3 pb-1 font-semibold text-stone-900 dark:text-white">
+                    <Term id="term:other-comprehensive-income" label="الدخل الشامل الآخر" />
+                  </td>
+                </tr>
+                {is.oci.map((l) => (
+                  <Row key={l.code} label={`${l.name} (بنود لا يُعاد تبويبها للأرباح أو الخسائر)`} value={l.amount} indent />
+                ))}
+                <TotalRow label="إجمالي الدخل الشامل للفترة" value={is.totalComprehensiveIncome} strong />
+              </>
+            )}
             <tr>
               <td colSpan={2} className="pt-3 text-xs text-stone-500">
                 ضريبة الدخل والضريبة المؤجلة تُعالج في الجزء السادس. الأرقام بالجنيه المصري، والأرقام بين قوسين سالبة.

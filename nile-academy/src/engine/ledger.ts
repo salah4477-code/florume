@@ -164,7 +164,12 @@ export interface IncomeStatement {
   admin: StatementSection;
   otherIncome: StatementSection;
   operatingProfit: number;
+  financeCosts: StatementSection;
   netProfit: number;
+  /** بنود الدخل الشامل الآخر (حركة احتياطيات مثل فائض إعادة التقييم) */
+  oci: StatementLine[];
+  totalOci: number;
+  totalComprehensiveIncome: number;
 }
 
 export function incomeStatement(entries: JournalEntry[], coa: ChartOfAccounts): IncomeStatement {
@@ -180,9 +185,20 @@ export function incomeStatement(entries: JournalEntry[], coa: ChartOfAccounts): 
   const selling = byId('selling-expenses');
   const admin = byId('admin-expenses');
   const otherIncome = byId('other-income');
+  const financeCosts = byId('finance-costs');
   const gp = toCents(revenue.total) - toCents(costOfSales.total);
-  const op = gp - toCents(selling.total) - toCents(admin.total);
-  const net = op + toCents(otherIncome.total);
+  const op = gp - toCents(selling.total) - toCents(admin.total) + toCents(otherIncome.total);
+  const net = op - toCents(financeCosts.total);
+  // الشركة في سنتها الأولى، فرصيد احتياطي الدخل الشامل = حركته خلال الفترة
+  const oci: StatementLine[] = [];
+  let ociTotal = 0;
+  for (const la of ledger.values()) {
+    if (!la.account.oci) continue;
+    const cents = -toCents(la.netDebit);
+    if (cents === 0) continue;
+    ociTotal += cents;
+    oci.push({ code: la.account.code, name: la.account.name, amount: fromCents(cents) });
+  }
   return {
     revenue,
     costOfSales,
@@ -191,7 +207,11 @@ export function incomeStatement(entries: JournalEntry[], coa: ChartOfAccounts): 
     admin,
     otherIncome,
     operatingProfit: fromCents(op),
+    financeCosts,
     netProfit: fromCents(net),
+    oci,
+    totalOci: fromCents(ociTotal),
+    totalComprehensiveIncome: fromCents(net + ociTotal),
   };
 }
 

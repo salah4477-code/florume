@@ -23,6 +23,8 @@ export interface Account {
   normal: Side;
   /** حساب مقابل (مثل مجمع الإهلاك أو تكاليف إصدار الأسهم) يُخصم من مجموعته */
   contra?: boolean;
+  /** احتياطي يتكوّن من الدخل الشامل الآخر (مثل فائض إعادة التقييم) */
+  oci?: boolean;
   description?: string;
   /** الجزء الذي يظهر فيه الحساب لأول مرة (للعرض فقط) */
   introducedIn?: number;
