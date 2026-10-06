@@ -259,6 +259,26 @@
       "description": "منتجات جاهزة للبيع."
     },
     {
+      "code": "1204",
+      "name": "إنتاج تحت التشغيل",
+      "nameEn": "Work in progress",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 3,
+      "description": "تكاليف وحدات بدأ تصنيعها ولم تكتمل بعد."
+    },
+    {
+      "code": "1205",
+      "name": "تكاليف صناعية غير مباشرة (حساب رقابة)",
+      "nameEn": "Factory overhead control",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 3,
+      "description": "حساب مؤقت تُجمع فيه التكاليف الصناعية غير المباشرة الفعلية ثم تُحمَّل على الإنتاج؛ رصيده صفر بعد التحميل."
+    },
+    {
       "code": "1210",
       "name": "العملاء",
       "nameEn": "Trade receivables",
@@ -267,6 +287,17 @@
       "normal": "debit",
       "introducedIn": 1,
       "description": "مبالغ مستحقة على الموزعين والسلاسل عن مبيعات آجلة."
+    },
+    {
+      "code": "1219",
+      "name": "مخصص الخسائر الائتمانية المتوقعة",
+      "nameEn": "Allowance for expected credit losses",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "credit",
+      "contra": true,
+      "introducedIn": 3,
+      "description": "حساب مقابل يُخصم من العملاء بقيمة الخسائر الائتمانية المتوقعة."
     },
     {
       "code": "1220",
@@ -324,6 +355,16 @@
       "group": "current-assets",
       "normal": "debit",
       "introducedIn": 2
+    },
+    {
+      "code": "1270",
+      "name": "حق استرداد منتجات من العملاء",
+      "nameEn": "Right to recover returned goods",
+      "type": "asset",
+      "group": "current-assets",
+      "normal": "debit",
+      "introducedIn": 3,
+      "description": "تكلفة المنتجات المتوقع ردها من العملاء بموجب حق الرد."
     },
     {
       "code": "2101",
@@ -403,6 +444,16 @@
       "introducedIn": 2
     },
     {
+      "code": "2208",
+      "name": "التزامات رد للعملاء",
+      "nameEn": "Refund liabilities",
+      "type": "liability",
+      "group": "current-liabilities",
+      "normal": "credit",
+      "introducedIn": 3,
+      "description": "مبالغ يُتوقع ردها للعملاء (خصومات كمية، مرتجعات متوقعة)."
+    },
+    {
       "code": "3101",
       "name": "رأس المال المصدر والمدفوع",
       "nameEn": "Issued and paid-up share capital",
@@ -479,6 +530,34 @@
       "normal": "debit",
       "introducedIn": 1,
       "description": "تكلفة البضاعة التي بيعت فعلاً خلال الفترة."
+    },
+    {
+      "code": "5103",
+      "name": "تكاليف طاقة غير مستغلة",
+      "nameEn": "Unallocated fixed production overhead",
+      "type": "expense",
+      "group": "cost-of-sales",
+      "normal": "debit",
+      "introducedIn": 3,
+      "description": "الجزء من التكاليف الصناعية الثابتة الذي لا يُحمّل على المخزون بسبب الإنتاج دون الطاقة العادية."
+    },
+    {
+      "code": "5104",
+      "name": "خسائر تخفيض المخزون لصافي القيمة البيعية",
+      "nameEn": "Inventory write-down to NRV",
+      "type": "expense",
+      "group": "cost-of-sales",
+      "normal": "debit",
+      "introducedIn": 3
+    },
+    {
+      "code": "5105",
+      "name": "عجز المخزون",
+      "nameEn": "Inventory shortages",
+      "type": "expense",
+      "group": "cost-of-sales",
+      "normal": "debit",
+      "introducedIn": 3
     },
     {
       "code": "5201",
@@ -582,6 +661,15 @@
       "introducedIn": 2
     },
     {
+      "code": "5214",
+      "name": "عمولات ومصروفات بنكية",
+      "nameEn": "Bank charges",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 3
+    },
+    {
       "code": "5220",
       "name": "خسائر اضمحلال الأصول",
       "nameEn": "Impairment losses",
@@ -589,6 +677,15 @@
       "group": "admin-expenses",
       "normal": "debit",
       "introducedIn": 2
+    },
+    {
+      "code": "5230",
+      "name": "الخسائر الائتمانية المتوقعة",
+      "nameEn": "Expected credit losses",
+      "type": "expense",
+      "group": "admin-expenses",
+      "normal": "debit",
+      "introducedIn": 3
     },
     {
       "code": "5301",
@@ -607,6 +704,15 @@
       "group": "selling-expenses",
       "normal": "debit",
       "introducedIn": 1
+    },
+    {
+      "code": "5303",
+      "name": "مرتبات فريق المبيعات",
+      "nameEn": "Sales staff salaries",
+      "type": "expense",
+      "group": "selling-expenses",
+      "normal": "debit",
+      "introducedIn": 3
     },
     {
       "code": "5401",

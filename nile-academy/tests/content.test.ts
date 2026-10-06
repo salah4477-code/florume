@@ -22,12 +22,13 @@ describe('دليل الحسابات', () => {
 });
 
 describe('هيكل البرنامج', () => {
-  it('فيه 6 أجزاء، والجزءان الأول والثاني متاحان بـ6 حلقات لكل منهما', () => {
+  it('فيه 6 أجزاء، والأجزاء المتاحة فيها 6 حلقات لكل منها', () => {
     expect(program.parts).toHaveLength(6);
     expect(program.parts[0].status).toBe('available');
     expect(program.parts[1].status).toBe('available');
     expect(episodes.filter((e) => e.part === 1)).toHaveLength(6);
     expect(episodes.filter((e) => e.part === 2)).toHaveLength(6);
+    expect(episodes.filter((e) => e.part === 3)).toHaveLength(6);
   });
   it('معرّف كل حلقة يطابق تسجيلها في program.json', () => {
     for (const p of program.parts.filter((p) => p.status === 'available')) {
@@ -109,6 +110,7 @@ describe('بنود القاموس', () => {
 
 const part1 = episodes.filter((e) => e.part === 1).map((e) => e.id);
 const part2 = episodes.filter((e) => e.part === 2).map((e) => e.id);
+const part3 = episodes.filter((e) => e.part === 3).map((e) => e.id);
 
 describe('الدفاتر التراكمية', () => {
   it('ميزان المراجعة وقائمة المركز المالي متوازنان بعد كل حلقة', () => {
@@ -166,6 +168,12 @@ describe('الدفاتر التراكمية', () => {
       p2e4: 55_250_000,
       p2e5: 52_750_000,
       p2e6: 52_750_000,
+      p3e1: 46_905_000,
+      p3e2: 40_889_628,
+      p3e3: 40_889_628,
+      p3e4: 40_889_628,
+      p3e5: 57_589_628,
+      p3e6: 53_687_128,
     };
     const done: string[] = [];
     for (const ep of episodes) {
@@ -227,6 +235,37 @@ describe('الدفاتر التراكمية', () => {
     expect(trialBalance(before, coa).rows.find((r) => r.code === '1190')?.debit).toBe(185_000_000);
     const after = entriesFor([...part1, 'p2e1']);
     expect(trialBalance(after, coa).rows.find((r) => r.code === '1190')).toBeUndefined();
+  });
+
+  it('أرصدة نهاية الجزء الثالث تطابق الأرقام المذكورة في المحتوى', () => {
+    const entries = entriesFor([...part1, ...part2, ...part3]);
+    const tb = trialBalance(entries, coa);
+    const bal = (code: string) => {
+      const r = tb.rows.find((x) => x.code === code);
+      return r ? r.debit - r.credit : 0;
+    };
+    expect(bal('1201')).toBe(1_450_000);
+    expect(bal('1202')).toBe(700_000);
+    expect(bal('1203')).toBe(2_120_000);
+    expect(bal('1204')).toBe(630_000);
+    expect(bal('1205')).toBe(0);
+    expect(bal('1210')).toBe(19_020_000);
+    expect(bal('1219')).toBe(-195_000);
+    expect(bal('1270')).toBe(117_750);
+    expect(bal('2201')).toBe(-13_200_000);
+    expect(bal('2208')).toBe(-987_000);
+    expect(bal('2203')).toBe(-1_960_000);
+    expect(bal('2207')).toBe(-5_500_000);
+    expect(bal('1190')).toBe(62_800_000);
+    expect(balanceSheet(entries, coa).balanced).toBe(true);
+  });
+
+  it('نتيجة أكتوبر 2026 وحده = 7,122,975 كما في الحلقة السادسة', () => {
+    const before = incomeStatement(entriesFor([...part1, ...part2]), coa);
+    const after = incomeStatement(entriesFor([...part1, ...part2, ...part3]), coa);
+    expect(after.revenue.total - before.revenue.total).toBe(33_513_000);
+    expect(after.costOfSales.total - before.costOfSales.total).toBe(23_157_250);
+    expect(after.netProfit - before.netProfit).toBe(7_122_975);
   });
 
   it('القيود التوضيحية (post: false) لا تُرحَّل', () => {
