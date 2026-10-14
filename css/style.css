@@ -747,3 +747,9 @@ tr.auto-row td { color: var(--ink-2); }
 .stmt-pick select { min-width: min(420px, 100%); max-width: 100%; }
 .stmt-report .link-btn { white-space: normal; text-align: start; overflow-wrap: anywhere; }
 .hbars .link-btn { color: inherit; text-align: start; white-space: normal; }
+
+/* رصيد شركة الشحن متفصّل */
+.breakdown { margin: 14px 0 6px; }
+.breakdown > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.breakdown table.fin { margin-top: 10px; }
+.breakdown .warn-row td:first-child { color: var(--warn, #a15c00); }

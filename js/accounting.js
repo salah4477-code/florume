@@ -760,6 +760,44 @@
     };
   }
 
+  // ---------- رصيد شركة الشحن متفصّل: ليه الرصيد الدفتري مختلف عن الطلبات المستنية تسوية ----------
+  // الرصيد = طلبات اتسلمت/رجعت ولسه ما اتسوّتش + طلبات لسه مع الشحن + (طلبات اتسوّت − التحصيل المربوط بيها)
+  //        − تحصيلات متسجلة من غير ما تتربط بطلبات − مصروفات خصمتها شركة الشحن − مصاريف شحن الطلبات المدفوعة مقدم + حركات تانية
+  const linkedSettlementIds = (state) => new Set((state.reconciliations || []).flatMap((r) => [r.settlementId, ...(r.settlementIds || [])]).filter(Boolean));
+  function courierBreakdown(state, journal, courierId) {
+    const done = new Set((state.reconciliations || []).flatMap((r) => (r.lines || []).map((l) => l.saleId)));
+    const linked = linkedSettlementIds(state);
+    const sales = new Map((state.sales || []).map((x) => [x.id, x]));
+    const out = { pending: 0, pendingCount: 0, prepaid: 0, prepaidCount: 0, shipped: 0, shippedCount: 0, settledOrders: 0, linkedPaid: 0, unlinkedPaid: 0, unlinkedCount: 0, expenses: 0, other: 0, balance: 0 };
+    const counted = { pending: new Set(), shipped: new Set(), prepaid: new Set() };
+    journal.entries.forEach((e) => e.lines.forEach((l) => {
+      if (l.acc !== '1200' || !l.party || l.party.type !== 'courier' || l.party.id !== courierId) return;
+      const v = num(l.dr) - num(l.cr);
+      out.balance += v;
+      const ref = e.ref || {};
+      if (ref.type === 'sale' && sales.has(ref.id)) {
+        const x = sales.get(ref.id);
+        // مدفوع مقدم أو فاتورة دعاية: مش بيدخل تسوية، بس شركة الشحن بتخصم مصاريفه من رصيدك
+        if (isPromo(x) || (x.payment && x.payment !== 'cod')) { out.prepaid += v; counted.prepaid.add(x.id); }
+        else if (done.has(x.id)) out.settledOrders += v;
+        else if (x.status === 'delivered' || x.status === 'returned') { out.pending += v; counted.pending.add(x.id); }
+        else { out.shipped += v; counted.shipped.add(x.id); }
+      } else if (e.source === 'settlement') {
+        if (linked.has(ref.id)) out.linkedPaid += -v; else { out.unlinkedPaid += -v; out.unlinkedCount += 1; }
+      } else if (e.source === 'expense') out.expenses += -v;
+      else out.other += v;
+    }));
+    Object.keys(out).forEach((k) => (out[k] = round2(out[k])));
+    out.pendingCount = counted.pending.size; out.shippedCount = counted.shipped.size; out.prepaidCount = counted.prepaid.size;
+    out.settledDiff = round2(out.settledOrders - out.linkedPaid);
+    return out;
+  }
+  // التحصيلات اللي اتسجلت من الخزينة ولسه ما اتربطتش بأي تسوية طلبات
+  function unlinkedSettlements(state, courierId) {
+    const linked = linkedSettlementIds(state);
+    return (state.settlements || []).filter((st) => st.courierId === courierId && !linked.has(st.id)).sort((a, b) => (a.date < b.date ? -1 : 1));
+  }
+
   function cashBalances(state, journal, asOf) {
     const map = balances(journal.entries, null, asOf);
     return (state.accounts || []).map((a) => { const m = map[cashCode(a.id)] || { dr: 0, cr: 0 }; return { ...a, balance: round2(m.dr - m.cr) }; });
@@ -1035,7 +1073,7 @@
   }
 
   const api = {
-    DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    courierBreakdown, unlinkedSettlements, linkedSettlementIds, DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
