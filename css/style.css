@@ -753,3 +753,12 @@ tr.auto-row td { color: var(--ink-2); }
 .breakdown > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .breakdown table.fin { margin-top: 10px; }
 .breakdown .warn-row td:first-child { color: var(--warn, #a15c00); }
+
+/* المرفقات */
+.attach-box { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.attach-head small { margin-inline-start: 6px; }
+.attach-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.attach-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.attach-list .link-btn { text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.attach-list:empty { display: none; }
+.clip { text-decoration: none; font-size: .95em; }

@@ -291,5 +291,5 @@
   }
   function scheduleFolderBackup() { if (!folderReady) return; clearTimeout(folderTimer); folderTimer = setTimeout(writeFolderBackup, 5000); }
 
-  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
+  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderHandle: () => (folderReady ? dirHandle : null), folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
 })();

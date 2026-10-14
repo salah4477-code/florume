@@ -764,6 +764,15 @@ tr.auto-row td { color: var(--ink-2); }
 .breakdown table.fin { margin-top: 10px; }
 .breakdown .warn-row td:first-child { color: var(--warn, #a15c00); }
 
+/* المرفقات */
+.attach-box { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.attach-head small { margin-inline-start: 6px; }
+.attach-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.attach-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.attach-list .link-btn { text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.attach-list:empty { display: none; }
+.clip { text-decoration: none; font-size: .95em; }
+
 </style>
 </head>
 <body>
@@ -4870,8 +4879,75 @@ tr.auto-row td { color: var(--ink-2); }
   }
   function scheduleFolderBackup() { if (!folderReady) return; clearTimeout(folderTimer); folderTimer = setTimeout(writeFolderBackup, 5000); }
 
-  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
+  window.CLOUD = Object.assign(C, { connect, onSave, logDenied, readAudit, loadMembers, setRole, names, applyRole, backupAgeDays, markBackup, folderSupported, chooseFolder, reenableFolder, folderHandle: () => (folderReady ? dirHandle : null), folderState: () => ({ supported: folderSupported(), chosen: !!dirHandle, ready: folderReady, name: dirHandle ? dirHandle.name : '' }) });
 })();
+
+/*
+ * مرفقات المستندات — Florume
+ * صور وPDF (فاتورة المورد، صورة التحويل…) بتتحفظ كملفات عادية في فولدر «مرفقات» جوه فولدر النسخ الاحتياطي
+ * اللي بتختاره من الإعدادات. المستند نفسه بيحفظ اسم الملف بس. الإرفاق اختياري في كل العمليات.
+ * الجزء النقي (أسماء الملفات) مغطى بالاختبارات؛ الكتابة والقراءة من الفولدر في المتصفح بس (Chrome / Edge).
+ */
+(function (root) {
+  'use strict';
+  const SUBDIR = 'مرفقات';
+  const TYPES = /^(image\/|application\/pdf$)/;
+  // اسم ملف ينفع على ويندوز: من غير \ / : * ? " < > | ومن غير مسافات زيادة، وبطول معقول
+  function cleanName(s) {
+    return String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '').slice(0, 90) || 'مستند';
+  }
+  const extOf = (file) => {
+    const m = String((file && file.name) || '').match(/\.([a-z0-9]{1,5})$/i);
+    if (m) return m[1].toLowerCase();
+    const t = (file && file.type) || '';
+    return t === 'application/pdf' ? 'pdf' : t.startsWith('image/') ? t.slice(6).replace('jpeg', 'jpg') : 'bin';
+  };
+  // «مصروف 2026-10-14 إعلانات ميتا.jpg» — ولو الاسم موجود: «… (2).jpg»
+  function fileName(base, ext, taken) {
+    const b = cleanName(base);
+    const has = (n) => (taken instanceof Set ? taken.has(n) : typeof taken === 'function' ? taken(n) : false);
+    let name = `${b}.${ext}`;
+    for (let i = 2; has(name); i++) name = `${b} (${i}).${ext}`;
+    return name;
+  }
+  const accepted = (file) => !!file && (TYPES.test(file.type || '') || /\.(pdf|jpe?g|png|gif|webp|heic|heif)$/i.test(file.name || ''));
+  const isImage = (a) => /^image\//.test(a.type || '') || /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(a.file || '');
+  const sizeText = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} ميجا` : `${Math.max(1, Math.round(n / 1024))} كيلو`);
+
+  // ---------- الفولدر (في المتصفح) ----------
+  async function dir(create) {
+    const d = root.CLOUD && root.CLOUD.folderHandle && root.CLOUD.folderHandle();
+    if (!d) return null;
+    return d.getDirectoryHandle(SUBDIR, { create: !!create });
+  }
+  async function exists(sub, name) { try { await sub.getFileHandle(name); return true; } catch (e) { return false; } }
+  // يحفظ الملف ويرجع بياناته اللي بتتسجل في المستند
+  async function save(file, base) {
+    const sub = await dir(true);
+    if (!sub) throw new Error('اختار فولدر المرفقات الأول');
+    const ext = extOf(file);
+    let name = fileName(base, ext);
+    for (let i = 2; await exists(sub, name); i++) name = `${cleanName(base)} (${i}).${ext}`;
+    let h;
+    try { h = await sub.getFileHandle(name, { create: true }); } catch (e) {
+      // لو الجهاز رفض الاسم العربي: اسم إنجليزي بالتاريخ والوقت بدل ما الملف يضيع
+      name = `document-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
+      h = await sub.getFileHandle(name, { create: true });
+    }
+    const w = await h.createWritable();
+    await w.write(file); await w.close();
+    return { file: name, name: file.name || name, type: file.type || '', size: file.size || 0, at: new Date().toISOString() };
+  }
+  async function read(name) {
+    const sub = await dir(false).catch(() => null);
+    if (!sub) return null;
+    try { return await (await sub.getFileHandle(name)).getFile(); } catch (e) { return null; }
+  }
+
+  const api = { SUBDIR, cleanName, extOf, fileName, accepted, isImage, sizeText, save, read };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.ATT = api;
+})(typeof window !== 'undefined' ? window : globalThis);
 
 /* Florume — الشاشات */
 (function () {
@@ -4914,6 +4990,84 @@ tr.auto-row td { color: var(--ink-2); }
   const nameOf = (list, id) => (DB.find(list, id) || {}).name || '—';
   const invoiceNo = (sale) => `${S().settings.invoicePrefix || ''}${sale.no || ''}`;
   const accountOptions = () => S().accounts.map((a) => ({ v: a.id, l: a.name }));
+  // ---------- المرفقات (اختيارية): صور وPDF بتتحفظ في فولدر «مرفقات» على الكمبيوتر ----------
+  const ATT_LISTS = { shipment: 'shipments', supplierPayment: 'supplierPayments', expense: 'expenses', formation: 'formation', settlement: 'settlements', equity: 'equity', transfer: 'transfers' };
+  const attachItems = (list) => (list || []).map((a, i) => `<li><span class="att-ico">${ATT.isImage(a) ? '🖼️' : '📄'}</span><button type="button" class="link-btn" data-att-open="${esc(a.file)}">${esc(a.file)}</button><small class="muted">${ATT.sizeText(a.size || 0)}</small><button type="button" class="icon-btn" data-att-remove="${i}" aria-label="شيل المرفق">✕</button></li>`).join('');
+  // مربع الإرفاق في فورم أي مستند. label: أول الاسم اللي الملف بيتحفظ بيه (مصروف، شحنة…)
+  function attachBox(doc, label) {
+    const list = (doc && doc.attachments) || [];
+    return `<div class="attach-box span-2" data-att-label="${esc(label)}">
+      <input type="hidden" name="attachments" value="${esc(JSON.stringify(list))}">
+      <div class="attach-head"><b>المستندات</b> <small class="muted">اختياري — فاتورة المورد، صورة التحويل… (صور أو PDF)</small></div>
+      <ul class="attach-list">${attachItems(list)}</ul>
+      <button type="button" class="btn btn-small" data-att-add>📎 إرفاق مستند</button>
+      <input type="file" class="att-input" accept="image/*,application/pdf,.pdf" multiple hidden>
+      <p class="muted att-note" hidden></p>
+    </div>`;
+  }
+  const attachValue = (f) => { const i = f.querySelector('.attach-box input[name=attachments]'); try { return i ? JSON.parse(i.value || '[]') : undefined; } catch (e) { return []; } };
+  const withAttach = (obj, f) => { const a = attachValue(f); if (a === undefined) return obj; if (a.length) obj.attachments = a; else delete obj.attachments; return obj; };
+  // علامة 📎 في الجداول: بتفتح المرفقات
+  const clip = (list, doc) => (doc && (doc.attachments || []).length ? ` <button type="button" class="link-btn clip" data-action="viewAttach" data-id="${list}:${doc.id}" title="المستندات المرفقة">📎${doc.attachments.length > 1 ? doc.attachments.length : ''}</button>` : '');
+  const clipRef = (ref) => { const list = ref && ATT_LISTS[ref.type]; return list ? clip(list, DB.find(list, ref.id)) : ''; };
+  async function openAttachment(name) {
+    const file = await ATT.read(name);
+    if (!file) {
+      const st = CLOUD.folderState();
+      if (st.supported && st.chosen && !st.ready) { if (await CLOUD.reenableFolder()) return openAttachment(name); }
+      UI.toast(st.supported ? `الملف «${name}» مش موجود في فولدر المرفقات — يمكن اتنقل أو اتمسح` : 'المرفقات بتتفتح من النسخة اللي على الكمبيوتر (Chrome / Edge)', 'bad');
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const w = window.open(url, '_blank');
+    if (!w) { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  function attachBoxState(box) {
+    const input = box.querySelector('input[name=attachments]');
+    const get = () => { try { return JSON.parse(input.value || '[]'); } catch (e) { return []; } };
+    const set = (list) => { input.value = JSON.stringify(list); box.querySelector('.attach-list').innerHTML = attachItems(list); };
+    return { get, set };
+  }
+  async function attachPick(box) {
+    const note = box.querySelector('.att-note');
+    const st = CLOUD.folderState();
+    if (!st.supported) { note.hidden = false; note.textContent = 'إرفاق المستندات بيشتغل من النسخة اللي على الكمبيوتر بمتصفح Chrome أو Edge.'; return; }
+    if (!st.ready) {
+      // أول مرة: اختار الفولدر (نفس فولدر النسخ الاحتياطي) — أو اسمح للسيستم يوصله تاني بعد ما فتحت المتصفح
+      const ok = st.chosen ? await CLOUD.reenableFolder() : await CLOUD.chooseFolder();
+      if (!ok) { note.hidden = false; note.textContent = 'ما اتختارش فولدر — المستندات بتتحفظ في فولدر «مرفقات» جوه الفولدر اللي تختاره.'; return; }
+      note.hidden = false; note.textContent = `المرفقات هتتحفظ في: ${CLOUD.folderState().name} / ${ATT.SUBDIR}`;
+    }
+    const inp = box.querySelector('.att-input');
+    inp.onchange = () => { const files = [...inp.files]; inp.value = ''; if (files.length) attachFiles(box, files); };
+    inp.click();
+  }
+  async function attachFiles(box, files) {
+    const f = box.closest('form');
+    const el = (n) => f && f.elements[n];
+    const date = ((el('date') || el('orderDate') || {}).value) || today();
+    const extra = [(el('ref') || {}).value, (el('notes') || {}).value].filter((x) => x && String(x).trim()).join(' ');
+    const base = `${box.dataset.attLabel} ${date}${extra ? ' ' + extra : ''}`;
+    const state = attachBoxState(box);
+    const list = state.get();
+    let added = 0, bad = 0;
+    for (const file of files) {
+      if (!ATT.accepted(file)) { bad++; continue; }
+      try { list.push(await ATT.save(file, base)); added++; } catch (e) { UI.toast(e.message || 'تعذر حفظ الملف', 'bad'); }
+    }
+    state.set(list);
+    if (added) UI.toast(added === 1 ? 'اتحفظ المستند — هيتسجل مع الحفظ' : `اتحفظ ${added} مستندات — هيتسجلوا مع الحفظ`);
+    if (bad) UI.toast('المرفقات صور أو PDF بس', 'bad');
+  }
+  function viewAttachments(key) {
+    const [list, id] = String(key).split(':');
+    const doc = DB.find(list, id);
+    if (!doc) return;
+    UI.modal({ title: 'المستندات المرفقة', footer: '',
+      body: `<ul class="attach-list view">${(doc.attachments || []).map((a) => `<li><span class="att-ico">${ATT.isImage(a) ? '🖼️' : '📄'}</span><button type="button" class="link-btn" data-att-open="${esc(a.file)}">${esc(a.file)}</button><small class="muted">${ATT.sizeText(a.size || 0)}${a.at ? ' · ' + fmtDate(a.at.slice(0, 10)) : ''}</small></li>`).join('')}</ul>
+        <p class="muted">الملفات في فولدر «${ATT.SUBDIR}» جوه فولدر النسخ الاحتياطي${CLOUD.folderState().name ? ` (${esc(CLOUD.folderState().name)})` : ''}. تقدر تفتحها كمان من الويندوز.</p>` });
+  }
   // المصروف ممكن يتدفع من حساب، أو تخصمه شركة الشحن من رصيدك عندها
   const payFromOptions = () => [...accountOptions(), ...S().couriers.map((c) => ({ v: 'courier:' + c.id, l: `خصم من رصيدك عند ${c.name}` }))];
   const paidFromName = (e) => (e.courierId ? `رصيد ${nameOf('couriers', e.courierId)}` : nameOf('accounts', e.accountId));
@@ -5727,7 +5881,7 @@ tr.auto-row td { color: var(--ink-2); }
     const s = S();
     const rows = [...s.shipments].sort((a, b) => (a.orderDate < b.orderDate ? 1 : -1)).map((sh) => {
       const c = Acc.shipmentCosting(sh);
-      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>${sh.local ? ' ' + UI.pill('شراء محلي', 'info') : ''}`)}${td(esc(sh.supplierId ? nameOf('suppliers', sh.supplierId) : 'مورد مش متسجل'))}${td(fmtDate(sh.orderDate))}
+      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>${sh.local ? ' ' + UI.pill('شراء محلي', 'info') : ''}${clip('shipments', sh)}`)}${td(esc(sh.supplierId ? nameOf('suppliers', sh.supplierId) : 'مورد مش متسجل'))}${td(fmtDate(sh.orderDate))}
         ${tdn(`${fmt(c.goodsForeign)} <span class="cur">${sh.currency}</span>`)}${tdn(fmt(c.rate, 4))}${tdn(fmt(c.goodsEGP))}${tdn(fmt(c.extras))}${tdn(`<b>${fmt(c.landedTotal)}</b>`)}${tdn(fmt(c.totalQty))}
         ${td(UI.pill(SHIP_STATUSES[sh.status], statusKind[sh.status]))}
         ${actions(sh.status !== 'received' && sh.status !== 'cancelled' ? btn('استلام', 'receiveShipment', sh.id) : '', btn('تكلفة الوحدة', 'landedShipment', sh.id), btn('حذف', 'delShipment', sh.id, 'danger'))}</tr>`;
@@ -5801,6 +5955,7 @@ tr.auto-row td { color: var(--ink-2); }
       <button type="button" class="btn btn-small" id="add-cost">+ إضافة مصروف</button>
       <div class="imp-box warn" id="weight-warn" hidden></div>
       ${UI.field('ملاحظات', `<textarea id="f-notes" name="notes" rows="2">${esc(sh.notes || '')}</textarea>`)}
+      ${attachBox(sh, local ? 'شراء محلي' : 'شحنة')}
       <div class="summary" id="ship-summary"></div>`;
     const read = (f) => ({
       ...sh, ref: f.ref.value.trim(), supplierId: f.supplierId.value, currency: f.currency.value, rate: num(f.rate.value), orderDate: f.orderDate.value, status: f.status.value,
@@ -5848,7 +6003,7 @@ tr.auto-row td { color: var(--ink-2); }
         recalc();
       },
       onSubmit(f) {
-        const obj = read(f);
+        const obj = withAttach(read(f), f);
         if (!obj.items.length) { UI.toast('أضف صنفًا واحدًا على الأقل', 'bad'); return false; }
         if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
         if (local && obj.payMode === 'credit' && !obj.supplierId) return fail('الشراء الآجل لازم يكون على مورد متسجل — اختار المورد أو غيّر طريقة الدفع');
@@ -5989,7 +6144,7 @@ tr.auto-row td { color: var(--ink-2); }
       const sp = DB.find('suppliers', p.supplierId) || {};
       const fxv = J().suppliers.fx[p.id] || 0;
       return `<tr>${td(fmtDate(p.date))}${td(esc(sp.name || '—'))}${tdn(`${fmt(p.amount)} <span class="cur">${sp.currency || ''}</span>`)}${tdn(fmt(p.rate, 4))}${tdn(fmt(num(p.amount) * num(p.rate)))}${tdn(fmt(p.fee))}${td(esc(nameOf('accounts', p.accountId)))}
-        ${tdn(fxv ? `<span class="${fxv > 0 ? 'bad-text' : 'good-text'}">${fxv > 0 ? 'خسارة' : 'ربح'} ${fmt(Math.abs(fxv))}</span>` : '—')}${td(esc(p.notes || ''))}${actions(btn('تعديل', 'editPayment', p.id), btn('حذف', 'delPayment', p.id, 'danger'))}</tr>`;
+        ${tdn(fxv ? `<span class="${fxv > 0 ? 'bad-text' : 'good-text'}">${fxv > 0 ? 'خسارة' : 'ربح'} ${fmt(Math.abs(fxv))}</span>` : '—')}${td(esc(p.notes || '') + clip('supplierPayments', p))}${actions(btn('تعديل', 'editPayment', p.id), btn('حذف', 'delPayment', p.id, 'danger'))}</tr>`;
     });
     return `${header('الموردين', 'رصيد كل مورد يُتابع بعملته (ريال / درهم)، وفروق سعر الصرف بين وقت الشراء ووقت الدفع تُسجَّل تلقائيًا كربح أو خسارة.', '<button class="btn" data-action="newPayment">دفعة لمورد</button><button class="btn btn-primary" data-action="newSupplier">+ مورد جديد</button>')}
       ${table(['المورد', 'الدولة', 'العملة', 'الهاتف', '#الرصيد بالعملة', '#الرصيد الدفتري (ج.م)', 'الحالة', ''], rows, { empty: 'لا يوجد موردون بعد' })}
@@ -6028,6 +6183,7 @@ tr.auto-row td { color: var(--ink-2); }
         ${UI.field('دُفع من', UI.select('accountId', accountOptions(), p.accountId))}
         ${UI.field('عمولة التحويل (ج.م)', UI.input('fee', p.fee, 'type="number" min="0" step="0.01"'))}
         ${UI.field('ملاحظات', UI.input('notes', p.notes), { cls: 'span-2' })}
+        ${attachBox(p, 'دفعة مورد')}
       </div><div class="summary" id="pay-sum"></div>`,
       onOpen(f) {
         const upd = () => { f.querySelector('#pay-sum').innerHTML = `<div class="strong"><span>إجمالي الخصم من الحساب</span><b>${fmt(num(f.amount.value) * num(f.rate.value) + num(f.fee.value))} ج.م</b></div>`; };
@@ -6035,7 +6191,7 @@ tr.auto-row td { color: var(--ink-2); }
         f.addEventListener('input', upd); upd();
       },
       onSubmit(f, fd) {
-        const obj = { ...p, date: fd.get('date'), supplierId: fd.get('supplierId'), amount: num(fd.get('amount')), rate: num(fd.get('rate')), accountId: fd.get('accountId'), fee: num(fd.get('fee')), notes: fd.get('notes') };
+        const obj = withAttach({ ...p, date: fd.get('date'), supplierId: fd.get('supplierId'), amount: num(fd.get('amount')), rate: num(fd.get('rate')), accountId: fd.get('accountId'), fee: num(fd.get('fee')), notes: fd.get('notes') }, f);
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'supplierPayments', obj))) return false;
@@ -6117,7 +6273,7 @@ tr.auto-row td { color: var(--ink-2); }
         ${s.couriers.map((c) => `<div class="acc-card courier"><span>${couriers[c.id] >= 0 ? 'مستحق لنا لدى' : 'مستحق علينا لـ'}</span><b>${esc(c.name)}</b><strong>${money(Math.abs(couriers[c.id] || 0))}</strong></div>`).join('')}
       </section>
       <h2 class="section-title">حركة ${esc(nameOf('accounts', treasuryAcc))} — ${PRESETS[period.preset]}</h2>
-      ${table(['التاريخ', 'البيان', '#وارد', '#منصرف', '#الرصيد'], led.rows.map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(r.desc))}${tdn(r.dr ? fmt(r.dr) : '')}${tdn(r.cr ? fmt(r.cr) : '')}${tdn(fmt(r.balance))}</tr>`), {
+      ${table(['التاريخ', 'البيان', '#وارد', '#منصرف', '#الرصيد'], led.rows.map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(r.desc) + clipRef(r.ref))}${tdn(r.dr ? fmt(r.dr) : '')}${tdn(r.cr ? fmt(r.cr) : '')}${tdn(fmt(r.balance))}</tr>`), {
         empty: 'لا توجد حركة في هذه الفترة',
         foot: `<tr><td colspan="4">رصيد أول الفترة ${fmt(led.opening)} · رصيد آخر الفترة</td>${tdn(`<b>${fmt(led.closing)}</b>`)}</tr>`,
       })}
@@ -6167,10 +6323,10 @@ tr.auto-row td { color: var(--ink-2); }
     const s = S(); const isNew = !t;
     t = t || { id: uid(), date: today(), fromId: (s.accounts[0] || {}).id, toId: (s.accounts[1] || {}).id, amount: '', fee: 0, notes: '' };
     UI.modal({ title: 'تحويل بين الحسابات',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('من', UI.select('fromId', accountOptions(), t.fromId))}${UI.field('إلى', UI.select('toId', accountOptions(), t.toId))}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('عمولة التحويل', UI.input('fee', t.fee, 'type="number" min="0" step="0.01"'))}${UI.field('ملاحظات', UI.input('notes', t.notes))}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('من', UI.select('fromId', accountOptions(), t.fromId))}${UI.field('إلى', UI.select('toId', accountOptions(), t.toId))}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('عمولة التحويل', UI.input('fee', t.fee, 'type="number" min="0" step="0.01"'))}${UI.field('ملاحظات', UI.input('notes', t.notes))}${attachBox(t, 'تحويل')}</div>`,
       onSubmit(f, fd) {
         if (fd.get('fromId') === fd.get('toId')) return fail('اختر حسابين مختلفين');
-        const obj = { ...t, date: fd.get('date'), fromId: fd.get('fromId'), toId: fd.get('toId'), amount: num(fd.get('amount')), fee: num(fd.get('fee')), notes: fd.get('notes') };
+        const obj = withAttach({ ...t, date: fd.get('date'), fromId: fd.get('fromId'), toId: fd.get('toId'), amount: num(fd.get('amount')), fee: num(fd.get('fee')), notes: fd.get('notes') }, f);
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'transfers', obj))) return false;
         DB.upsert('transfers', obj); UI.toast(isNew ? 'تم التحويل' : 'تم الحفظ'); render();
@@ -6182,9 +6338,9 @@ tr.auto-row td { color: var(--ink-2); }
     const bal = Acc.courierBalances(s, J());
     t = t || { id: uid(), date: today(), courierId: s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, amount: '', notes: '' };
     UI.modal({ title: 'تحصيل / سداد مع شركة شحن',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('شركة الشحن', UI.select('courierId', s.couriers.map((c) => ({ v: c.id, l: `${c.name} (الرصيد ${fmt(bal[c.id] || 0)})` })), t.courierId))}${UI.field('إلى حساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('المبلغ المستلم', UI.input('amount', t.amount, 'type="number" step="0.01" required'), { req: true, hint: 'صافي التحويل بعد خصم مصاريف الشحن. رقم سالب لو أنت اللي دفعت لهم' })}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('شركة الشحن', UI.select('courierId', s.couriers.map((c) => ({ v: c.id, l: `${c.name} (الرصيد ${fmt(bal[c.id] || 0)})` })), t.courierId))}${UI.field('إلى حساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('المبلغ المستلم', UI.input('amount', t.amount, 'type="number" step="0.01" required'), { req: true, hint: 'صافي التحويل بعد خصم مصاريف الشحن. رقم سالب لو أنت اللي دفعت لهم' })}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}${attachBox(t, 'تحصيل شحن')}</div>`,
       onSubmit(f, fd) {
-        const obj = { ...t, date: fd.get('date'), courierId: fd.get('courierId'), accountId: fd.get('accountId'), amount: num(fd.get('amount')), notes: fd.get('notes') };
+        const obj = withAttach({ ...t, date: fd.get('date'), courierId: fd.get('courierId'), accountId: fd.get('accountId'), amount: num(fd.get('amount')), notes: fd.get('notes') }, f);
         if (!obj.amount) return fail('أدخل المبلغ');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'settlements', obj))) return false;
         DB.upsert('settlements', obj); UI.toast(isNew ? 'تم تسجيل التحصيل' : 'تم الحفظ'); render();
@@ -6195,9 +6351,9 @@ tr.auto-row td { color: var(--ink-2); }
     t = t || { id: uid(), date: today(), type: 'capital', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', partnerId: '' };
     const partnerField = s.partners.length ? UI.field('الشريك', UI.select('partnerId', [{ v: '', l: 'بدون شريك (المالك)' }, ...s.partners.map((p) => ({ v: p.id, l: p.name }))], t.partnerId || ''), { hint: 'مسحوبات الشريك تتخصم من حسابه الجاري' }) : '';
     UI.modal({ title: 'رأس مال / مسحوبات',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('النوع', UI.select('type', { capital: 'إضافة رأس مال', drawing: 'مسحوبات' }, t.type))}${partnerField}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('الحساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', t.date, 'type="date" required'), { req: true })}${UI.field('النوع', UI.select('type', { capital: 'إضافة رأس مال', drawing: 'مسحوبات' }, t.type))}${partnerField}${UI.field('المبلغ', UI.input('amount', t.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('الحساب', UI.select('accountId', accountOptions(), t.accountId))}${UI.field('ملاحظات', UI.input('notes', t.notes), { cls: 'span-2' })}${attachBox(t, 'رأس مال')}</div>`,
       onSubmit(f, fd) {
-        const obj = { ...t, date: fd.get('date'), type: fd.get('type'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), partnerId: fd.get('partnerId') || '', notes: fd.get('notes') };
+        const obj = withAttach({ ...t, date: fd.get('date'), type: fd.get('type'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), partnerId: fd.get('partnerId') || '', notes: fd.get('notes') }, f);
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'equity', obj))) return false;
         DB.upsert('equity', obj); UI.toast(isNew ? 'تم التسجيل' : 'تم الحفظ'); render();
@@ -6243,7 +6399,7 @@ tr.auto-row td { color: var(--ink-2); }
       ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
       <h2 class="section-title">كل المصروفات <span class="muted">— ${list.length} بند</span></h2>
       <div class="filters">${UI.select('expSrc', [{ v: '', l: 'كل المصادر' }, ...Object.entries(SRC_GROUPS).map(([v, l]) => ({ v, l }))], expFilter.src, 'data-change="expSrc" aria-label="المصدر"')}${UI.select('expAcc', accOpts, expFilter.acc, 'data-change="expAcc" aria-label="البند"')}</div>
-      ${table(['التاريخ', 'البند', 'البيان', 'المصدر', 'من حساب', '#المبلغ', ''], list.map((r) => `<tr class="${r.source === 'expense' ? '' : 'auto-row'}">${td(fmtDate(r.date))}${td(`${esc(r.name)}${r.kind === 'discount' ? ' ' + UI.pill('بيقلل الإيراد', 'info') : ''}`)}${td(esc(r.desc))}${td(r.source === 'expense' ? UI.pill('يدوي', 'good') : `<small class="muted">${esc(Acc.EXPENSE_SOURCES[r.source] || 'تلقائي')}</small>`)}${td(esc(acctOf(r)))}${tdn(r.amount < 0 ? `<span class="good-text">${fmt(r.amount)}</span>` : fmt(r.amount))}${rowActions(r)}</tr>`), { desc: true, empty: 'لا توجد مصروفات في هذه الفترة', foot: list.length ? `<tr><td colspan="5">الإجمالي</td>${tdn(`<b>${fmt(sum(list))}</b>`)}<td></td></tr>` : '' })}
+      ${table(['التاريخ', 'البند', 'البيان', 'المصدر', 'من حساب', '#المبلغ', ''], list.map((r) => `<tr class="${r.source === 'expense' ? '' : 'auto-row'}">${td(fmtDate(r.date))}${td(`${esc(r.name)}${r.kind === 'discount' ? ' ' + UI.pill('بيقلل الإيراد', 'info') : ''}`)}${td(esc(r.desc) + clipRef(r.ref))}${td(r.source === 'expense' ? UI.pill('يدوي', 'good') : `<small class="muted">${esc(Acc.EXPENSE_SOURCES[r.source] || 'تلقائي')}</small>`)}${td(esc(acctOf(r)))}${tdn(r.amount < 0 ? `<span class="good-text">${fmt(r.amount)}</span>` : fmt(r.amount))}${rowActions(r)}</tr>`), { desc: true, empty: 'لا توجد مصروفات في هذه الفترة', foot: list.length ? `<tr><td colspan="5">الإجمالي</td>${tdn(`<b>${fmt(sum(list))}</b>`)}<td></td></tr>` : '' })}
       <p class="muted">البنود اللي مصدرها «من فاتورة» أو «من شحنة» بتتعدل من المستند نفسه. المبلغ بالسالب معناه استرداد (زي عمولة اترجعت مع مرتجع). تكلفة البضاعة المباعة مش هنا، هي في قائمة الدخل تحت «تكلفة البضاعة».</p>`;
   }
   // ---------- التأسيس ورأس المال ----------
@@ -6252,7 +6408,7 @@ tr.auto-row td { color: var(--ink-2); }
   const payerLabel = (x) => (x.accountId ? `من ${nameOf('accounts', x.accountId)}` : x.partnerId ? `من فلوس ${nameOf('partners', x.partnerId)}` : 'من فلوس صاحب المشروع');
   function formationSection() {
     const s = S(), fc = Acc.foundingCapital(s, J());
-    const rows = [...s.formation].sort((a, b) => (a.date < b.date ? 1 : -1)).map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(Acc.FORMATION_KINDS[x.kind] || 'أخرى'))}${td(esc(x.notes || ''))}${td(`${esc(payerLabel(x))}${x.accountId ? '' : ' ' + UI.pill('رأس مال', 'info')}`)}${tdn(fmt(x.amount))}${actions(btn('تعديل', 'editFormation', x.id), btn('حذف', 'delFormation', x.id, 'danger'))}</tr>`);
+    const rows = [...s.formation].sort((a, b) => (a.date < b.date ? 1 : -1)).map((x) => `<tr>${td(fmtDate(x.date))}${td(esc(Acc.FORMATION_KINDS[x.kind] || 'أخرى'))}${td(esc(x.notes || '') + clip('formation', x))}${td(`${esc(payerLabel(x))}${x.accountId ? '' : ' ' + UI.pill('رأس مال', 'info')}`)}${tdn(fmt(x.amount))}${actions(btn('تعديل', 'editFormation', x.id), btn('حذف', 'delFormation', x.id, 'danger'))}</tr>`);
     const line = (l, v, hint) => `<li><span>${l}${hint ? ` <small class="muted">${hint}</small>` : ''}</span><b>${fmt(v)} ج.م</b></li>`;
     return `<section class="panel" id="formation-panel">
       <h2 class="section-title">التأسيس ورأس المال <span class="muted">— مش بيدخل في الأرباح والخسائر</span></h2>
@@ -6282,10 +6438,11 @@ tr.auto-row td { color: var(--ink-2); }
           ${UI.field('المبلغ', UI.input('amount', x.amount, 'type="number" min="0" step="0.01" required'), { req: true })}
           ${UI.field('اتدفع منين', UI.select('payer', payers, payerOf(x)), { hint: 'لو من فلوسك الشخصية بيزود رأس المال، ولو من حساب النشاط بينزل من رصيده' })}
           ${UI.field('البيان', UI.input('notes', x.notes, 'placeholder="دومين سنة، تصميم اللوجو…"'), { cls: 'span-2' })}
+          ${attachBox(x, 'تأسيس')}
         </div>`,
       onSubmit(f, fd) {
         const payer = fd.get('payer');
-        const obj = { ...x, date: fd.get('date'), kind: fd.get('kind'), amount: num(fd.get('amount')), notes: fd.get('notes').trim(), accountId: payer.startsWith('acc:') ? payer.slice(4) : '', partnerId: payer.startsWith('partner:') ? payer.slice(8) : '' };
+        const obj = withAttach({ ...x, date: fd.get('date'), kind: fd.get('kind'), amount: num(fd.get('amount')), notes: fd.get('notes').trim(), accountId: payer.startsWith('acc:') ? payer.slice(4) : '', partnerId: payer.startsWith('partner:') ? payer.slice(8) : '' }, f);
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date)) return false;
         if (obj.accountId && !cashOk(f, RULES.withDoc(S(), 'formation', obj))) return false;
@@ -6313,11 +6470,11 @@ tr.auto-row td { color: var(--ink-2); }
     const s = S(); const isNew = !e;
     e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', campaignId: '' };
     UI.modal({ title: isNew ? 'مصروف جديد' : 'تعديل المصروف',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', payFromOptions(), e.courierId ? 'courier:' + e.courierId : e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', payFromOptions(), e.courierId ? 'courier:' + e.courierId : e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}${attachBox(e, 'مصروف')}</div>`,
       onOpen(f) { const t = () => { f.querySelector('.camp-field').hidden = f.category.value !== '5300'; }; f.category.addEventListener('change', t); t(); },
       onSubmit(f, fd) {
         const from = String(fd.get('accountId') || '');
-        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: from.startsWith('courier:') ? '' : from, courierId: from.startsWith('courier:') ? from.slice(8) : '', campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
+        const obj = withAttach({ ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: from.startsWith('courier:') ? '' : from, courierId: from.startsWith('courier:') ? from.slice(8) : '', campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') }, f);
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'expenses', obj))) return false;
         DB.upsert('expenses', obj); UI.toast('تم حفظ المصروف'); render();
@@ -6701,9 +6858,9 @@ tr.auto-row td { color: var(--ink-2); }
     const f = CLOUD.folderState();
     const age = CLOUD.backupAgeDays();
     return `<section class="panel">
-      <h2 class="section-title">النسخ الاحتياطي التلقائي</h2>
+      <h2 class="section-title">النسخ الاحتياطي التلقائي والمرفقات</h2>
       <p class="muted">بياناتك على الجهاز ده بس. آخر نسخة احتياطية: <b>${age == null ? 'مفيش' : age === 0 ? 'النهارده' : `من ${age} يوم`}</b>.</p>
-      ${f.supported ? `<p class="muted">اختار فولدر (مثلًا فولدر Google Drive على الكمبيوتر) والنظام هيحفظ فيه نسخة كل يوم لوحده بعد أي تعديل.</p>
+      ${f.supported ? `<p class="muted">اختار فولدر (مثلًا فولدر Google Drive على الكمبيوتر) والنظام هيحفظ فيه نسخة كل يوم لوحده بعد أي تعديل. والمستندات اللي بترفقها (فواتير، صور تحويلات) بتتحفظ في نفس الفولدر جوه فولدر «مرفقات».</p>
         <div class="btn-row">${f.chosen ? `<span>الفولدر: <b>${esc(f.name)}</b> — ${f.ready ? '<span class="good-text">شغال ✔</span>' : '<span class="warn-text">محتاج تأكيد</span>'}</span>${f.ready ? '' : '<button class="btn btn-primary" data-action="reenableFolder">فعّل النسخ التلقائي</button>'}<button class="btn" data-action="chooseFolder">غيّر الفولدر</button>` : '<button class="btn btn-primary" data-action="chooseFolder">اختار فولدر للنسخ التلقائي</button>'}</div>`
         : '<p class="muted">النسخ التلقائي لفولدر محتاج Chrome أو Edge على الكمبيوتر وإن الملف يتفتح من الجهاز. غير كده صدّر نسخة كل أسبوع.</p>'}
       <p class="muted">عشان تشتغل من أكتر من جهاز أو مع فريق، افتح النظام كصفحة على claude.ai وبياناتك هتتحفظ على السحابة.</p>
@@ -7027,9 +7184,9 @@ tr.auto-row td { color: var(--ink-2); }
     const docLink = (r) => {
       const ref = r.ref || {};
       if ((ref.type === 'sale' || ref.type === 'saleReturn') && DB.find('sales', ref.id)) return `<button class="link-btn" data-action="viewSale" data-id="${ref.id}">${esc(r.desc)}</button>`;
-      if (ref.type === 'expense' && DB.find('expenses', ref.id)) return `<button class="link-btn" data-action="editExpense" data-id="${ref.id}">${esc(r.desc)}</button>`;
-      if (ref.type === 'shipment' && DB.find('shipments', ref.id)) return `<button class="link-btn" data-action="editShipment" data-id="${ref.id}">${esc(r.desc)}</button>`;
-      return esc(r.desc);
+      if (ref.type === 'expense' && DB.find('expenses', ref.id)) return `<button class="link-btn" data-action="editExpense" data-id="${ref.id}">${esc(r.desc)}</button>${clipRef(ref)}`;
+      if (ref.type === 'shipment' && DB.find('shipments', ref.id)) return `<button class="link-btn" data-action="editShipment" data-id="${ref.id}">${esc(r.desc)}</button>${clipRef(ref)}`;
+      return esc(r.desc) + clipRef(ref);
     };
     const months = st.months.length > 1 ? `<h3 class="sub-title">حسب الشهر</h3>${table(['الشهر', '#عدد الحركات', '#مدين', '#دائن', `#الصافي (${st.flow ? (st.credit ? 'إيراد' : 'مصروف') : balLabel})`], st.months.map((m) => `<tr>${td(monthLong(m.month))}${tdn(m.count)}${tdn(fmt(m.dr))}${tdn(fmt(m.cr))}${tdn(`<b>${fmt(m.net)}</b>`)}</tr>`), { foot: `<tr><td>الإجمالي</td>${tdn(st.rows.length)}${tdn(fmt(st.totalDr))}${tdn(fmt(st.totalCr))}${tdn(`<b>${fmt(st.net)}</b>`)}</tr>` })}` : '';
     const sources = st.sources.length > 1 ? `<h3 class="sub-title">حسب المصدر</h3>${table(['جاية منين', '#عدد الحركات', '#الصافي'], st.sources.map((x) => `<tr>${td(esc(x.label))}${tdn(x.count)}${tdn(fmt(x.net))}</tr>`))}` : '';
@@ -7535,6 +7692,7 @@ tr.auto-row td { color: var(--ink-2); }
     newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
     delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),
     pickCourier: (id) => { reconCourier = id; render(); },
+    viewAttach: (id) => viewAttachments(id),
     openStatement: (id) => { stmtKey = id; if (location.hash === '#statement') render(); else location.hash = 'statement'; },
     goReconcile: (id) => { if (id) reconCourier = id; location.hash = 'reconcile'; },
     manualReconcile: (id) => manualReconcile(id),
@@ -7958,6 +8116,10 @@ tr.auto-row td { color: var(--ink-2); }
     DB.onRevert = () => { renderBrand(); render(); };
     renderBrand();
     document.addEventListener('click', (e) => {
+      const attAdd = e.target.closest('[data-att-add]'), attOpen = e.target.closest('[data-att-open]'), attRm = e.target.closest('[data-att-remove]');
+      if (attAdd) { e.preventDefault(); attachPick(attAdd.closest('.attach-box')); return; }
+      if (attOpen) { e.preventDefault(); openAttachment(attOpen.dataset.attOpen); return; }
+      if (attRm) { e.preventDefault(); const st = attachBoxState(attRm.closest('.attach-box')); const l = st.get(); l.splice(+attRm.dataset.attRemove, 1); st.set(l); UI.toast('اتشال من المستند (الملف نفسه فاضل في الفولدر)'); return; }
       document.querySelectorAll('details.tools-menu[open]').forEach((d) => { if (!d.contains(e.target) || e.target.closest('[data-action]')) d.open = false; });
       const el = e.target.closest('[data-action]');
       if (!el || !ACTIONS[el.dataset.action]) return;
