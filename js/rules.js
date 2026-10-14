@@ -133,6 +133,7 @@
   const beforeStart = (state, date) => !!(date && state.settings.startDate && date < state.settings.startDate);
   function saleDateError(sale) {
     if (sale.status === 'returned' && sale.returnDate && sale.returnDate < sale.date) return 'تاريخ المرتجع قبل تاريخ البيع';
+    if (sale.deliveredDate && sale.deliveredDate < sale.date) return 'تاريخ التسليم قبل تاريخ البيع';
     if (sale.status === 'lost' && sale.lostDate && sale.lostDate < sale.date) return 'تاريخ ضياع الشحنة قبل تاريخ البيع';
     if ((sale.returns || []).some((r) => r.date && r.date < sale.date)) return 'تاريخ مرتجع جزئي قبل تاريخ البيع';
     return null;
@@ -156,7 +157,7 @@
 
   // 8) الفواتير الداخلة في تسوية كشف شركة شحن مقفولة ماليًا
   const isReconciled = (state, saleId) => (state.reconciliations || []).some((r) => (r.lines || []).some((l) => l.saleId === saleId));
-  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', trackingNo: 'رقم البوليصة', returns: 'المرتجعات الجزئية', samples: 'العينات', commission: 'عمولة المؤثر', payFee: 'عمولة الدفع', compensation: 'التعويض' };
+  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', deliveredDate: 'تاريخ التسليم', trackingNo: 'رقم البوليصة', returns: 'المرتجعات الجزئية', samples: 'العينات', commission: 'عمولة المؤثر', payFee: 'عمولة الدفع', compensation: 'التعويض' };
   function lockedSaleChanges(state, before, after) {
     if (!before || !isReconciled(state, before.id)) return [];
     const norm = (k, v) => (k === 'items' ? JSON.stringify((v || []).map((it) => [it.productId, num(it.qty), num(it.price)])) : k === 'returns' || k === 'samples' ? JSON.stringify(v || []) : ['discount', 'shippingCharged', 'courierFee', 'returnFee', 'commission', 'payFee', 'compensation'].includes(k) ? num(v) : k === 'kind' ? v || 'sale' : v || '');

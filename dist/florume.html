@@ -758,6 +758,12 @@ tr.auto-row td { color: var(--ink-2); }
 .stmt-report .link-btn { white-space: normal; text-align: start; overflow-wrap: anywhere; }
 .hbars .link-btn { color: inherit; text-align: start; white-space: normal; }
 
+/* رصيد شركة الشحن متفصّل */
+.breakdown { margin: 14px 0 6px; }
+.breakdown > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.breakdown table.fin { margin-top: 10px; }
+.breakdown .warn-row td:first-child { color: var(--warn, #a15c00); }
+
 </style>
 </head>
 <body>
@@ -853,9 +859,11 @@ tr.auto-row td { color: var(--ink-2); }
     { code: '1200', name: 'مستحقات لدى شركات الشحن', type: 'asset' },
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
+    { code: '1320', name: 'بضاعة مع شركات الشحن', type: 'asset' },
     { code: '1500', name: 'مصروفات التأسيس وما قبل التشغيل', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
     { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
+    { code: '2300', name: 'دفعات مقدمة من العملاء', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
     { code: '3200', name: 'المسحوبات الشخصية', type: 'equity' },
     { code: '3400', name: 'أرباح موزعة على الشركاء', type: 'equity' },
@@ -1296,21 +1304,47 @@ tr.auto-row td { color: var(--ink-2); }
       const payFee = prepaid ? num(sale.payFee) : 0;
       const commission = num(sale.commission);
       const influencer = sale.couponId ? { type: 'influencer', id: sale.couponId } : undefined;
-      add(sale.date, 'sale', ref, `فاتورة ${sale.no || ''} — ${cust}`, [
-        { acc: debitAcc, dr: t.total, cr: 0, party: prepaid ? undefined : courier },
+      const pr = partialReturns(sale);
+      // المبيعات بتتسجل عند التسليم مش عند الخروج: الطلب اللي اتسلم (أو رجع منه جزء بعد ما اتسلم)
+      const delivered = sale.status === 'delivered' || pr.list.length > 0;
+      // 1) خروج الطلب مع شركة الشحن: البضاعة بتتنقل لـ«بضاعة مع شركات الشحن»، والمدفوع مقدم بيتسجل دفعة مقدمة من العميل
+      add(sale.date, 'sale', ref, `خروج فاتورة ${sale.no || ''} مع ${name('couriers', sale.courierId) || 'شركة الشحن'} — ${cust}`, [
+        { acc: '1320', dr: round2(cogs + samplesCost), cr: 0 }, { acc: '1300', dr: 0, cr: round2(cogs + samplesCost) },
+        ...(prepaid ? [{ acc: debitAcc, dr: t.total, cr: 0 }, { acc: '2300', dr: 0, cr: t.total }] : []),
+        // عمولة بوابة الدفع على المدفوع مقدمًا (اتخصمت وقت الدفع)
+        { acc: '5700', dr: payFee, cr: 0 }, ...(payFee ? [{ acc: debitAcc, dr: 0, cr: payFee }] : []),
+      ]);
+      if (!delivered) {
+        // لسه مع شركة الشحن: مفيش مبيعات ولا مستحق على شركة الشحن
+        if (sale.status === 'shipped') return;
+        const lost = sale.status === 'lost';
+        const date = lost ? sale.lostDate || sale.date : sale.returnDate || sale.date;
+        const refundAcc = prepaid ? cashCode((lost ? sale.lostRefundAccountId : sale.refundAccountId) || sale.payment) : null;
+        // 2) رجع من غير ما يتسلم: البضاعة ترجع المخزن، ومصاريف الشحن والمرتجع عليك. ضاع: تكلفته خسارة
+        add(date, 'saleReturn', ref, `${lost ? 'شحنة ضاعت' : 'مرتجع (ما اتسلمش)'} فاتورة ${sale.no || ''} — ${cust}`, [
+          { acc: lost ? '5820' : '1300', dr: cogs, cr: 0 }, { acc: lost ? '5810' : '1300', dr: samplesCost, cr: 0 }, { acc: '1320', dr: 0, cr: round2(cogs + samplesCost) },
+          { acc: '5200', dr: num(sale.courierFee), cr: 0 }, { acc: '5210', dr: lost ? 0 : num(sale.returnFee), cr: 0 },
+          { acc: '1200', dr: 0, cr: round2(num(sale.courierFee) + (lost ? 0 : num(sale.returnFee))), party: courier },
+          ...(prepaid ? [{ acc: '2300', dr: t.total, cr: 0 }, { acc: refundAcc, dr: 0, cr: t.total }] : []),
+        ]);
+        if (lost && num(sale.compensation)) add(sale.compensationDate || date, 'saleReturn', ref, `تعويض شحنة ضاعت — فاتورة ${sale.no || ''}`, [
+          { acc: '1200', dr: num(sale.compensation), cr: 0, party: courier }, { acc: '4910', dr: 0, cr: num(sale.compensation) },
+        ]);
+        return;
+      }
+      // 3) التسليم: المبيعات والتكلفة، والمستحق على شركة الشحن (أو الدفعة المقدمة بتتقفل)
+      add(sale.deliveredDate || sale.date, 'sale', ref, `تسليم فاتورة ${sale.no || ''} — ${cust}`, [
+        { acc: prepaid ? '2300' : '1200', dr: t.total, cr: 0, party: prepaid ? undefined : courier },
         { acc: '4110', dr: t.discount, cr: 0 },
         { acc: '4100', dr: 0, cr: t.gross }, { acc: '4200', dr: 0, cr: t.shipping },
-        { acc: '5100', dr: cogs, cr: 0 }, { acc: '1300', dr: 0, cr: cogs },
+        { acc: '5100', dr: cogs, cr: 0 }, { acc: '1320', dr: 0, cr: cogs },
         { acc: '5200', dr: num(sale.courierFee), cr: 0 }, { acc: '1200', dr: 0, cr: num(sale.courierFee), party: courier },
-        // عمولة بوابة الدفع على المدفوع مقدمًا
-        { acc: '5700', dr: payFee, cr: 0 }, ...(payFee ? [{ acc: debitAcc, dr: 0, cr: payFee }] : []),
         // عينات هدية مع الطلب
-        { acc: '5810', dr: samplesCost, cr: 0 }, { acc: '1300', dr: 0, cr: samplesCost },
+        { acc: '5810', dr: samplesCost, cr: 0 }, { acc: '1320', dr: 0, cr: samplesCost },
         // عمولة المؤثر صاحب كود الخصم
         { acc: '5300', dr: commission, cr: 0 }, { acc: '2200', dr: 0, cr: commission, party: influencer },
       ]);
-      // المرتجعات الجزئية
-      const pr = partialReturns(sale);
+      // المرتجعات الجزئية (بعد التسليم)
       const lineCost = (line, q) => { const c = (inv.saleCogs[sale.id] || [])[line] || 0; const lq = num(sale.items[line].qty); return lq ? (c / lq) * q : 0; };
       const netTotal = t.net || 1;
       pr.list.forEach((r) => {
@@ -1503,11 +1537,13 @@ tr.auto-row td { color: var(--ink-2); }
       { name: 'مستحقات لدى شركات الشحن', amount: net('1200') },
       { name: 'المخزون', amount: net('1300') },
       { name: 'بضاعة في الطريق', amount: net('1310') },
+      { name: 'بضاعة مع شركات الشحن', amount: net('1320') },
     ];
     if (net('1500')) assets.push({ name: 'مصروفات التأسيس وما قبل التشغيل', amount: net('1500') });
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
     if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
+    if (net('2300')) liabilities.push({ name: 'دفعات مقدمة من العملاء (طلبات لسه ما اتسلمتش)', amount: round2(-net('2300')) });
     let earnings = 0;
     Object.keys(map).forEach((k) => {
       const a = COA_MAP[baseCode(k)];
@@ -1594,6 +1630,44 @@ tr.auto-row td { color: var(--ink-2); }
       months: Object.values(months).sort((a, b) => (a.month < b.month ? -1 : 1)).map((m) => ({ ...m, dr: round2(m.dr), cr: round2(m.cr), net: round2(sign(m.dr, m.cr)) })),
       sources: Object.values(sources).map((x) => ({ ...x, net: round2(x.net) })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)),
     };
+  }
+
+  // ---------- رصيد شركة الشحن متفصّل: ليه الرصيد الدفتري مختلف عن الطلبات المستنية تسوية ----------
+  // الرصيد = طلبات اتسلمت/رجعت ولسه ما اتسوّتش + طلبات لسه مع الشحن + (طلبات اتسوّت − التحصيل المربوط بيها)
+  //        − تحصيلات متسجلة من غير ما تتربط بطلبات − مصروفات خصمتها شركة الشحن − مصاريف شحن الطلبات المدفوعة مقدم + حركات تانية
+  const linkedSettlementIds = (state) => new Set((state.reconciliations || []).flatMap((r) => [r.settlementId, ...(r.settlementIds || [])]).filter(Boolean));
+  function courierBreakdown(state, journal, courierId) {
+    const done = new Set((state.reconciliations || []).flatMap((r) => (r.lines || []).map((l) => l.saleId)));
+    const linked = linkedSettlementIds(state);
+    const sales = new Map((state.sales || []).map((x) => [x.id, x]));
+    const out = { pending: 0, pendingCount: 0, prepaid: 0, prepaidCount: 0, shipped: 0, shippedCount: 0, settledOrders: 0, linkedPaid: 0, unlinkedPaid: 0, unlinkedCount: 0, expenses: 0, other: 0, balance: 0 };
+    const counted = { pending: new Set(), shipped: new Set(), prepaid: new Set() };
+    journal.entries.forEach((e) => e.lines.forEach((l) => {
+      if (l.acc !== '1200' || !l.party || l.party.type !== 'courier' || l.party.id !== courierId) return;
+      const v = num(l.dr) - num(l.cr);
+      out.balance += v;
+      const ref = e.ref || {};
+      if (ref.type === 'sale' && sales.has(ref.id)) {
+        const x = sales.get(ref.id);
+        // مدفوع مقدم أو فاتورة دعاية: مش بيدخل تسوية، بس شركة الشحن بتخصم مصاريفه من رصيدك
+        if (isPromo(x) || (x.payment && x.payment !== 'cod')) { out.prepaid += v; counted.prepaid.add(x.id); }
+        else if (done.has(x.id)) out.settledOrders += v;
+        else if (x.status === 'delivered' || x.status === 'returned') { out.pending += v; counted.pending.add(x.id); }
+        else { out.shipped += v; counted.shipped.add(x.id); }
+      } else if (e.source === 'settlement') {
+        if (linked.has(ref.id)) out.linkedPaid += -v; else { out.unlinkedPaid += -v; out.unlinkedCount += 1; }
+      } else if (e.source === 'expense') out.expenses += -v;
+      else out.other += v;
+    }));
+    Object.keys(out).forEach((k) => (out[k] = round2(out[k])));
+    out.pendingCount = counted.pending.size; out.shippedCount = counted.shipped.size; out.prepaidCount = counted.prepaid.size;
+    out.settledDiff = round2(out.settledOrders - out.linkedPaid);
+    return out;
+  }
+  // التحصيلات اللي اتسجلت من الخزينة ولسه ما اتربطتش بأي تسوية طلبات
+  function unlinkedSettlements(state, courierId) {
+    const linked = linkedSettlementIds(state);
+    return (state.settlements || []).filter((st) => st.courierId === courierId && !linked.has(st.id)).sort((a, b) => (a.date < b.date ? -1 : 1));
   }
 
   function cashBalances(state, journal, asOf) {
@@ -1871,7 +1945,7 @@ tr.auto-row td { color: var(--ink-2); }
   }
 
   const api = {
-    DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    courierBreakdown, unlinkedSettlements, linkedSettlementIds, DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
@@ -3399,6 +3473,7 @@ tr.auto-row td { color: var(--ink-2); }
   const beforeStart = (state, date) => !!(date && state.settings.startDate && date < state.settings.startDate);
   function saleDateError(sale) {
     if (sale.status === 'returned' && sale.returnDate && sale.returnDate < sale.date) return 'تاريخ المرتجع قبل تاريخ البيع';
+    if (sale.deliveredDate && sale.deliveredDate < sale.date) return 'تاريخ التسليم قبل تاريخ البيع';
     if (sale.status === 'lost' && sale.lostDate && sale.lostDate < sale.date) return 'تاريخ ضياع الشحنة قبل تاريخ البيع';
     if ((sale.returns || []).some((r) => r.date && r.date < sale.date)) return 'تاريخ مرتجع جزئي قبل تاريخ البيع';
     return null;
@@ -3422,7 +3497,7 @@ tr.auto-row td { color: var(--ink-2); }
 
   // 8) الفواتير الداخلة في تسوية كشف شركة شحن مقفولة ماليًا
   const isReconciled = (state, saleId) => (state.reconciliations || []).some((r) => (r.lines || []).some((l) => l.saleId === saleId));
-  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', trackingNo: 'رقم البوليصة', returns: 'المرتجعات الجزئية', samples: 'العينات', commission: 'عمولة المؤثر', payFee: 'عمولة الدفع', compensation: 'التعويض' };
+  const LOCKED = { date: 'التاريخ', kind: 'نوع الفاتورة', status: 'الحالة', items: 'الأصناف والأسعار', discount: 'الخصم', shippingCharged: 'الشحن المحصل', payment: 'طريقة الدفع', courierId: 'شركة الشحن', courierFee: 'تكلفة الشحن', returnFee: 'مصاريف المرتجع', returnDate: 'تاريخ المرتجع', deliveredDate: 'تاريخ التسليم', trackingNo: 'رقم البوليصة', returns: 'المرتجعات الجزئية', samples: 'العينات', commission: 'عمولة المؤثر', payFee: 'عمولة الدفع', compensation: 'التعويض' };
   function lockedSaleChanges(state, before, after) {
     if (!before || !isReconciled(state, before.id)) return [];
     const norm = (k, v) => (k === 'items' ? JSON.stringify((v || []).map((it) => [it.productId, num(it.qty), num(it.price)])) : k === 'returns' || k === 'samples' ? JSON.stringify(v || []) : ['discount', 'shippingCharged', 'courierFee', 'returnFee', 'commission', 'payFee', 'compensation'].includes(k) ? num(v) : k === 'kind' ? v || 'sale' : v || '');
@@ -5085,7 +5160,7 @@ tr.auto-row td { color: var(--ink-2); }
         ${actions(waButton(x), btn('تعديل', 'editSale', x.id), btn('حذف', 'delSale', x.id, 'danger'))}</tr>`;
     });
     return `
-      ${header('المبيعات والطلبات', 'كل طلب يُسجَّل كإيراد عند خروجه مع شركة الشحن، وتُحسب تكلفته بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn" data-action="newPromo">+ فاتورة دعاية</button><button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
+      ${header('المبيعات والطلبات', 'الطلب بيتسجل مبيعات لما يتسلم للعميل (بتاريخ التسليم). وهو مع شركة الشحن بضاعته بتبان «بضاعة مع شركات الشحن» ومش بتزوّد المستحق على الشركة. التكلفة بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn" data-action="newPromo">+ فاتورة دعاية</button><button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
       <div class="filters">
         <input type="search" id="f-q" placeholder="بحث برقم الفاتورة أو البوليصة أو العميل أو الموبايل" value="${esc(saleFilter.q)}" data-input="saleQ">
         ${UI.select('fkind', { '': 'كل الفواتير', sale: 'فواتير بيع', promo: 'فواتير دعاية' }, saleFilter.kind, 'data-change="saleKindFilter" aria-label="نوع الفاتورة"')}
@@ -5271,6 +5346,9 @@ tr.auto-row td { color: var(--ink-2); }
         ${UI.field('عينة هدية مع الطلب', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))], sample0.productId || ''), { cls: 'sale-only', hint: 'تتخصم من المخزون وتتحسب مصروف عينات' })}
         ${UI.field('عدد العينات', UI.input('sampleQty', sample0.qty || 1, 'type="number" min="1" step="1"'), { cls: 'sale-only sample-qty' })}
       </div>
+      <div class="form-grid delivered-fields" hidden>
+        ${UI.field('تاريخ التسليم', UI.input('deliveredDate', sale.deliveredDate || (sale.status === 'delivered' ? sale.date : (today() < sale.date ? sale.date : today())), 'type="date"'), { hint: 'المبيعات والمستحق على شركة الشحن بيتسجلوا بالتاريخ ده' })}
+      </div>
       <div class="form-grid return-fields" hidden>
         ${UI.field('سبب المرتجع', UI.select('returnReason', RETURN_OPTS(), sale.returnReason || ''), { req: true, hint: 'بيساعدك تعرف المرتجع جاي منين، وبينبهك من العملاء اللي بيرفضوا' })}
         ${UI.field('تاريخ المرتجع', UI.input('returnDate', sale.returnDate || today(), 'type="date"'))}
@@ -5376,6 +5454,7 @@ tr.auto-row td { color: var(--ink-2); }
           f.querySelector('.new-customer').hidden = f.customerId.value !== '__new';
           f.querySelector('#f-cName').required = f.customerId.value === '__new';
           f.querySelector('.return-fields').hidden = f.status.value !== 'returned';
+          f.querySelector('.delivered-fields').hidden = f.status.value !== 'delivered';
           f.querySelector('.lost-fields').hidden = f.status.value !== 'lost';
           riskBox(f, sale.id);
           f.querySelectorAll('.prepaid-only').forEach((el) => (el.hidden = promo || f.payment.value === 'cod'));
@@ -5415,7 +5494,7 @@ tr.auto-row td { color: var(--ink-2); }
         if (status === 'returned' && !fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
         const obj = { ...sale, returnReason: status === 'returned' ? fd.get('returnReason') : '', kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
           discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
-          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), openPackage: fd.get('openPackage') === 'on', declaredValue: fd.get('declaredValue') === '' ? null : num(fd.get('declaredValue')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
+          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), openPackage: fd.get('openPackage') === 'on', declaredValue: fd.get('declaredValue') === '' ? null : num(fd.get('declaredValue')), returnDate: status === 'returned' ? fd.get('returnDate') : '', deliveredDate: status === 'delivered' ? (!sale.deliveredDate && sale.status === 'delivered' && fd.get('deliveredDate') === sale.date ? '' : fd.get('deliveredDate')) : (sale.returns || []).length ? sale.deliveredDate || '' : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
           refundAccountId: status === 'returned' ? fd.get('refundAccountId') : '', lostDate: status === 'lost' ? fd.get('lostDate') : '', compensation: status === 'lost' ? num(fd.get('compensation')) : 0, lostRefundAccountId: status === 'lost' ? fd.get('lostRefundAccountId') : '',
           samples: !promo && fd.get('sampleProductId') ? [{ productId: fd.get('sampleProductId'), qty: num(fd.get('sampleQty')) || 1 }] : [] };
         // كود الخصم وعمولة المؤثر وعمولة الدفع بتتحفظ رقم ثابت وقت الحفظ
@@ -6819,29 +6898,57 @@ tr.auto-row td { color: var(--ink-2); }
       return `<button class="acc-card ${c.id === reconCourier ? 'active' : ''}" data-action="pickCourier" data-id="${c.id}"><span>${esc(c.name)}</span><b>${u.count} طلب لسه ما اتسوّاش</b><strong>${money(u.net)}</strong><small class="${u.days >= s.settings.alerts.settleDays ? 'bad-text' : 'muted'}">${u.count ? `أقدم طلب من ${u.days} يوم` : 'كله متسوّي'} · الرصيد الدفتري ${fmt(bal[c.id] || 0)}</small></button>`;
     }).join('');
     const pend = (un[reconCourier] || { sales: [] }).sales.map((id) => DB.find('sales', id)).sort((a, b) => (a.date < b.date ? -1 : 1));
-    const hist = [...s.reconciliations].sort((a, b) => (a.date < b.date ? 1 : -1)).map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(nameOf('couriers', r.courierId)))}${td(esc(r.fileName || ''))}${tdn(r.lines.length)}${tdn(fmt(r.net))}${td(r.settlementId && DB.find('settlements', r.settlementId) ? UI.pill('تم تسجيل التحصيل', 'good') : UI.pill('بدون تحصيل', 'mute'))}${actions(btn('التفاصيل', 'viewReconciliation', r.id), btn('حذف', 'delReconciliation', r.id, 'danger'))}</tr>`);
+    const paidOf = (r) => [r.settlementId, ...(r.settlementIds || [])].filter((id, i, a) => id && a.indexOf(id) === i).map((id) => DB.find('settlements', id)).filter(Boolean);
+    const hist = [...s.reconciliations].sort((a, b) => (a.date < b.date ? 1 : -1)).map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(nameOf('couriers', r.courierId)))}${td(esc(r.fileName || ''))}${tdn(r.lines.length)}${tdn(fmt(r.net))}${td(paidOf(r).length ? `${UI.pill('تم تسجيل التحصيل', 'good')} <small class="muted">${fmt(paidOf(r).reduce((t, x) => t + num(x.amount), 0))}</small>` : UI.pill('بدون تحصيل', 'mute'))}${actions(btn('التفاصيل', 'viewReconciliation', r.id), btn('حذف', 'delReconciliation', r.id, 'danger'))}</tr>`);
     return `${header('تسوية شركات الشحن', 'لما شركة الشحن تحوّلك فلوس: اختار الطلبات اللي اتحاسبت عليها واكتب المبلغ اللي وصلك فعلًا، والنظام يسجل التحصيل ويقفل الطلبات دي.', `<button class="btn btn-primary" data-action="manualReconcile" data-id="${reconCourier || ''}">تسوية يدوية</button>`)}
       <section class="acc-cards">${cards || UI.empty('أضف شركة شحن من الإعدادات')}</section>
+      ${reconCourier ? balanceBreakdown(reconCourier) : ''}
       <h2 class="section-title">طلبات اتسلمت مع ${esc(nameOf('couriers', reconCourier))} ولسه ما اتسوّتش</h2>
       ${table(['الفاتورة', 'التاريخ', 'البوليصة', 'العميل', 'الحالة', '#المحصل المتوقع', '#مصاريف الشحن', '#الصافي المتوقع', '#من كام يوم'], pend.map((x) => { const e = OPS.expectedFor(x); const age = OPS.daysBetween(x.date, today()); return `<tr>${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>`)}${td(fmtDate(x.date))}${td(esc(x.trackingNo || '—'), 'mono')}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}${tdn(`<span class="${age >= S().settings.alerts.settleDays ? 'bad-text' : ''}">${age}</span>`)}</tr>`; }), { empty: 'كل الطلبات المسلّمة اتسوّت 👌' })}
       <h2 class="section-title">التسويات اللي اتعملت</h2>
       ${table(['التاريخ', 'شركة الشحن', 'البيان', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { desc: true, empty: 'لسه ما عملتش أي تسوية' })}`;
   }
+  // الرصيد الدفتري متفصّل: عشان تعرف الفرق بينه وبين «الطلبات اللي لسه ما اتسوّتش» جاي منين
+  function balanceBreakdown(courierId) {
+    const b = Acc.courierBreakdown(S(), J(), courierId);
+    const name = esc(nameOf('couriers', courierId));
+    const row = (label, v, note = '', cls = '') => `<tr class="${cls}"><td>${label}${note ? ` <small class="muted">${note}</small>` : ''}</td>${tdn(fmt(v))}</tr>`;
+    const lines = [
+      row('طلبات اتسلمت أو رجعت ولسه ما اتسوّتش', b.pending, `${b.pendingCount} طلب — نفس الرقم اللي في الكارت`),
+      b.shippedCount || b.shipped ? row('(+) طلبات لسه مع شركة الشحن', b.shipped, `${b.shippedCount} طلب ما اتسلمتش لسه`) : '',
+      b.unlinkedPaid ? row('(−) تحصيلات اتسجلت من غير ما تتربط بطلبات', -b.unlinkedPaid, `${b.unlinkedCount} تحصيل من الخزينة — اربطها من «تسوية يدوية»`, b.unlinkedPaid ? 'warn-row' : '') : '',
+      Math.abs(b.settledDiff) >= 0.01 ? row(b.settledDiff > 0 ? '(+) طلبات اتسوّت والمبلغ اللي وصل أقل من المتوقع' : '(−) طلبات اتسوّت والمبلغ اللي وصل أكتر من المتوقع', b.settledDiff, 'الفرق بين صافي الطلبات والتحصيل المربوط بيها') : '',
+      b.expenses ? row('(−) مصروفات خصمتها شركة الشحن من رصيدك', -b.expenses) : '',
+      b.prepaid ? row('(±) مصاريف شحن طلبات مدفوعة مقدم وفواتير دعاية', b.prepaid, `${b.prepaidCount} طلب — مش بتدخل في التسوية، وشركة الشحن بتخصمها من رصيدك`) : '',
+      Math.abs(b.other) >= 0.01 ? row('(±) حركات تانية', b.other) : '',
+    ].join('');
+    const same = Math.abs(b.balance - b.pending) < 0.01;
+    return `<details class="panel breakdown" ${same ? '' : 'open'}><summary><b>رصيد ${name} الدفتري ${fmt(b.balance)} ج.م</b> ${same ? UI.pill('= الطلبات اللي لسه ما اتسوّتش', 'good') : `<span class="warn-text">— مختلف عن الطلبات اللي لسه ما اتسوّتش بـ ${fmt(Acc.round2(b.balance - b.pending))} ج.م. ليه؟</span>`}</summary>
+      <div class="table-wrap"><table class="fin"><tbody>${lines}<tr class="total"><td>الرصيد الدفتري (اللي ليك عند ${name})</td>${tdn(`<b>${fmt(b.balance)}</b>`)}</tr></tbody></table></div>
+      ${b.unlinkedPaid ? `<p class="muted">التحصيلات اللي سجلتها من «الخزينة ← تحصيل من شركة شحن» بتنزّل الرصيد، لكن الطلبات نفسها بتفضل «لسه ما اتسوّتش» لحد ما تعمل لها تسوية. اعمل <b>تسوية يدوية</b> واختار «التحصيل متسجل قبل كده» عشان تربطهم من غير ما الفلوس تتسجل مرتين.</p>` : ''}
+    </details>`;
+  }
   // تسوية يدوية: تختار الطلبات اللي شركة الشحن حاسبتك عليها وتكتب المبلغ اللي وصلك فعلًا
   function manualReconcile(courierId) {
     const s = S();
     if (!s.couriers.length) { UI.toast('أضف شركة شحن من الإعدادات', 'bad'); return; }
-    const opts = { courierId: courierId || reconCourier || s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), settle: true, amount: null, notes: '' };
-    let picked = new Set();
+    const opts = { courierId: courierId || reconCourier || s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), mode: 'new', amount: null, notes: '' };
+    let picked = new Set(), paid = new Set();
+    // تحصيلات متسجلة من الخزينة ولسه ما اتربطتش بطلبات: تتربط بالتسوية بدل ما نسجل الفلوس تاني
+    const unlinked = () => Acc.unlinkedSettlements(S(), opts.courierId);
+    const paidSum = () => Acc.round2(unlinked().filter((x) => paid.has(x.id)).reduce((t, x) => t + num(x.amount), 0));
+    const resetPaid = () => { paid = new Set(unlinked().map((x) => x.id)); opts.mode = paid.size ? 'existing' : 'new'; };
     const pending = () => ((OPS.unsettledByCourier(S(), today())[opts.courierId] || { sales: [] }).sales).map((id) => DB.find('sales', id)).sort((a, b) => (a.date < b.date ? -1 : 1));
-    const reset = () => { picked = new Set(pending().map((x) => x.id)); opts.amount = null; };
+    const reset = () => { picked = new Set(pending().map((x) => x.id)); opts.amount = null; resetPaid(); };
     reset();
     const expected = () => Acc.round2(pending().filter((x) => picked.has(x.id)).reduce((t, x) => t + OPS.expectedFor(x).net, 0));
     const rows = () => pending().map((x) => { const e = OPS.expectedFor(x); return `<tr>${td(`<input type="checkbox" class="mr-pick" value="${x.id}" ${picked.has(x.id) ? 'checked' : ''} aria-label="اختيار ${esc(invoiceNo(x))}">`)}${td(esc(invoiceNo(x)))}${td(fmtDate(x.date))}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}</tr>`; });
     const view = () => {
       const list = pending();
       const amt = opts.amount == null ? expected() : opts.amount;
-      const diff = Acc.round2(num(amt) - expected());
+      const got = opts.mode === 'existing' ? paidSum() : opts.mode === 'new' ? num(amt) : null;
+      const diff = got == null ? 0 : Acc.round2(got - expected());
+      const ul = unlinked();
       return `<div class="form-grid">${UI.field('شركة الشحن', UI.select('mrCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-mr="courierId"'))}</div>
         ${list.length ? `<p class="muted">علّم على الطلبات اللي شركة الشحن حاسبتك عليها في التحويل ده (اتسلمت أو رجعت).</p>
           <label class="check"><input type="checkbox" class="mr-all" ${picked.size === list.length ? 'checked' : ''}> اختار الكل (${list.length})</label>
@@ -6850,10 +6957,13 @@ tr.auto-row td { color: var(--ink-2); }
         <div class="summary">
           <div><span>الطلبات المختارة</span><b>${picked.size}</b></div>
           <div class="strong"><span>الصافي المتوقع حسب طلباتك</span><b>${fmt(expected())} ج.م</b></div>
-          ${opts.settle && Math.abs(diff) >= 0.01 ? `<div class="${diff < 0 ? 'bad-text' : ''}"><span>فرق المبلغ اللي وصلك عن المتوقع</span><b>${fmt(diff)}</b></div>` : ''}
+          ${got != null ? `<div><span>${opts.mode === 'existing' ? 'التحصيلات المربوطة' : 'المبلغ اللي وصلك'}</span><b>${fmt(got)}</b></div>` : ''}
+          ${got != null && Math.abs(diff) >= 0.01 ? `<div class="${diff < 0 ? 'bad-text' : ''}"><span>فرق المبلغ اللي وصلك عن المتوقع</span><b>${fmt(diff)}</b></div>` : ''}
         </div>
-        <label class="check"><input type="checkbox" data-mr="settle" ${opts.settle ? 'checked' : ''}> سجّل التحصيل في الخزينة</label>
-        <div class="form-grid" ${opts.settle ? '' : 'hidden'}>
+        ${UI.field('الفلوس', UI.select('mrMode', [{ v: 'new', l: 'سجّل تحصيل جديد في الخزينة' }, ...(ul.length ? [{ v: 'existing', l: `التحصيل متسجل قبل كده من الخزينة (${ul.length})` }] : []), { v: 'none', l: 'من غير تحصيل (هسجله بعدين)' }], opts.mode, 'data-mr="mode"'))}
+        ${opts.mode === 'existing' ? `<p class="muted">اختار التحصيلات اللي اتسجلت قبل كده للطلبات دي — هتتربط بالتسوية ومش هتتسجل تاني.</p>
+          <div class="table-wrap"><table class="table"><thead><tr><th></th><th>التاريخ</th><th>الحساب</th><th>البيان</th><th class="num">المبلغ</th></tr></thead><tbody>${ul.map((x) => `<tr><td><input type="checkbox" class="mr-paid" value="${x.id}" ${paid.has(x.id) ? 'checked' : ''} aria-label="ربط التحصيل"></td>${td(fmtDate(x.date))}${td(esc(nameOf('accounts', x.accountId)))}${td(esc(x.notes || ''))}${tdn(fmt(x.amount))}</tr>`).join('')}</tbody></table></div>` : ''}
+        <div class="form-grid" ${opts.mode === 'new' ? '' : 'hidden'}>
           ${UI.field('المبلغ اللي وصلك فعلًا', UI.input('mrAmount', amt, 'type="number" step="0.01" data-mr="amount"'), { hint: 'صافي التحويل بعد ما شركة الشحن خصمت مصاريفها. رقم سالب لو انت اللي دفعت لهم' })}
           ${UI.field('إلى حساب', UI.select('mrAccount', accountOptions(), opts.accountId, 'data-mr="accountId"'))}
           ${UI.field('تاريخ التحويل', UI.input('mrDate', opts.date, 'type="date" data-mr="date"'))}
@@ -6867,27 +6977,30 @@ tr.auto-row td { color: var(--ink-2); }
         box.addEventListener('change', (e) => {
           if (e.target.matches('.mr-pick')) { if (e.target.checked) picked.add(e.target.value); else picked.delete(e.target.value); redraw(); return; }
           if (e.target.matches('.mr-all')) { picked = e.target.checked ? new Set(pending().map((x) => x.id)) : new Set(); redraw(); return; }
+          if (e.target.matches('.mr-paid')) { if (e.target.checked) paid.add(e.target.value); else paid.delete(e.target.value); redraw(); return; }
           const k = e.target.dataset.mr; if (!k) return;
           if (k === 'courierId') { opts.courierId = e.target.value; reset(); redraw(); return; }
           opts[k] = e.target.type === 'checkbox' ? e.target.checked : k === 'amount' ? num(e.target.value) : e.target.value;
-          if (k === 'settle' || k === 'amount') redraw();
+          if (k === 'mode' || k === 'amount') redraw();
         });
       },
       onSubmit() {
         const chosen = pending().filter((x) => picked.has(x.id));
         const amount = opts.amount == null ? expected() : num(opts.amount);
-        if (!chosen.length && !(opts.settle && amount)) { UI.toast('اختار طلبات أو اكتب المبلغ اللي وصلك', 'bad'); return false; }
+        const links = opts.mode === 'existing' ? unlinked().filter((x) => paid.has(x.id)) : [];
+        if (!chosen.length && !(opts.mode === 'new' && amount)) { UI.toast('اختار طلبات أو اكتب المبلغ اللي وصلك', 'bad'); return false; }
+        if (opts.mode === 'existing' && !links.length) { UI.toast('اختار التحصيل اللي اتسجل قبل كده', 'bad'); return false; }
         if (!dateOk(opts.date || today(), 'تاريخ التسوية')) return false;
         const rec = { id: uid(), date: opts.date || today(), courierId: opts.courierId, fileName: 'تسوية يدوية', manual: true, net: expected(),
           lines: chosen.map((x) => { const e = OPS.expectedFor(x); return { saleId: x.id, ref: x.trackingNo || '', cod: e.cod, fee: e.fee, status: STATUSES[x.status] }; }), unmatched: [] };
-        if (opts.settle && amount) {
+        if (opts.mode === 'new' && amount) {
           const st = { id: uid(), date: rec.date, courierId: opts.courierId, accountId: opts.accountId, amount, notes: `تسوية يدوية — ${chosen.length} طلب${opts.notes ? ' — ' + opts.notes : ''}` };
           S().settlements.push(st); rec.settlementId = st.id;
-        }
+        } else if (links.length) { rec.settlementIds = links.map((x) => x.id); rec.settlementId = links[0].id; }
         if (chosen.length) S().reconciliations.push(rec);
         DB.save();
         reconCourier = opts.courierId;
-        UI.toast(`تمت تسوية ${chosen.length} طلب${rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
+        UI.toast(`تمت تسوية ${chosen.length} طلب${links.length ? ` وربط ${links.length} تحصيل` : rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
         render();
       } });
   }
@@ -7526,13 +7639,15 @@ tr.auto-row td { color: var(--ink-2); }
       const sale = DB.find('sales', el.dataset.id);
       const upd = { ...sale, status: el.value };
       if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today() < sale.date ? sale.date : today();
+      // التسليم: المبيعات بتتسجل بتاريخ النهارده (تقدر تعدله من الفاتورة)
+      if (el.value === 'delivered' && !upd.deliveredDate) upd.deliveredDate = today() < sale.date ? sale.date : today();
       if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية مع شركة الشحن — الحالة مقفولة'); render(); return; }
       if (el.value === 'returned' && !isPromo(sale)) { returnQuickForm(sale); return; }
       const stock = RULES.checkSaleStock(S(), J(), upd, sale);
       if (stock.errors.length) { fail(stockMsg(stock.errors, upd.status)); render(); return; }
       upd.preorder = stock.preorder;
       DB.upsert('sales', upd);
-      UI.toast(el.value === 'returned' ? 'تم تسجيل المرتجع — عدّل الطلب لإضافة مصاريف المرتجع' : `الحالة: ${STATUSES[el.value]}`);
+      UI.toast(el.value === 'returned' ? 'تم تسجيل المرتجع — عدّل الطلب لإضافة مصاريف المرتجع' : el.value === 'delivered' ? `اتسلم — المبيعات اتسجلت بتاريخ ${fmtDate(upd.deliveredDate)}` : `الحالة: ${STATUSES[el.value]}`);
       render();
     },
     importFile: (el) => { const file = el.files[0]; if (!file) return; const r = new FileReader(); r.onload = () => importState(r.result); r.readAsText(file); },

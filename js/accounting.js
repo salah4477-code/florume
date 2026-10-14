@@ -17,9 +17,11 @@
     { code: '1200', name: 'مستحقات لدى شركات الشحن', type: 'asset' },
     { code: '1300', name: 'المخزون', type: 'asset' },
     { code: '1310', name: 'بضاعة في الطريق', type: 'asset' },
+    { code: '1320', name: 'بضاعة مع شركات الشحن', type: 'asset' },
     { code: '1500', name: 'مصروفات التأسيس وما قبل التشغيل', type: 'asset' },
     { code: '2100', name: 'الموردين', type: 'liability' },
     { code: '2200', name: 'مستحقات المؤثرين (عمولات)', type: 'liability' },
+    { code: '2300', name: 'دفعات مقدمة من العملاء', type: 'liability' },
     { code: '3100', name: 'رأس المال', type: 'equity' },
     { code: '3200', name: 'المسحوبات الشخصية', type: 'equity' },
     { code: '3400', name: 'أرباح موزعة على الشركاء', type: 'equity' },
@@ -460,21 +462,47 @@
       const payFee = prepaid ? num(sale.payFee) : 0;
       const commission = num(sale.commission);
       const influencer = sale.couponId ? { type: 'influencer', id: sale.couponId } : undefined;
-      add(sale.date, 'sale', ref, `فاتورة ${sale.no || ''} — ${cust}`, [
-        { acc: debitAcc, dr: t.total, cr: 0, party: prepaid ? undefined : courier },
+      const pr = partialReturns(sale);
+      // المبيعات بتتسجل عند التسليم مش عند الخروج: الطلب اللي اتسلم (أو رجع منه جزء بعد ما اتسلم)
+      const delivered = sale.status === 'delivered' || pr.list.length > 0;
+      // 1) خروج الطلب مع شركة الشحن: البضاعة بتتنقل لـ«بضاعة مع شركات الشحن»، والمدفوع مقدم بيتسجل دفعة مقدمة من العميل
+      add(sale.date, 'sale', ref, `خروج فاتورة ${sale.no || ''} مع ${name('couriers', sale.courierId) || 'شركة الشحن'} — ${cust}`, [
+        { acc: '1320', dr: round2(cogs + samplesCost), cr: 0 }, { acc: '1300', dr: 0, cr: round2(cogs + samplesCost) },
+        ...(prepaid ? [{ acc: debitAcc, dr: t.total, cr: 0 }, { acc: '2300', dr: 0, cr: t.total }] : []),
+        // عمولة بوابة الدفع على المدفوع مقدمًا (اتخصمت وقت الدفع)
+        { acc: '5700', dr: payFee, cr: 0 }, ...(payFee ? [{ acc: debitAcc, dr: 0, cr: payFee }] : []),
+      ]);
+      if (!delivered) {
+        // لسه مع شركة الشحن: مفيش مبيعات ولا مستحق على شركة الشحن
+        if (sale.status === 'shipped') return;
+        const lost = sale.status === 'lost';
+        const date = lost ? sale.lostDate || sale.date : sale.returnDate || sale.date;
+        const refundAcc = prepaid ? cashCode((lost ? sale.lostRefundAccountId : sale.refundAccountId) || sale.payment) : null;
+        // 2) رجع من غير ما يتسلم: البضاعة ترجع المخزن، ومصاريف الشحن والمرتجع عليك. ضاع: تكلفته خسارة
+        add(date, 'saleReturn', ref, `${lost ? 'شحنة ضاعت' : 'مرتجع (ما اتسلمش)'} فاتورة ${sale.no || ''} — ${cust}`, [
+          { acc: lost ? '5820' : '1300', dr: cogs, cr: 0 }, { acc: lost ? '5810' : '1300', dr: samplesCost, cr: 0 }, { acc: '1320', dr: 0, cr: round2(cogs + samplesCost) },
+          { acc: '5200', dr: num(sale.courierFee), cr: 0 }, { acc: '5210', dr: lost ? 0 : num(sale.returnFee), cr: 0 },
+          { acc: '1200', dr: 0, cr: round2(num(sale.courierFee) + (lost ? 0 : num(sale.returnFee))), party: courier },
+          ...(prepaid ? [{ acc: '2300', dr: t.total, cr: 0 }, { acc: refundAcc, dr: 0, cr: t.total }] : []),
+        ]);
+        if (lost && num(sale.compensation)) add(sale.compensationDate || date, 'saleReturn', ref, `تعويض شحنة ضاعت — فاتورة ${sale.no || ''}`, [
+          { acc: '1200', dr: num(sale.compensation), cr: 0, party: courier }, { acc: '4910', dr: 0, cr: num(sale.compensation) },
+        ]);
+        return;
+      }
+      // 3) التسليم: المبيعات والتكلفة، والمستحق على شركة الشحن (أو الدفعة المقدمة بتتقفل)
+      add(sale.deliveredDate || sale.date, 'sale', ref, `تسليم فاتورة ${sale.no || ''} — ${cust}`, [
+        { acc: prepaid ? '2300' : '1200', dr: t.total, cr: 0, party: prepaid ? undefined : courier },
         { acc: '4110', dr: t.discount, cr: 0 },
         { acc: '4100', dr: 0, cr: t.gross }, { acc: '4200', dr: 0, cr: t.shipping },
-        { acc: '5100', dr: cogs, cr: 0 }, { acc: '1300', dr: 0, cr: cogs },
+        { acc: '5100', dr: cogs, cr: 0 }, { acc: '1320', dr: 0, cr: cogs },
         { acc: '5200', dr: num(sale.courierFee), cr: 0 }, { acc: '1200', dr: 0, cr: num(sale.courierFee), party: courier },
-        // عمولة بوابة الدفع على المدفوع مقدمًا
-        { acc: '5700', dr: payFee, cr: 0 }, ...(payFee ? [{ acc: debitAcc, dr: 0, cr: payFee }] : []),
         // عينات هدية مع الطلب
-        { acc: '5810', dr: samplesCost, cr: 0 }, { acc: '1300', dr: 0, cr: samplesCost },
+        { acc: '5810', dr: samplesCost, cr: 0 }, { acc: '1320', dr: 0, cr: samplesCost },
         // عمولة المؤثر صاحب كود الخصم
         { acc: '5300', dr: commission, cr: 0 }, { acc: '2200', dr: 0, cr: commission, party: influencer },
       ]);
-      // المرتجعات الجزئية
-      const pr = partialReturns(sale);
+      // المرتجعات الجزئية (بعد التسليم)
       const lineCost = (line, q) => { const c = (inv.saleCogs[sale.id] || [])[line] || 0; const lq = num(sale.items[line].qty); return lq ? (c / lq) * q : 0; };
       const netTotal = t.net || 1;
       pr.list.forEach((r) => {
@@ -667,11 +695,13 @@
       { name: 'مستحقات لدى شركات الشحن', amount: net('1200') },
       { name: 'المخزون', amount: net('1300') },
       { name: 'بضاعة في الطريق', amount: net('1310') },
+      { name: 'بضاعة مع شركات الشحن', amount: net('1320') },
     ];
     if (net('1500')) assets.push({ name: 'مصروفات التأسيس وما قبل التشغيل', amount: net('1500') });
     if (suppliers > 0) assets.push({ name: 'دفعات مقدمة للموردين', amount: suppliers });
     const liabilities = suppliers < 0 ? [{ name: 'مستحق للموردين', amount: -suppliers }] : [];
     if (net('2200')) liabilities.push({ name: 'عمولات مستحقة للمؤثرين', amount: round2(-net('2200')) });
+    if (net('2300')) liabilities.push({ name: 'دفعات مقدمة من العملاء (طلبات لسه ما اتسلمتش)', amount: round2(-net('2300')) });
     let earnings = 0;
     Object.keys(map).forEach((k) => {
       const a = COA_MAP[baseCode(k)];
@@ -758,6 +788,44 @@
       months: Object.values(months).sort((a, b) => (a.month < b.month ? -1 : 1)).map((m) => ({ ...m, dr: round2(m.dr), cr: round2(m.cr), net: round2(sign(m.dr, m.cr)) })),
       sources: Object.values(sources).map((x) => ({ ...x, net: round2(x.net) })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)),
     };
+  }
+
+  // ---------- رصيد شركة الشحن متفصّل: ليه الرصيد الدفتري مختلف عن الطلبات المستنية تسوية ----------
+  // الرصيد = طلبات اتسلمت/رجعت ولسه ما اتسوّتش + طلبات لسه مع الشحن + (طلبات اتسوّت − التحصيل المربوط بيها)
+  //        − تحصيلات متسجلة من غير ما تتربط بطلبات − مصروفات خصمتها شركة الشحن − مصاريف شحن الطلبات المدفوعة مقدم + حركات تانية
+  const linkedSettlementIds = (state) => new Set((state.reconciliations || []).flatMap((r) => [r.settlementId, ...(r.settlementIds || [])]).filter(Boolean));
+  function courierBreakdown(state, journal, courierId) {
+    const done = new Set((state.reconciliations || []).flatMap((r) => (r.lines || []).map((l) => l.saleId)));
+    const linked = linkedSettlementIds(state);
+    const sales = new Map((state.sales || []).map((x) => [x.id, x]));
+    const out = { pending: 0, pendingCount: 0, prepaid: 0, prepaidCount: 0, shipped: 0, shippedCount: 0, settledOrders: 0, linkedPaid: 0, unlinkedPaid: 0, unlinkedCount: 0, expenses: 0, other: 0, balance: 0 };
+    const counted = { pending: new Set(), shipped: new Set(), prepaid: new Set() };
+    journal.entries.forEach((e) => e.lines.forEach((l) => {
+      if (l.acc !== '1200' || !l.party || l.party.type !== 'courier' || l.party.id !== courierId) return;
+      const v = num(l.dr) - num(l.cr);
+      out.balance += v;
+      const ref = e.ref || {};
+      if (ref.type === 'sale' && sales.has(ref.id)) {
+        const x = sales.get(ref.id);
+        // مدفوع مقدم أو فاتورة دعاية: مش بيدخل تسوية، بس شركة الشحن بتخصم مصاريفه من رصيدك
+        if (isPromo(x) || (x.payment && x.payment !== 'cod')) { out.prepaid += v; counted.prepaid.add(x.id); }
+        else if (done.has(x.id)) out.settledOrders += v;
+        else if (x.status === 'delivered' || x.status === 'returned') { out.pending += v; counted.pending.add(x.id); }
+        else { out.shipped += v; counted.shipped.add(x.id); }
+      } else if (e.source === 'settlement') {
+        if (linked.has(ref.id)) out.linkedPaid += -v; else { out.unlinkedPaid += -v; out.unlinkedCount += 1; }
+      } else if (e.source === 'expense') out.expenses += -v;
+      else out.other += v;
+    }));
+    Object.keys(out).forEach((k) => (out[k] = round2(out[k])));
+    out.pendingCount = counted.pending.size; out.shippedCount = counted.shipped.size; out.prepaidCount = counted.prepaid.size;
+    out.settledDiff = round2(out.settledOrders - out.linkedPaid);
+    return out;
+  }
+  // التحصيلات اللي اتسجلت من الخزينة ولسه ما اتربطتش بأي تسوية طلبات
+  function unlinkedSettlements(state, courierId) {
+    const linked = linkedSettlementIds(state);
+    return (state.settlements || []).filter((st) => st.courierId === courierId && !linked.has(st.id)).sort((a, b) => (a.date < b.date ? -1 : 1));
   }
 
   function cashBalances(state, journal, asOf) {
@@ -1035,7 +1103,7 @@
   }
 
   const api = {
-    DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    courierBreakdown, unlinkedSettlements, linkedSettlementIds, DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
