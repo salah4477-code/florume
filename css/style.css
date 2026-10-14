@@ -742,3 +742,8 @@ tr.auto-row td { color: var(--ink-2); }
 /* نافذة صغيرة فوق نافذة مفتوحة (تكويد صنف من جوه الشحنة) */
 .sub-layer { z-index: 62; }
 .sub-layer .modal-card { width: min(560px, 100%); }
+
+/* كشف حساب */
+.stmt-pick select { min-width: min(420px, 100%); max-width: 100%; }
+.stmt-report .link-btn { white-space: normal; text-align: start; overflow-wrap: anywhere; }
+.hbars .link-btn { color: inherit; text-align: start; white-space: normal; }

@@ -62,7 +62,7 @@
   const btn = (label, action, id, cls = '') => `<button type="button" class="link-btn ${cls}" data-action="${action}" data-id="${id}">${label}</button>`;
   // أقسام القائمة: كل قسم له لون وأيقونة، وكل صفحة بتاخد لون قسمها عشان تعرف إنت فين
   const SECTIONS = { daily: 'اليومي', goods: 'البضاعة', money: 'الفلوس', growth: 'النمو والتحليل', system: 'النظام' };
-  const PAGE_SEC = { dashboard: 'daily', sales: 'daily', customers: 'daily', alerts: 'daily', products: 'goods', shipments: 'goods', suppliers: 'goods', treasury: 'money', expenses: 'money', reconcile: 'money', partners: 'money', campaigns: 'growth', planning: 'growth', reports: 'growth', health: 'system', audit: 'system', settings: 'system' };
+  const PAGE_SEC = { dashboard: 'daily', sales: 'daily', customers: 'daily', alerts: 'daily', products: 'goods', shipments: 'goods', suppliers: 'goods', treasury: 'money', expenses: 'money', reconcile: 'money', partners: 'money', statement: 'money', campaigns: 'growth', planning: 'growth', reports: 'growth', health: 'system', audit: 'system', settings: 'system' };
   let curKey = 'dashboard', lastKey = '';
   const header = (title, sub, buttons = '') => `<header class="page-head">
     <div class="ph-id"><span class="ph-icon">${icon(curKey)}</span><div class="ph-text"><span class="ph-eyebrow">${SECTIONS[PAGE_SEC[curKey]] || ''}</span><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div></div>
@@ -1315,8 +1315,8 @@
     const all = Acc.allExpenses(s, J(), period.from, period.to);
     const opex = all.filter((r) => r.kind === 'opex'), disc = all.filter((r) => r.kind === 'discount'), other = all.filter((r) => r.kind === 'other');
     const sum = (rows) => Acc.round2(rows.reduce((t, r) => t + r.amount, 0));
-    const byName = {};
-    all.forEach((r) => (byName[r.name] = (byName[r.name] || 0) + r.amount));
+    const byName = {}, accOfName = {};
+    all.forEach((r) => { byName[r.name] = (byName[r.name] || 0) + r.amount; accOfName[r.name] = r.acc; });
     const max = Math.max(1, ...Object.values(byName));
     const list = all.filter((r) => (!expFilter.src || srcGroup(r.source) === expFilter.src) && (!expFilter.acc || r.acc === expFilter.acc));
     const accOpts = [{ v: '', l: 'كل البنود' }, ...[...new Map(all.map((r) => [r.acc, r.name])).entries()].map(([v, l]) => ({ v, l }))];
@@ -1335,7 +1335,7 @@
       </section>
       <section class="grid-2 exp-top">
         <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(sum(all))}</span></h2>
-          ${Object.keys(byName).length ? `<ul class="hbars">${Object.entries(byName).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<li><span>${esc(n)}</span><div class="hbar"><i style="width:${Math.max(0, (v / max) * 100)}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
+          ${Object.keys(byName).length ? `<ul class="hbars">${Object.entries(byName).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<li><span><button type="button" class="link-btn" data-action="openStatement" data-id="acc:${accOfName[n]}" title="كشف حساب البند">${esc(n)}</button></span><div class="hbar"><i style="width:${Math.max(0, (v / max) * 100)}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
       ${formationSection()}
@@ -1441,7 +1441,7 @@
         <div class="table-wrap"><table class="fin"><tbody>
         ${line('إجمالي المبيعات', r.grossSales)}${line('(-) خصومات', -r.discounts, 'sub')}${line('(-) مردودات', -r.returns, 'sub')}${line('(+) إيراد الشحن من العملاء', r.shippingIncome, 'sub')}
         ${line('صافي المبيعات', r.netSales, 'total')}${line('(-) تكلفة البضاعة المباعة', -r.cogs)}${line(`مجمل الربح <small>(${pct(r.grossMargin)})</small>`, r.grossProfit, 'total')}
-        <tr class="head"><td colspan="2">المصروفات التشغيلية</td></tr>${r.opex.map((o) => line(o.name, -o.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">لا يوجد</td></tr>'}
+        <tr class="head"><td colspan="2">المصروفات التشغيلية</td></tr>${r.opex.map((o) => line(`<button type="button" class="link-btn" data-action="openStatement" data-id="acc:${o.code}" title="كشف حساب البند">${esc(o.name)}</button>`, -o.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">لا يوجد</td></tr>'}
         ${line('إجمالي المصروفات التشغيلية', -r.totalOpex)}${line('ربح التشغيل', r.operatingProfit, 'total')}
         ${r.fxGain ? line('(+) أرباح فروق العملة', r.fxGain, 'sub') : ''}${r.fxLoss ? line('(-) خسائر فروق العملة', -r.fxLoss, 'sub') : ''}${r.otherIncome ? line('(+) إيرادات أخرى', r.otherIncome, 'sub') : ''}
         ${line(`صافي الربح <small>(${pct(r.netMargin)})</small>`, r.netProfit, 'grand' + (r.netProfit < 0 ? ' neg' : ''))}
@@ -2058,6 +2058,44 @@
   }
 
   // =====================================================================
+  // كشف حساب: أي بند أو حساب (مصروف، بنك، شركة شحن، مورد، شريك، إيراد…) بكل حركاته في الفترة
+  // =====================================================================
+  let stmtKey = 'acc:5300';
+  function statementPage() {
+    const s = S(), j = J();
+    const list = Acc.statementAccounts(s);
+    if (!list.some((a) => a.key === stmtKey)) stmtKey = (list[0] || {}).key;
+    const st = Acc.accountStatement(s, j, stmtKey, period.from, period.to);
+    const picker = `<select id="stmt-acc" data-change="stmtKey" aria-label="الحساب">${Object.entries(Acc.STMT_GROUPS).map(([g, label]) => { const items = list.filter((a) => a.group === g); return items.length ? `<optgroup label="${esc(label)}">${items.map((a) => `<option value="${esc(a.key)}" ${a.key === stmtKey ? 'selected' : ''}>${esc(a.name)}${a.code ? ` (${a.code})` : ''}</option>`).join('')}</optgroup>` : ''; }).join('')}</select>`;
+    const head = header('كشف حساب', 'اختار أي بند أو حساب — مصروف زي الإعلانات، بنك أو خزينة، شركة شحن، مورد، شريك، أو إيراد — وهيطلعلك كل حركاته في الفترة. التصدير والطباعة من «أدوات».', periodBar());
+    if (!st) return `${head}<div class="filters stmt-pick">${picker}</div>${UI.empty('اختار حساب')}`;
+    const balLabel = st.credit ? 'دائن' : 'مدين';
+    const pTxt = period.from || period.to ? `${period.from ? fmtDate(period.from) : 'البداية'} — ${period.to ? fmtDate(period.to) : 'اليوم'}` : 'كل الفترات';
+    const docLink = (r) => {
+      const ref = r.ref || {};
+      if ((ref.type === 'sale' || ref.type === 'saleReturn') && DB.find('sales', ref.id)) return `<button class="link-btn" data-action="viewSale" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      if (ref.type === 'expense' && DB.find('expenses', ref.id)) return `<button class="link-btn" data-action="editExpense" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      if (ref.type === 'shipment' && DB.find('shipments', ref.id)) return `<button class="link-btn" data-action="editShipment" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      return esc(r.desc);
+    };
+    const months = st.months.length > 1 ? `<h3 class="sub-title">حسب الشهر</h3>${table(['الشهر', '#عدد الحركات', '#مدين', '#دائن', `#الصافي (${st.flow ? (st.credit ? 'إيراد' : 'مصروف') : balLabel})`], st.months.map((m) => `<tr>${td(monthLong(m.month))}${tdn(m.count)}${tdn(fmt(m.dr))}${tdn(fmt(m.cr))}${tdn(`<b>${fmt(m.net)}</b>`)}</tr>`), { foot: `<tr><td>الإجمالي</td>${tdn(st.rows.length)}${tdn(fmt(st.totalDr))}${tdn(fmt(st.totalCr))}${tdn(`<b>${fmt(st.net)}</b>`)}</tr>` })}` : '';
+    const sources = st.sources.length > 1 ? `<h3 class="sub-title">حسب المصدر</h3>${table(['جاية منين', '#عدد الحركات', '#الصافي'], st.sources.map((x) => `<tr>${td(esc(x.label))}${tdn(x.count)}${tdn(fmt(x.net))}</tr>`))}` : '';
+    const kpis = st.flow
+      ? `${kpi(st.credit ? 'إجمالي الإيراد في الفترة' : 'إجمالي المصروف في الفترة', fmt(st.net) + ' ج.م', `${st.rows.length} حركة`)}${kpi('متوسط شهري', st.months.length ? fmt(Acc.round2(st.net / st.months.length)) : '0', `على ${st.months.length || 0} شهر`)}${kpi('أكبر حركة', fmt(Math.max(0, ...st.rows.map((r) => Math.abs(r.dr - r.cr)))))}${kpi('من بداية الحسابات لحد آخر الفترة', fmt(st.closing))}`
+      : `${kpi('رصيد أول الفترة', fmt(st.opening), balLabel)}${kpi('إجمالي مدين', fmt(st.totalDr), 'داخل / زيادة')}${kpi('إجمالي دائن', fmt(st.totalCr), 'خارج / نقص')}${kpi('رصيد آخر الفترة', fmt(st.closing) + ' ج.م', balLabel, st.closing < 0 ? 'bad' : '')}`;
+    const rows = st.rows.map((r) => `<tr>${td(fmtDate(r.date))}${td('#' + r.no, 'mono')}${td(docLink(r))}${td(`<small class="muted">${esc(r.sourceLabel)}</small>`)}${tdn(r.dr ? fmt(r.dr) : '')}${tdn(r.cr ? fmt(r.cr) : '')}${tdn(fmt(r.balance))}</tr>`);
+    return `${head}
+      <div class="filters stmt-pick">${picker}</div>
+      <section class="report stmt-report">
+        <h2>كشف حساب: ${esc(st.title)} <small class="muted">${esc(Acc.STMT_GROUPS[(list.find((a) => a.key === stmtKey) || {}).group] || '')} · ${pTxt}</small></h2>
+        <section class="kpis">${kpis}</section>
+        ${months}${sources}
+        <h3 class="sub-title">الحركات</h3>
+        ${table(['التاريخ', 'القيد', 'البيان', 'المصدر', '#مدين', '#دائن', `#الرصيد (${balLabel})`], rows, { empty: 'مفيش حركة على الحساب ده في الفترة دي', foot: rows.length ? `<tr><td colspan="4">الإجمالي · رصيد آخر الفترة</td>${tdn(fmt(st.totalDr))}${tdn(fmt(st.totalCr))}${tdn(`<b>${fmt(st.closing)}</b>`)}</tr>` : '' })}
+      </section>`;
+  }
+
+  // =====================================================================
   // الشركاء وتوزيع الأرباح
   // =====================================================================
   function partnersPage() {
@@ -2544,6 +2582,7 @@
     newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
     delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),
     pickCourier: (id) => { reconCourier = id; render(); },
+    openStatement: (id) => { stmtKey = id; if (location.hash === '#statement') render(); else location.hash = 'statement'; },
     goReconcile: (id) => { if (id) reconCourier = id; location.hash = 'reconcile'; },
     manualReconcile: (id) => manualReconcile(id),
     viewReconciliation: (id) => viewReconciliation(DB.find('reconciliations', id)),
@@ -2642,6 +2681,7 @@
     saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
     setRole: (el) => CLOUD.setRole(el.dataset.id, el.value).then(() => UI.toast('تم تغيير الدور')).catch(() => UI.toast('تعذر تغيير الدور', 'bad')),
     ledgerAcc: (el) => { ledgerAcc = el.value; render(); },
+    stmtKey: (el) => { stmtKey = el.value; render(); },
     saleStatus: (el) => {
       const sale = DB.find('sales', el.dataset.id);
       const upd = { ...sale, status: el.value };
@@ -2688,6 +2728,7 @@
     planning: { title: 'التخطيط', render: planningPage },
     audit: { title: 'سجل التعديلات', render: auditPage },
     reports: { title: 'التقارير', render: reports, period: true },
+    statement: { title: 'كشف حساب', render: statementPage, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
   const currentPage = () => (PAGES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard');
@@ -2701,6 +2742,7 @@
     if (isReport && (report === 'balance' || report === 'trial')) subtitle = `حتى ${fmtDate(period.to || today())}`;
     if (key === 'sales' && (saleFilter.status || saleFilter.channel || saleFilter.q || saleFilter.kind)) subtitle += ` · مفلتر: ${[{ sale: 'فواتير بيع', promo: 'فواتير دعاية' }[saleFilter.kind], STATUSES[saleFilter.status], CHANNELS[saleFilter.channel], saleFilter.q].filter(Boolean).join('، ')}`;
     if (key === 'reconcile') subtitle += ` · ${nameOf('couriers', reconCourier)}`;
+    if (key === 'statement') { const a = Acc.statementAccounts(S()).find((x) => x.key === stmtKey); return { key, title: `كشف حساب — ${a ? a.name : ''}`, subtitle, root: main().querySelector('.stmt-report') || main() }; }
     if (key === 'treasury') subtitle += ` · حركة ${nameOf('accounts', treasuryAcc)}`;
     return { key, title, subtitle, root: isReport ? main().querySelector('.report') : main() };
   }
@@ -2792,6 +2834,7 @@
     health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
     audit: '<path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 4v5h5"/>',
     planning: '<path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
+    statement: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
     reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
@@ -2886,6 +2929,7 @@
         .forEach((x) => out.push({ group: 'فاتورة', label: `${invoiceNo(x)} — ${custName(x.customerId) || '—'}`, sub: `${fmtDate(x.date)} · ${STATUSES[x.status] || ''} · ${fmt(Acc.saleTotals(x).total)} ج.م`, icon: 'sales', sec: 'daily', run: () => ACTIONS.viewSale(x.id) }));
       if (canPage('customers')) s.customers.filter((c) => has(c.name, c.phone)).slice(0, 5).forEach((c) => out.push({ group: 'عميل', label: c.name, sub: [c.phone, c.city].filter(Boolean).join(' · '), icon: 'customers', sec: 'daily', run: () => { custQ = c.name; custSeg = ''; if (location.hash === '#customers') render(); else location.hash = 'customers'; } }));
       if (canPage('products')) s.products.filter((p) => has(p.name, p.brand, p.sku, productLabel(p))).slice(0, 5).forEach((p) => out.push({ group: 'منتج', label: productLabel(p), sub: `متاح ${fmt((J().inventory.products[p.id] || {}).available || 0)}${p.sku ? ' · ' + p.sku : ''}`, icon: 'products', sec: 'goods', run: () => ACTIONS.productMoves(p.id) }));
+      if (canPage('statement')) Acc.statementAccounts(s).filter((a) => has(a.name, 'كشف حساب')).slice(0, 5).forEach((a) => out.push({ group: 'كشف حساب', label: a.name, sub: Acc.STMT_GROUPS[a.group], icon: 'statement', sec: 'money', run: () => ACTIONS.openStatement(a.key) }));
       if (canPage('suppliers')) s.suppliers.filter((x) => has(x.name)).slice(0, 3).forEach((x) => out.push({ group: 'مورد', label: x.name, sub: 'كشف حساب', icon: 'suppliers', sec: 'goods', run: () => ACTIONS.supplierStatement(x.id) }));
     }
     return out;

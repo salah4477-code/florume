@@ -707,6 +707,59 @@
     return { opening: round2(opening), rows, closing: round2(bal) };
   }
 
+  // ---------- كشف حساب لأي حساب أو بند ----------
+  // المفتاح: acc:كود (بند من شجرة الحسابات)، cash:id (خزينة/بنك/محفظة)، courier:id، supplier:id، partner:id
+  const DOC_SOURCES = { opening: 'رصيد افتتاحي', sale: 'فاتورة بيع', saleReturn: 'مرتجع', shipment: 'شحنة / شراء', supplierPayment: 'دفعة مورد / شراء محلي', equity: 'رأس مال / مسحوبات', distribution: 'توزيع أرباح', commission: 'عمولة مؤثر', settlement: 'تحصيل شركة شحن', expense: 'مصروف', transfer: 'تحويل', adjustment: 'تسوية مخزون', decant: 'تقسيم / بوكس', cashCount: 'جرد خزينة', formation: 'مصروف تأسيس' };
+  const STMT_GROUPS = { expense: 'المصروفات', cash: 'الخزائن والبنوك والمحافظ', courier: 'شركات الشحن', supplier: 'الموردين', partner: 'الشركاء', revenue: 'الإيرادات', other: 'باقي الحسابات' };
+  function statementAccounts(state) {
+    const out = [];
+    COA.filter((a) => a.type === 'expense').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'expense', code: a.code }));
+    (state.accounts || []).forEach((a) => out.push({ key: 'cash:' + a.id, name: a.name, group: 'cash' }));
+    (state.couriers || []).forEach((c) => out.push({ key: 'courier:' + c.id, name: c.name, group: 'courier' }));
+    (state.suppliers || []).forEach((x) => out.push({ key: 'supplier:' + x.id, name: x.name, group: 'supplier' }));
+    (state.partners || []).forEach((x) => out.push({ key: 'partner:' + x.id, name: x.name, group: 'partner' }));
+    COA.filter((a) => a.type === 'revenue').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'revenue', code: a.code }));
+    COA.filter((a) => !['expense', 'revenue'].includes(a.type) && a.code !== '1100').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'other', code: a.code }));
+    return out;
+  }
+  function accountStatement(state, journal, key, from, to) {
+    const [kind, id] = String(key || '').split(/:(.*)/s);
+    const nm = (list, x) => ((state[list] || []).find((r) => r.id === x) || {}).name || '';
+    let match, title, type;
+    if (kind === 'cash') { const code = cashCode(id); match = (l) => l.acc === code; title = nm('accounts', id); type = 'asset'; }
+    else if (kind === 'courier') { match = (l) => l.acc === '1200' && l.party && l.party.type === 'courier' && l.party.id === id; title = nm('couriers', id); type = 'asset'; }
+    else if (kind === 'supplier') { match = (l) => baseCode(l.acc) === '2100' && l.party && l.party.type === 'supplier' && l.party.id === id; title = nm('suppliers', id); type = 'liability'; }
+    else if (kind === 'partner') { match = (l) => l.party && l.party.type === 'partner' && l.party.id === id; title = nm('partners', id); type = 'equity'; }
+    else { const a = COA_MAP[id]; if (!a) return null; match = (l) => baseCode(l.acc) === id; title = a.name; type = a.type; }
+    const credit = ['liability', 'equity', 'revenue'].includes(type);
+    const sign = (dr, cr) => (credit ? cr - dr : dr - cr);
+    let opening = 0;
+    const rows = [], months = {}, sources = {};
+    journal.entries.forEach((e) => {
+      e.lines.forEach((l) => {
+        if (!match(l)) return;
+        const dr = num(l.dr), cr = num(l.cr);
+        if (from && e.date < from) { opening += sign(dr, cr); return; }
+        if (to && e.date > to) return;
+        rows.push({ date: e.date, no: e.no, desc: e.desc, source: e.source, sourceLabel: DOC_SOURCES[e.source] || 'أخرى', ref: e.ref, dr: round2(dr), cr: round2(cr) });
+        const m = e.date.slice(0, 7);
+        const mm = (months[m] = months[m] || { month: m, dr: 0, cr: 0, count: 0 }); mm.dr += dr; mm.cr += cr; mm.count += 1;
+        const sl = DOC_SOURCES[e.source] || 'أخرى';
+        const ss = (sources[sl] = sources[sl] || { label: sl, count: 0, net: 0 }); ss.count += 1; ss.net += sign(dr, cr);
+      });
+    });
+    rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.no - b.no));
+    let bal = opening;
+    rows.forEach((r) => { bal += sign(r.dr, r.cr); r.balance = round2(bal); });
+    const totalDr = round2(rows.reduce((t, r) => t + r.dr, 0)), totalCr = round2(rows.reduce((t, r) => t + r.cr, 0));
+    return {
+      key, kind, title, type, credit, flow: type === 'expense' || type === 'revenue',
+      opening: round2(opening), closing: round2(bal), totalDr, totalCr, net: round2(sign(totalDr, totalCr)), rows,
+      months: Object.values(months).sort((a, b) => (a.month < b.month ? -1 : 1)).map((m) => ({ ...m, dr: round2(m.dr), cr: round2(m.cr), net: round2(sign(m.dr, m.cr)) })),
+      sources: Object.values(sources).map((x) => ({ ...x, net: round2(x.net) })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)),
+    };
+  }
+
   function cashBalances(state, journal, asOf) {
     const map = balances(journal.entries, null, asOf);
     return (state.accounts || []).map((a) => { const m = map[cashCode(a.id)] || { dr: 0, cr: 0 }; return { ...a, balance: round2(m.dr - m.cr) }; });
@@ -982,7 +1035,7 @@
   }
 
   const api = {
-    LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,
