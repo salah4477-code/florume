@@ -19,6 +19,32 @@
   // حالات تسحب من المخزون: قيد التجهيز (حجز) أو خرجت مع الشحن
   const CONSUMES = new Set(['pending', 'shipped', 'delivered', 'lost']);
 
+  // 11) مفيش صنفين بنفس الكود أو نفس الاسم (الماركة + الاسم + الحجم)
+  const normText = (t) => String(t == null ? '' : t).replace(/[٠-٩]/g, (d) => AR[d]).toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '').replace(/[\s\-_.·—]+/g, ' ').trim();
+  // الشرطة جزء من الكود (AR-GS3 غير AR-GS-3)؛ بنتجاهل بس الحروف الكبيرة والصغيرة والمسافات والأرقام العربي
+  const skuKey = (p) => cleanRef(p && p.sku);
+  const nameKey = (p) => normText(`${(p && p.brand) || ''} ${(p && p.name) || ''} ${num(p && p.sizeMl) || ''}`);
+  function productDuplicate(state, p) {
+    const others = (state.products || []).filter((x) => x.id !== p.id);
+    const sku = skuKey(p);
+    const bySku = sku && others.find((x) => skuKey(x) === sku);
+    if (bySku) return { field: 'sku', other: bySku };
+    const name = nameKey(p);
+    const byName = name && normText(p.name) && others.find((x) => nameKey(x) === name);
+    if (byName) return { field: 'name', other: byName };
+    return null;
+  }
+  function productDuplicates(state) {
+    const out = [], seen = { sku: new Map(), name: new Map() };
+    (state.products || []).forEach((p) => {
+      [['sku', skuKey(p)], ['name', normText(p.name) ? nameKey(p) : '']].forEach(([f, k]) => {
+        if (!k) return;
+        if (seen[f].has(k)) out.push({ field: f, a: seen[f].get(k), b: p }); else seen[f].set(k, p);
+      });
+    });
+    return out;
+  }
+
   // كميات في شحنات لسه ما وصلتش (مطلوبة أو في الطريق)
   function incomingQty(state) {
     const out = {};
@@ -237,6 +263,10 @@
       products.forEach((p) => { if (num(p.price) < 0) add(`«${pname(p.id)}» سعر بيعه سالب`, 'error', { action: 'editProduct', id: p.id }); });
     });
 
+    check('productDup', 'أكواد وأسماء الأصناف مش متكررة', (add) => {
+      productDuplicates(state).forEach((d) => add(d.field === 'sku' ? `الكود «${d.b.sku}» متكرر في صنفين: ${pname(d.a.id)} و${pname(d.b.id)}` : `الصنف «${pname(d.b.id)}» متسجل مرتين`, 'error', { action: 'editProduct', id: d.b.id }));
+    });
+
     check('discount', 'الخصم مش أكبر من قيمة الفاتورة', (add) => {
       sales.forEach((x) => { const e = discountError(x); if (e) add(`الفاتورة ${inv(x)} خصمها ${e.discount} وقيمة أصنافها ${Acc.round2(e.gross)}`, 'error', saleAct(x)); });
     });
@@ -300,7 +330,7 @@
     return { checks, errors, notes, passed: checks.filter((c) => c.ok).length };
   }
 
-  const api = { audit, partialReturnError, cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
+  const api = { productDuplicate, productDuplicates, audit, partialReturnError, cleanRef, incomingQty, checkSaleStock, checkStockOut, maxInvoiceNo, invoiceNoTaken, nextFreeInvoiceNo, trackingTaken, mergeLines, discountError, beforeStart, saleDateError, shipmentDateError, earliestDocDate, isReconciled, lockedSaleChanges, negativeCash, withDoc, sharesTotal };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RULES = api;
 })(typeof window !== 'undefined' ? window : globalThis);

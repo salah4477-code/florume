@@ -285,13 +285,19 @@
   }
 
   // ---------- أرصدة الموردين بالعملة الأجنبية وفروق العملة ----------
+  // الشراء المحلي: بيتدفع من حساب، أو من جيب صاحب المشروع / شريك (زيادة رأس مال)، أو آجل على المورد
+  const LOCAL_PAY = { account: 'دفع من حساب', capital: 'من جيبي (زيادة رأس مال)', credit: 'آجل على المورد' };
+  const localPaid = (sh) => (sh.payMode || 'account') !== 'credit';
   function computeSuppliers(state, asOf) {
     const events = [];
     let seq = 0;
     (state.shipments || []).forEach((sh) => {
       if (sh.status === 'cancelled') return;
       const c = shipmentCosting(sh);
+      if (!sh.supplierId) return; // شراء محلي من مورد مش متسجل
       if (c.goodsForeign) events.push({ kind: 'purchase', date: sh.orderDate, seq: seq++, supplierId: sh.supplierId, foreign: c.goodsForeign, rate: c.rate, ref: { type: 'shipment', id: sh.id } });
+      // شراء محلي مدفوع على طول (من حساب أو من جيبك): الدفعة بتقفل حساب المورد في نفس اليوم
+      if (sh.local && localPaid(sh) && c.goodsForeign) events.push({ kind: 'payment', date: sh.orderDate, seq: seq++, supplierId: sh.supplierId, foreign: -c.goodsForeign, rate: 1, ref: { type: 'localPay', id: sh.id } });
     });
     (state.supplierPayments || []).forEach((p) =>
       events.push({ kind: 'payment', date: p.date, seq: seq++, supplierId: p.supplierId, foreign: -num(p.amount), rate: num(p.rate) || 1, ref: { type: 'supplierPayment', id: p.id } })
@@ -317,7 +323,7 @@
         if (Math.abs(b.foreign) < EPS) { b.foreign = 0; b.egp = 0; }
       }
       const adj = round2(b.egp - (before + x * ev.rate));
-      fx[ev.ref.id] = adj;
+      fx[ev.ref.type === 'localPay' ? ev.ref.id + ':pay' : ev.ref.id] = adj;
       lines.push({ ...ev, egp: round2(x * ev.rate), fx: adj, balanceForeign: round2(b.foreign), balanceEGP: round2(b.egp) });
     }
     Object.values(balances).forEach((b) => { b.foreign = round2(b.foreign); b.egp = round2(b.egp); });
@@ -395,8 +401,17 @@
       const c = shipmentCosting(sh);
       const party = { type: 'supplier', id: sh.supplierId };
       const ref = { type: 'shipment', id: sh.id };
-      const label = `شحنة ${sh.ref || ''} — ${name('suppliers', sh.supplierId)}`;
-      add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsForeign} ${sh.currency} × ${c.rate})`, [
+      const label = sh.local ? `شراء محلي ${sh.ref || ''} — ${sh.supplierId ? name('suppliers', sh.supplierId) : 'مورد مش متسجل'}` : `شحنة ${sh.ref || ''} — ${name('suppliers', sh.supplierId)}`;
+      if (sh.local) {
+        // الدفع: من حساب، أو زيادة رأس مال من جيبك (أو جيب شريك)، أو آجل على المورد
+        const partner = sh.payPartnerId ? { type: 'partner', id: sh.payPartnerId } : undefined;
+        const payCr = (amt) => (sh.payMode === 'capital' ? { acc: '3100', dr: 0, cr: amt, party: partner } : { acc: cashCode(sh.payAccountId), dr: 0, cr: amt });
+        const how = sh.payMode === 'capital' ? `من جيب ${partner ? name('partners', sh.payPartnerId) : 'صاحب المشروع'} — زيادة رأس مال` : sh.payMode === 'credit' ? 'آجل' : `من ${name('accounts', sh.payAccountId)}`;
+        if (sh.supplierId) {
+          add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsEGP} ج.م)`, [{ acc: '1310', dr: c.goodsEGP, cr: 0 }, { acc: '2100', dr: 0, cr: c.goodsEGP, party }, ...fxLines(sup.fx[sh.id] || 0, party)]);
+          if (localPaid(sh)) add(sh.orderDate, 'supplierPayment', ref, `دفع ${label} — ${how}`, [{ acc: '2100', dr: c.goodsEGP, cr: 0, party }, payCr(c.goodsEGP), ...fxLines(sup.fx[sh.id + ':pay'] || 0, party)]);
+        } else add(sh.orderDate, 'supplierPayment', ref, `${label} — ${how}`, [{ acc: '1310', dr: c.goodsEGP, cr: 0 }, payCr(c.goodsEGP)]);
+      } else add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsForeign} ${sh.currency} × ${c.rate})`, [
         { acc: '1310', dr: c.goodsEGP, cr: 0 }, { acc: '2100', dr: 0, cr: c.goodsEGP, party }, ...fxLines(sup.fx[sh.id] || 0, party),
       ]);
       (sh.costs || []).forEach((cost) => {
@@ -518,7 +533,9 @@
     // المصروفات
     (state.expenses || []).forEach((e) => {
       add(e.date, 'expense', { type: 'expense', id: e.id }, `${(COA_MAP[e.category] || {}).name || 'مصروف'}${e.notes ? ' — ' + e.notes : ''}`, [
-        { acc: e.category || '5990', dr: num(e.amount), cr: 0 }, { acc: cashCode(e.accountId), dr: 0, cr: num(e.amount) },
+        { acc: e.category || '5990', dr: num(e.amount), cr: 0 },
+        // مصروف شركة الشحن خصمته من رصيدك عندها (رسوم استلام، تغليف، اشتراك…) — مش من الخزينة
+        e.courierId ? { acc: '1200', dr: 0, cr: num(e.amount), party: { type: 'courier', id: e.courierId } } : { acc: cashCode(e.accountId), dr: 0, cr: num(e.amount) },
       ]);
     });
 
@@ -690,6 +707,59 @@
     return { opening: round2(opening), rows, closing: round2(bal) };
   }
 
+  // ---------- كشف حساب لأي حساب أو بند ----------
+  // المفتاح: acc:كود (بند من شجرة الحسابات)، cash:id (خزينة/بنك/محفظة)، courier:id، supplier:id، partner:id
+  const DOC_SOURCES = { opening: 'رصيد افتتاحي', sale: 'فاتورة بيع', saleReturn: 'مرتجع', shipment: 'شحنة / شراء', supplierPayment: 'دفعة مورد / شراء محلي', equity: 'رأس مال / مسحوبات', distribution: 'توزيع أرباح', commission: 'عمولة مؤثر', settlement: 'تحصيل شركة شحن', expense: 'مصروف', transfer: 'تحويل', adjustment: 'تسوية مخزون', decant: 'تقسيم / بوكس', cashCount: 'جرد خزينة', formation: 'مصروف تأسيس' };
+  const STMT_GROUPS = { expense: 'المصروفات', cash: 'الخزائن والبنوك والمحافظ', courier: 'شركات الشحن', supplier: 'الموردين', partner: 'الشركاء', revenue: 'الإيرادات', other: 'باقي الحسابات' };
+  function statementAccounts(state) {
+    const out = [];
+    COA.filter((a) => a.type === 'expense').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'expense', code: a.code }));
+    (state.accounts || []).forEach((a) => out.push({ key: 'cash:' + a.id, name: a.name, group: 'cash' }));
+    (state.couriers || []).forEach((c) => out.push({ key: 'courier:' + c.id, name: c.name, group: 'courier' }));
+    (state.suppliers || []).forEach((x) => out.push({ key: 'supplier:' + x.id, name: x.name, group: 'supplier' }));
+    (state.partners || []).forEach((x) => out.push({ key: 'partner:' + x.id, name: x.name, group: 'partner' }));
+    COA.filter((a) => a.type === 'revenue').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'revenue', code: a.code }));
+    COA.filter((a) => !['expense', 'revenue'].includes(a.type) && a.code !== '1100').forEach((a) => out.push({ key: 'acc:' + a.code, name: a.name, group: 'other', code: a.code }));
+    return out;
+  }
+  function accountStatement(state, journal, key, from, to) {
+    const [kind, id] = String(key || '').split(/:(.*)/s);
+    const nm = (list, x) => ((state[list] || []).find((r) => r.id === x) || {}).name || '';
+    let match, title, type;
+    if (kind === 'cash') { const code = cashCode(id); match = (l) => l.acc === code; title = nm('accounts', id); type = 'asset'; }
+    else if (kind === 'courier') { match = (l) => l.acc === '1200' && l.party && l.party.type === 'courier' && l.party.id === id; title = nm('couriers', id); type = 'asset'; }
+    else if (kind === 'supplier') { match = (l) => baseCode(l.acc) === '2100' && l.party && l.party.type === 'supplier' && l.party.id === id; title = nm('suppliers', id); type = 'liability'; }
+    else if (kind === 'partner') { match = (l) => l.party && l.party.type === 'partner' && l.party.id === id; title = nm('partners', id); type = 'equity'; }
+    else { const a = COA_MAP[id]; if (!a) return null; match = (l) => baseCode(l.acc) === id; title = a.name; type = a.type; }
+    const credit = ['liability', 'equity', 'revenue'].includes(type);
+    const sign = (dr, cr) => (credit ? cr - dr : dr - cr);
+    let opening = 0;
+    const rows = [], months = {}, sources = {};
+    journal.entries.forEach((e) => {
+      e.lines.forEach((l) => {
+        if (!match(l)) return;
+        const dr = num(l.dr), cr = num(l.cr);
+        if (from && e.date < from) { opening += sign(dr, cr); return; }
+        if (to && e.date > to) return;
+        rows.push({ date: e.date, no: e.no, desc: e.desc, source: e.source, sourceLabel: DOC_SOURCES[e.source] || 'أخرى', ref: e.ref, dr: round2(dr), cr: round2(cr) });
+        const m = e.date.slice(0, 7);
+        const mm = (months[m] = months[m] || { month: m, dr: 0, cr: 0, count: 0 }); mm.dr += dr; mm.cr += cr; mm.count += 1;
+        const sl = DOC_SOURCES[e.source] || 'أخرى';
+        const ss = (sources[sl] = sources[sl] || { label: sl, count: 0, net: 0 }); ss.count += 1; ss.net += sign(dr, cr);
+      });
+    });
+    rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.no - b.no));
+    let bal = opening;
+    rows.forEach((r) => { bal += sign(r.dr, r.cr); r.balance = round2(bal); });
+    const totalDr = round2(rows.reduce((t, r) => t + r.dr, 0)), totalCr = round2(rows.reduce((t, r) => t + r.cr, 0));
+    return {
+      key, kind, title, type, credit, flow: type === 'expense' || type === 'revenue',
+      opening: round2(opening), closing: round2(bal), totalDr, totalCr, net: round2(sign(totalDr, totalCr)), rows,
+      months: Object.values(months).sort((a, b) => (a.month < b.month ? -1 : 1)).map((m) => ({ ...m, dr: round2(m.dr), cr: round2(m.cr), net: round2(sign(m.dr, m.cr)) })),
+      sources: Object.values(sources).map((x) => ({ ...x, net: round2(x.net) })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)),
+    };
+  }
+
   function cashBalances(state, journal, asOf) {
     const map = balances(journal.entries, null, asOf);
     return (state.accounts || []).map((a) => { const m = map[cashCode(a.id)] || { dr: 0, cr: 0 }; return { ...a, balance: round2(m.dr - m.cr) }; });
@@ -819,6 +889,97 @@
     }).sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
 
+  // ---------- قائمة التدفقات النقدية (الطريقة المباشرة) ----------
+  // كل حركة فلوس (خزينة، بنك، محافظ) في الفترة، متقسمة حسب المستند اللي عملها:
+  // التشغيل (البيع والمصروفات)، البضاعة والتأسيس (الموردين والشحنات)، والتمويل (رأس المال والمسحوبات).
+  // الرصيد أول الفترة + صافي التغير = الرصيد آخر الفترة (نفس رصيد الخزينة).
+  const CF_SECTIONS = { operating: 'التدفقات من التشغيل (البيع والمصروفات)', goods: 'التدفقات على البضاعة والتأسيس', financing: 'التدفقات من التمويل (رأس المال والمسحوبات)' };
+  function cashFlow(state, journal, from, to) {
+    const isCash = (acc) => String(acc).startsWith('1100:');
+    let start = 0;
+    const groups = {};
+    const put = (section, label, amount) => { const k = `${section}|${label}`; const g = (groups[k] = groups[k] || { section, label, amount: 0, count: 0 }); g.amount += amount; g.count += 1; };
+    journal.entries.forEach((e) => {
+      const cash = e.lines.reduce((t, l) => t + (isCash(l.acc) ? num(l.dr) - num(l.cr) : 0), 0);
+      if (from && e.date < from) { start += cash; return; }
+      if (to && e.date > to) return;
+      if (Math.abs(cash) < EPS) return;
+      const other = e.lines.find((l) => !isCash(l.acc) && num(l.dr) > 0);
+      const otherName = other ? (COA_MAP[baseCode(other.acc)] || {}).name : '';
+      switch (e.source) {
+        case 'opening': put('financing', 'أرصدة افتتاحية (رأس مال أول المدة)', cash); break;
+        case 'equity': put('financing', cash > 0 ? 'إضافات رأس مال' : 'مسحوبات (شخصية ومن جاري الشركاء)', cash); break;
+        case 'distribution': put('financing', 'توزيع أرباح', cash); break;
+        case 'settlement': put('operating', cash > 0 ? 'تحصيل من شركات الشحن' : 'سداد لشركات الشحن', cash); break;
+        case 'sale': put('operating', cash > 0 ? 'مبيعات مدفوعة مقدم' : 'رد فلوس للعملاء', cash); break;
+        case 'saleReturn': put('operating', 'رد فلوس للعملاء (مرتجعات)', cash); break;
+        case 'expense': put('operating', `مصروفات — ${otherName || 'أخرى'}`, cash); break;
+        case 'commission': put('operating', 'عمولات المؤثرين المدفوعة', cash); break;
+        case 'transfer': put('operating', 'عمولات التحويل بين الحسابات', cash); break;
+        case 'cashCount': put('operating', 'فروق جرد الخزينة', cash); break;
+        case 'decant': put('operating', 'خامات التقسيم والتغليف', cash); break;
+        case 'supplierPayment': put('goods', 'مشتريات ودفعات للموردين (شامل عمولة التحويل)', cash); break;
+        case 'shipment': put('goods', 'مصاريف شحن وجمارك الشحنات', cash); break;
+        case 'formation': put('goods', 'مصروفات التأسيس من حسابات النشاط', cash); break;
+        default: put('operating', 'حركات أخرى', cash);
+      }
+    });
+    const sections = Object.entries(CF_SECTIONS).map(([key, title]) => {
+      const rows = Object.values(groups).filter((g) => g.section === key).map((g) => ({ label: g.label, amount: round2(g.amount), count: g.count })).sort((a, b) => b.amount - a.amount);
+      return { key, title, rows, total: round2(rows.reduce((t, r) => t + r.amount, 0)) };
+    });
+    const net = round2(sections.reduce((t, x) => t + x.total, 0));
+    return { start: round2(start), sections, net, end: round2(start + net) };
+  }
+
+  // ---------- قائمة التغير في حقوق الملكية ----------
+  // حقوق الملكية أول الفترة + رأس مال اتضاف + صافي الربح − المسحوبات = حقوق الملكية آخر الفترة (نفس الميزانية)
+  function equityChanges(state, journal, from, to) {
+    const eqBal = (asOf, strictlyBefore) => {
+      let t = 0;
+      journal.entries.forEach((e) => {
+        if (asOf && (strictlyBefore ? e.date >= asOf : e.date > asOf)) return;
+        e.lines.forEach((l) => { const a = COA_MAP[baseCode(l.acc)]; if (!a) return; if (a.type === 'equity' || a.type === 'revenue' || a.type === 'expense') t += num(l.cr) - num(l.dr); });
+      });
+      return round2(t);
+    };
+    const start = from ? eqBal(from, true) : 0;
+    const add = { opening: 0, stock: 0, formation: 0, capital: 0 }, out = { personal: 0, partners: 0 };
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      e.lines.forEach((l) => {
+        const c = baseCode(l.acc), v = num(l.cr) - num(l.dr);
+        if (c === '3100') { const k = e.source === 'opening' ? 'opening' : e.source === 'adjustment' ? 'stock' : e.source === 'formation' ? 'formation' : 'capital'; add[k] += v; }
+        if (c === '3200') out.personal += -v;
+        if (c === '3500' && e.source === 'equity') out.partners += -v;
+      });
+    });
+    const profit = incomeStatement(state, journal, from, to).netProfit;
+    const r = (x) => round2(x);
+    const added = r(add.opening + add.stock + add.formation + add.capital), withdrawn = r(out.personal + out.partners);
+    return { start, added: { opening: r(add.opening), stock: r(add.stock), formation: r(add.formation), capital: r(add.capital), total: added }, profit, withdrawn: { personal: r(out.personal), partners: r(out.partners), total: withdrawn }, end: r(start + added + profit - withdrawn), actual: to ? eqBal(to) : eqBal(null) };
+  }
+  // ---------- كل المصروفات (اللي بتتسجل بإيدك واللي بتتسجل لوحدها من الفواتير والشحنات وغيرها) ----------
+  // من دفتر اليومية نفسه، فالمجموع لكل بند = اللي في قائمة الدخل بالظبط. خصم الفواتير بيظهر معاهم (بيقلل الإيراد).
+  const EXPENSE_SOURCES = { expense: 'سجلتها بإيدك', sale: 'من فاتورة', saleReturn: 'من مرتجع', shipment: 'من شحنة', supplierPayment: 'من دفعة مورد', transfer: 'من تحويل', settlement: 'من تحصيل شحن', adjustment: 'من تسوية مخزون', decant: 'من تقسيم / بوكس', cashCount: 'من جرد الخزينة', commission: 'من سداد عمولة', equity: 'رأس مال', distribution: 'توزيع أرباح', formation: 'تأسيس', opening: 'افتتاحي' };
+  function allExpenses(state, journal, from, to) {
+    const rows = [];
+    journal.entries.forEach((e) => {
+      if ((from && e.date < from) || (to && e.date > to)) return;
+      const per = {};
+      e.lines.forEach((l) => {
+        const a = COA_MAP[baseCode(l.acc)];
+        const isDiscount = baseCode(l.acc) === '4110';
+        if (!isDiscount && !(a && a.type === 'expense' && !a.cogs)) return;
+        per[baseCode(l.acc)] = (per[baseCode(l.acc)] || 0) + num(l.dr) - num(l.cr);
+      });
+      Object.entries(per).forEach(([acc, amount]) => {
+        if (Math.abs(amount) < EPS) return;
+        rows.push({ date: e.date, acc, name: acc === '4110' ? 'خصومات الفواتير' : COA_MAP[acc].name, amount: round2(amount), desc: e.desc, source: e.source, ref: e.ref, kind: acc === '4110' ? 'discount' : COA_MAP[acc].other ? 'other' : 'opex' });
+      });
+    });
+    return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }
   // ---------- رأس مال التأسيس ----------
   // اللي اتحط في النشاط من أوله: أرصدة افتتاحية + بضاعة أول المدة + مصروفات تأسيس من الجيب + إضافات رأس مال
   function foundingCapital(state, journal, asOf) {
@@ -830,7 +991,7 @@
         else if (e.source === 'adjustment' && l.acc === '3100') r.stock += l.cr - l.dr;
         else if (e.source === 'formation' && l.acc === '3100') r.formationOwn += l.cr;
         else if (e.source === 'formation' && l.acc.startsWith('1100:')) r.formationFromCash += l.cr;
-        else if (e.source === 'equity' && l.acc === '3100') r.added += l.cr - l.dr;
+        else if (l.acc === '3100') r.added += l.cr - l.dr; // إضافات رأس مال (فلوس أو بضاعة اشتريتها من جيبك)
       });
     });
     Object.keys(r).forEach((k) => (r[k] = round2(r[k])));
@@ -874,7 +1035,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    DOC_SOURCES, STMT_GROUPS, statementAccounts, accountStatement, LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

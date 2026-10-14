@@ -130,74 +130,22 @@ test('campaign performance: spend, CPA and ROAS', () => {
   near(r.netProfit, 1825 - 1500);
 });
 
-test('courier statement reconciliation finds differences and missing orders', () => {
+test('manual courier reconciliation: expected net per order, settled orders leave the pending list', () => {
   const s = baseState();
   s.adjustments.push({ id: 'a1', date: '2026-01-01', productId: 'p1', qty: 10, unitCost: 500, reason: 'opening' });
   const sale = (id, no, extra) => ({ id, no, date: '2026-01-05', status: 'delivered', items: [{ productId: 'p1', qty: 1, price: 1000 }], courierId: 'bosta', courierFee: 50, payment: 'cod', ...extra });
-  s.sales.push(sale('s1', 1, { trackingNo: 'BST111' }), sale('s2', 2, { trackingNo: 'BST222' }), sale('s3', 3, {}), sale('s4', 4, { status: 'returned', returnFee: 20 }), sale('s5', 5, {}));
-  const sheets = [{ name: 'كشف', rows: [
-    ['كشف حساب بوسطة'],
-    ['رقم البوليصة', 'المبلغ المحصل', 'مصاريف الشحن', 'الحالة'],
-    ['BST111', '1,000', 50, 'تم التسليم'],
-    ['bst222', 1000, 65, 'تم التسليم'],
-    ['FL-3', 900, 50, 'تم التسليم'],
-    ['FL-4', 0, 70, 'مرتجع'],
-    ['XYZ', 300, 40, 'تم التسليم'],
-  ] }];
-  const st = OPS.parseStatement(sheets);
-  assert.equal(st.rows.length, 5);
-  const r = OPS.reconcile(s, 'bosta', st.rows, 'FL-');
-  assert.equal(r.matched.length, 4);
-  assert.equal(r.unmatched.length, 1);
-  const byId = Object.fromEntries(r.matched.map((m) => [m.saleId, m]));
-  assert.equal(byId.s1.issues.length, 0);
-  near(byId.s2.feeDiff, 15);
-  near(byId.s3.codDiff, -100);
-  assert.equal(byId.s4.issues.length, 0); // مرتجع: 50 شحن + 20 مرتجع
-  assert.deepEqual(r.missing.map((m) => m.saleId), ['s5']);
-  near(r.totals.statementNet, 950 + 935 + 850 - 70 + 260);
-  // بعد حفظ التسوية لا يظهر الطلب كمستحق
-  s.reconciliations.push({ id: 'r1', courierId: 'bosta', lines: r.matched.map((m) => ({ saleId: m.saleId })) });
-  const un = OPS.unsettledByCourier(s, '2026-01-31');
+  s.sales.push(sale('s1', 1), sale('s2', 2), sale('s3', 3, { status: 'returned', returnFee: 20 }), sale('s4', 4, { status: 'shipped' }));
+  near(OPS.expectedFor(s.sales.find((x) => x.id === 's1')).net, 950);
+  near(OPS.expectedFor(s.sales.find((x) => x.id === 's3')).net, -70, 'returned: no cash, shipping + return fee');
+  let un = OPS.unsettledByCourier(s, '2026-01-31');
+  assert.equal(un.bosta.count, 3, 'shipped orders are not due yet');
+  near(un.bosta.net, 950 + 950 - 70);
+  assert.equal(un.bosta.days, 26);
+  s.reconciliations.push({ id: 'r1', courierId: 'bosta', manual: true, lines: [{ saleId: 's1' }, { saleId: 's3' }] });
+  un = OPS.unsettledByCourier(s, '2026-01-31');
   assert.equal(un.bosta.count, 1);
   near(un.bosta.net, 950);
-});
-
-test('bosta cash-cycle export: total fees, online payments and matching by customer phone', () => {
-  const s = baseState();
-  s.adjustments.push({ id: 'a1', date: '2026-01-01', productId: 'p1', qty: 10, unitCost: 500, reason: 'opening' });
-  s.customers.push({ id: 'c2', name: 'منى', phone: '01060626278' });
-  const sale = (id, no, extra) => ({ id, no, date: '2026-09-15', status: 'shipped', items: [{ productId: 'p1', qty: 1, price: 1000 }], courierId: 'bosta', courierFee: 40, payment: 'cod', ...extra });
-  s.sales.push(
-    sale('s1', 1, { trackingNo: '9487283740' }),
-    sale('s2', 2, { customerId: 'c2', date: '2026-09-01', items: [{ productId: 'p1', qty: 1, price: 900 }] }),
-    sale('s3', 3, { customerId: 'c2' }),
-    sale('s4', 4, { customerId: 'c1', status: 'shipped' }),
-  );
-  const head = ['Order Id', 'Order Status', 'Order Reference', 'Customer Phone', 'Completed At', 'COD', 'Online Payment Amount', 'Shipping Fees', 'VAT', 'Total Fees', 'Net Value'];
-  const sheets = [{ name: 'Cash Cycles', rows: [head,
-    ['9487283740', 'DELIVERED', 'N/A', '+201229879769', 46282.7, 1000, 0, '110.00', '0.70', 5.7, 994.3],
-    ['4536951434', 'DELIVERED', 'N/A', '+201060626278', 46285.6, 1000, 0, '107.00', '5.53', 45.03, 954.97],
-    ['8331985527', 'DELIVERED', 'N/A', '+201012345678', 46285.9, 0, 1000, '110.00', '2.80', 22.8, 977.2],
-    ['7777777777', 'RETURNED', 'N/A', '+201555555555', 46285.9, 0, 0, '92.00', '1.40', 11.4, -11.4],
-  ] }];
-  const st = OPS.parseStatement(sheets);
-  assert.equal(st.rows.length, 4);
-  // «Total Fees» مش «Shipping Fees»، والدفع الأونلاين محسوب مع التحصيل
-  assert.deepEqual(st.rows.map((r) => [r.ref, r.cod, r.fee]), [['9487283740', 1000, 5.7], ['4536951434', 1000, 45.03], ['8331985527', 1000, 22.8], ['7777777777', 0, 11.4]]);
-  assert.equal(st.rows[1].date, '2026-09-20'); // 14:24 ما تبقاش اليوم اللي بعده
-  assert.equal(st.rows[1].phone, '01060626278');
-  const r = OPS.reconcile(s, 'bosta', st.rows, 'FL-');
-  const byRef = Object.fromEntries(r.matched.map((m) => [m.ref, m]));
-  assert.equal(byRef['9487283740'].saleId, 's1');
-  assert.equal(byRef['9487283740'].matchedBy, 'ref');
-  // نفس التليفون عنده طلبين: يختار اللي مبلغه زي المحصل
-  assert.equal(byRef['4536951434'].saleId, 's3');
-  assert.equal(byRef['4536951434'].matchedBy, 'phone');
-  near(byRef['4536951434'].feeDiff, 5.03);
-  assert.equal(byRef['8331985527'].saleId, 's4');
-  assert.deepEqual(r.unmatched.map((u) => u.ref), ['7777777777']);
-  near(r.totals.statementNet, 994.3 + 954.97 + 977.2 - 11.4);
+  assert.ok(OPS.reconciledSales(s).has('s3'));
 });
 
 test('courier fee calculator matches bosta cash-cycle rows', () => {

@@ -39,20 +39,30 @@
   const nameOf = (list, id) => (DB.find(list, id) || {}).name || '—';
   const invoiceNo = (sale) => `${S().settings.invoicePrefix || ''}${sale.no || ''}`;
   const accountOptions = () => S().accounts.map((a) => ({ v: a.id, l: a.name }));
+  // المصروف ممكن يتدفع من حساب، أو تخصمه شركة الشحن من رصيدك عندها
+  const payFromOptions = () => [...accountOptions(), ...S().couriers.map((c) => ({ v: 'courier:' + c.id, l: `خصم من رصيدك عند ${c.name}` }))];
+  const paidFromName = (e) => (e.courierId ? `رصيد ${nameOf('couriers', e.courierId)}` : nameOf('accounts', e.accountId));
   const productOptions = () => [{ v: '', l: 'اختر المنتج…' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))];
   const statusKind = { pending: 'warn', shipped: 'info', delivered: 'good', returned: 'bad', lost: 'bad', cancelled: 'mute', ordered: 'warn', transit: 'info', received: 'good' };
   const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '—');
   // مسؤول الطلبات مايشوفش أعمدة التكلفة والربح والهامش
   const SENS_COL = /التكلفة|تكلفة|الربح|ربح|الهامش|قيمة المخزون|عمولات مستحقة|اتدفع|الباقي/;
   const hideCols = (head) => (window.CLOUD && !SYNC.seesCosts(CLOUD.role) ? head.map((h, i) => (SENS_COL.test(h) ? ` hide-c${i + 1}` : '')).join('') : '');
-  const table = (head, rows, opts = {}) => `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h) => `<th${/^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${opts.foot ? `<tfoot>${opts.foot}</tfoot>` : ''}</table></div>`;
+  // كل جدول أول عمود فيه رقم مسلسل (م)، وجنبه خانة تحديد لو السطر ينفع يتحذف
+  const table = (head0, rows, opts = {}) => {
+    const head = ['م', ...head0];
+    // الجداول المرتبة من الأحدث (desc): المسلسل بيعد من تحت، فأقدم حاجة 1 وآخر حاجة اتسجلت أكبر رقم
+    const body = rows.map((r, i) => r.replace(/^(\s*<tr[^>]*>)/, `$1<td class="serial">${opts.desc ? rows.length - i : i + 1}</td>`)).join('');
+    const foot = opts.foot ? opts.foot.replace(/<tr([^>]*)>/g, '<tr$1><td class="serial"></td>') : '';
+    return `<div class="table-wrap"><table class="data-table ${opts.cls || ''}${hideCols(head)}"><thead><tr>${head.map((h, i) => `<th${i === 0 ? ' class="serial"' : /^#|num:/.test(h) ? ' class="num"' : h === '' ? ' class="act"' : ''}>${h.replace(/^(#|num:)/, '')}</th>`).join('')}</tr></thead><tbody>${body || `<tr><td colspan="${head.length}" class="empty-row">${opts.empty || 'لا توجد بيانات بعد'}</td></tr>`}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table></div>`;
+  };
   const td = (v, cls = '') => `<td class="${cls}">${v}</td>`;
   const tdn = (v) => `<td class="num">${v}</td>`;
   const actions = (...btns) => `<td class="row-actions">${btns.join('')}</td>`;
   const btn = (label, action, id, cls = '') => `<button type="button" class="link-btn ${cls}" data-action="${action}" data-id="${id}">${label}</button>`;
   // أقسام القائمة: كل قسم له لون وأيقونة، وكل صفحة بتاخد لون قسمها عشان تعرف إنت فين
   const SECTIONS = { daily: 'اليومي', goods: 'البضاعة', money: 'الفلوس', growth: 'النمو والتحليل', system: 'النظام' };
-  const PAGE_SEC = { dashboard: 'daily', sales: 'daily', customers: 'daily', alerts: 'daily', products: 'goods', shipments: 'goods', suppliers: 'goods', treasury: 'money', expenses: 'money', reconcile: 'money', partners: 'money', campaigns: 'growth', planning: 'growth', reports: 'growth', health: 'system', audit: 'system', settings: 'system' };
+  const PAGE_SEC = { dashboard: 'daily', sales: 'daily', customers: 'daily', alerts: 'daily', products: 'goods', shipments: 'goods', suppliers: 'goods', treasury: 'money', expenses: 'money', reconcile: 'money', partners: 'money', statement: 'money', campaigns: 'growth', planning: 'growth', reports: 'growth', health: 'system', audit: 'system', settings: 'system' };
   let curKey = 'dashboard', lastKey = '';
   const header = (title, sub, buttons = '') => `<header class="page-head">
     <div class="ph-id"><span class="ph-icon">${icon(curKey)}</span><div class="ph-text"><span class="ph-eyebrow">${SECTIONS[PAGE_SEC[curKey]] || ''}</span><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div></div>
@@ -283,11 +293,103 @@
         ${UI.select('fchannel', { '': 'كل القنوات', ...CHANNELS }, saleFilter.channel, 'data-change="saleChannelFilter" aria-label="القناة"')}
       </div>
       ${table(['الفاتورة', 'التاريخ', 'العميل', 'القناة', '#الإجمالي', '#التكلفة', '#الربح', 'الدفع', 'الحالة', ''], rows, {
-        empty: 'لا توجد طلبات في هذه الفترة',
+        desc: true, empty: 'لا توجد طلبات في هذه الفترة',
         foot: rows.length ? `<tr><td colspan="4">إجمالي البيع (${rows.length - tot.promoCount} طلب)</td>${tdn(fmt(tot.total))}${tdn(fmt(tot.cogs))}${tdn(fmt(tot.profit))}<td colspan="3"></td></tr>${tot.promoCount ? `<tr><td colspan="4">فواتير دعاية (${tot.promoCount}) — محملة على مصروف الإعلانات</td><td></td><td></td>${tdn(fmt(tot.promo))}<td colspan="3"></td></tr>` : ''}` : '',
       })}`;
   }
 
+  // ---------- البحث جوه فاتورة البيع ----------
+  const digitsOf = (t) => IMP.latinDigits(String(t || '')).replace(/\D/g, '');
+  function productCombo(sel, opts = {}) {
+    return UI.combo(sel, { placeholder: opts.allowNew ? 'ابحث عن الصنف… أو كوّد صنف جديد' : 'ابحث باسم المنتج أو الماركة أو الكود…',
+      newItem: opts.allowNew ? (text, found) => ({ label: found ? `+ صنف جديد «${text.trim()}»` : `+ مش موجود — كوّد صنف جديد «${text.trim()}»`, sub: 'هيفتح تكويد صنف جديد، وبعد الحفظ يتحط في السطر ده', run: (t) => newProductForLine(sel, t) }) : null,
+      items: () => S().products.map((p) => { const st = J().inventory.products[p.id] || {}; return { v: p.id, label: productLabel(p), sub: `${p.sku ? p.sku + ' · ' : ''}متاح ${fmt(st.available || 0)} · ${fmt(p.price)} ج.م`, keys: [p.sku, p.barcode, p.brand, p.name] }; }) });
+  }
+  const comboLines = (root, opts) => root.querySelectorAll('select.l-product').forEach((sel) => productCombo(sel, opts));
+  // صنف اتكود جديد: يتضاف لكل قوايم المنتجات المفتوحة ويتحط في السطر
+  function addProductOption(root, p) {
+    root.querySelectorAll('select.l-product').forEach((sel) => { if (![...sel.options].some((o) => o.value === p.id)) sel.add(new Option(productLabel(p), p.id)); });
+  }
+  async function newProductForLine(sel, text) {
+    const p = await quickProductForm(text);
+    const combo = sel._combo;
+    if (!p) { if (combo) combo.input.value = ''; return; }
+    addProductOption(sel.closest('form') || document, p);
+    sel.value = p.id;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    UI.toast(`تم تكويد ${productLabel(p)}`);
+  }
+  // تكويد صنف جديد في نافذة صغيرة فوق الفاتورة المفتوحة (الفاتورة ماتتقفلش ولا بياناتها تضيع)
+  function quickProductForm(text = '') {
+    return new Promise((resolve) => {
+      const t = String(text || '').trim();
+      const looksCode = t && /^[A-Za-z0-9._\-\s]+$/.test(t) && /\d/.test(t);
+      const layer = document.createElement('div');
+      layer.className = 'lock-layer sub-layer';
+      layer.innerHTML = `<div class="modal-backdrop"></div>
+        <form class="modal-card" novalidate role="dialog" aria-modal="true" aria-labelledby="qp-title">
+          <header class="modal-head"><h2 id="qp-title">تكويد صنف جديد</h2></header>
+          <div class="modal-body">
+            <div class="form-grid">
+              ${UI.field('الماركة', '<input id="qp-brand" name="brand" placeholder="لطافة، أرماف…">')}
+              ${UI.field('اسم الصنف', `<input id="qp-name" name="name" required value="${looksCode ? '' : esc(t)}">`, { req: true })}
+              ${UI.field('الحجم (مل)', '<input id="qp-size" name="sizeMl" type="number" min="0" step="1" value="100">')}
+              ${UI.field('كود الصنف (SKU)', `<input id="qp-sku" name="sku" dir="ltr" value="${looksCode ? esc(t) : ''}">`)}
+              ${UI.field('سعر البيع', '<input id="qp-price" name="price" type="number" min="0" step="0.01">', { hint: 'تقدر تحطه بعدين' })}
+              ${UI.field('وزن الشحن (جرام)', '<input id="qp-weight" name="weightG" type="number" min="0" step="1">', { hint: 'اختياري — لتوزيع مصاريف الشحن' })}
+            </div>
+            <p class="lock-err" role="alert" hidden></p>
+            <p class="muted">باقي بيانات الصنف (الباركود، الفئة، حد إعادة الطلب) تقدر تكملها بعدين من «المنتجات».</p>
+          </div>
+          <footer class="modal-foot"><button class="btn btn-primary" type="submit">حفظ الصنف</button><button class="btn" type="button" data-qp-cancel>إلغاء</button></footer>
+        </form>`;
+      document.body.appendChild(layer);
+      const f = layer.querySelector('form'), err = f.querySelector('.lock-err');
+      const done = (p) => { layer.remove(); document.removeEventListener('keydown', onKey, true); resolve(p); };
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); done(null); } };
+      document.addEventListener('keydown', onKey, true);
+      f.querySelector('[data-qp-cancel]').addEventListener('click', () => done(null));
+      f.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const g = (n) => f.querySelector(`[name="${n}"]`).value.trim();
+        const show = (m, el) => { err.textContent = m; err.hidden = false; if (el) el.focus(); };
+        if (!g('name')) return show('اكتب اسم الصنف', f.querySelector('#qp-name'));
+        if (!UI.numbersOk(f)) return;
+        const p = { id: uid(), sku: g('sku'), brand: g('brand'), name: g('name'), sizeMl: num(g('sizeMl')), weightG: num(g('weightG')), gender: 'unisex', price: num(g('price')), minStock: S().settings.lowStock };
+        const dup = RULES.productDuplicate(S(), p);
+        if (dup) return show(dup.field === 'sku' ? `الكود «${p.sku}» مستخدم قبل كده للصنف ${productLabel(dup.other)}` : `الصنف ده متسجل قبل كده: ${productLabel(dup.other)} — اختاره من البحث بدل ما تكوّده تاني`, f.querySelector(dup.field === 'sku' ? '#qp-sku' : '#qp-name'));
+        DB.upsert('products', p);
+        done(p);
+      });
+      setTimeout(() => f.querySelector(looksCode || !t ? (looksCode ? '#qp-name' : '#qp-brand') : '#qp-brand').focus(), 30);
+    });
+  }
+  function customerCombo(f) {
+    const sel = f.customerId;
+    const risk = (c) => { const r = OPS.customerRisk(S(), c.id); return `${r.orders ? `${r.orders} طلب` : 'مفيش طلبات'}${r.refused ? ` · رفض ${r.refused}` : ''}`; };
+    UI.combo(sel, {
+      placeholder: 'ابحث باسم العميل أو رقم الموبايل…',
+      items: () => [{ v: '__new', label: '+ عميل جديد', sub: 'مش موجود؟ اكتب اسمه أو رقمه وضيفه', hidden: false }, ...S().customers.map((c) => ({ v: c.id, label: c.name, sub: [c.phone, c.city, risk(c)].filter(Boolean).join(' · '), keys: [c.phone, digitsOf(c.phone), OPS.phoneKey(c.phone)] }))],
+      newItem: (text, found) => ({ label: found ? `+ عميل جديد باسم «${text.trim()}»` : `+ مش موجود — ضيف «${text.trim()}» عميل جديد`, sub: /^\+?[\d\s٠-٩-]{6,}$/.test(text.trim()) ? 'هيتحط في خانة الموبايل' : 'هيتحط في خانة الاسم', run: (t) => {
+        sel._combo.input.value = '+ عميل جديد';
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, '__new');
+        const digits = /^\+?[\d\s٠-٩-]{6,}$/.test(t.trim());
+        if (digits) f.cPhone.value = IMP.latinDigits(t.trim()); else f.cName.value = t.trim();
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        setTimeout(() => (digits ? f.cName : f.cPhone).focus(), 30);
+      } }),
+    });
+    // رقم موبايل متسجل قبل كده في خانة العميل الجديد: نقول ونعرض نختاره
+    const hint = f.querySelector('#phone-hint');
+    const check = () => {
+      const k = OPS.phoneKey(f.cPhone.value);
+      const c = k && S().customers.find((x) => OPS.phoneKey(x.phone) === k);
+      hint.hidden = !c;
+      if (c) hint.innerHTML = `الرقم ده متسجل باسم <b>${esc(c.name)}</b>${c.city ? ` (${esc(c.city)})` : ''}. <button type="button" class="link-btn" id="use-existing">اختاره بدل ما تضيفه تاني</button>`;
+      const b = hint.querySelector('#use-existing'); if (b) b.addEventListener('click', () => { sel.value = c.id; sel.dispatchEvent(new Event('change', { bubbles: true })); hint.hidden = true; });
+    };
+    f.cPhone.addEventListener('input', check);
+  }
   function saleLineRow(it = {}) {
     const st = it.productId ? J().inventory.products[it.productId] : null;
     return `<tr class="line">
@@ -335,7 +437,7 @@
     const custOpts = [{ v: '', l: 'اختر العميل…' }, { v: '__new', l: '+ عميل جديد' }, ...s.customers.map((c) => ({ v: c.id, l: `${c.name}${c.phone ? ' — ' + c.phone : ''}` }))];
     const locked = !isNew && RULES.isReconciled(s, sale.id);
     const body = `
-      ${locked ? '<div class="imp-box warn"><b>الفاتورة دي دخلت في تسوية كشف شركة الشحن.</b> تقدر تعدّل العميل والقناة والحملة والملاحظات بس. لتعديل الباقي احذف التسوية الأول من شاشة «تسوية شركات الشحن».</div>' : ''}
+      ${locked ? '<div class="imp-box warn"><b>الفاتورة دي دخلت في تسوية مع شركة الشحن.</b> تقدر تعدّل العميل والقناة والحملة والملاحظات بس. لتعديل الباقي احذف التسوية الأول من شاشة «تسوية شركات الشحن».</div>' : ''}
       <div class="form-grid">
         ${UI.field('نوع الفاتورة', UI.select('kind', { sale: 'فاتورة بيع', promo: 'فاتورة دعاية (قطع مجانية)' }, isPromo(sale) ? 'promo' : 'sale'))}
         ${UI.field('التاريخ', UI.input('date', sale.date, 'type="date" required'), { req: true })}
@@ -348,7 +450,7 @@
       <p class="promo-note" hidden>فاتورة الدعاية تُخرج القطع من المخزون بتكلفتها، ولا تُحسب مبيعات. التكلفة ومصاريف شحنها تروح على <b>مصروف الإعلانات والتسويق</b>${s.campaigns.length ? ' (ولو ربطتها بحملة تدخل في إنفاق الحملة)' : ''}.</p>
       <div class="form-grid new-customer" hidden>
         ${UI.field('اسم العميل', UI.input('cName', ''), { req: true })}
-        ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'))}
+        ${UI.field('الموبايل', UI.input('cPhone', '', 'inputmode="tel"'), { hint: '<span id="phone-hint" class="phone-hint" hidden></span>' })}
         ${UI.field('المحافظة', UI.select('cCity', govOptions(), ''))}
         ${UI.field('العنوان', UI.input('cAddress', ''))}
       </div>
@@ -362,7 +464,7 @@
         ${UI.field('شحن محصل من العميل', UI.input('shippingCharged', sale.shippingCharged || 0, 'type="number" min="0" step="0.01"'), { cls: 'sale-only' })}
         ${UI.field('طريقة الدفع', UI.select('payment', [{ v: 'cod', l: 'الدفع عند الاستلام (مع شركة الشحن)' }, ...accountOptions().map((a) => ({ v: a.v, l: 'مدفوع مقدمًا — ' + a.l }))], sale.payment), { cls: 'sale-only' })}
         ${UI.field('شركة الشحن', UI.select('courierId', [{ v: '', l: '—' }, ...s.couriers.map((c) => ({ v: c.id, l: c.name }))], sale.courierId || ''))}
-        ${UI.field('رقم البوليصة', UI.input('trackingNo', sale.trackingNo || '', 'dir="ltr" autocomplete="off"'), { hint: 'يُستخدم في مطابقة كشف شركة الشحن' })}
+        ${UI.field('رقم البوليصة', UI.input('trackingNo', sale.trackingNo || '', 'dir="ltr" autocomplete="off"'), { hint: 'للرجوع ليه وقت المتابعة مع شركة الشحن' })}
         ${UI.field('تكلفة الشحن علينا', UI.input('courierFee', sale.courierFee || 0, 'type="number" min="0" step="0.01"'), { hint: '<span id="ship-hint">تخصمها شركة الشحن من التحصيل</span>' })}
         ${UI.field('القيمة المعلنة لشركة الشحن', UI.input('declaredValue', sale.declaredValue != null ? sale.declaredValue : '', 'type="number" min="0" step="1"'), { cls: 'calc-only', hint: 'التأمين بيتحسب عليها. فاضية = حسب إعداد الشركة' })}
         <label class="check calc-only"><input type="checkbox" name="openPackage" ${sale.openPackage != null ? (sale.openPackage ? 'checked' : '') : 'data-default'}> العميل يقدر يفتح الشحنة</label>
@@ -386,6 +488,7 @@
       title: isNew ? (isPromo(sale) ? 'فاتورة دعاية جديدة' : 'طلب جديد') : `تعديل ${isPromo(sale) ? 'فاتورة الدعاية' : 'الطلب'} ${esc(invoiceNo(sale))}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines');
+        comboLines(lines); customerCombo(f);
         const promoMode = () => f.kind.value === 'promo';
         let feeTouched = !isNew, chargeTouched = !isNew, retTouched = !isNew;
         // حاسبة مستحقات شركة الشحن: بتملا «تكلفة الشحن علينا» لوحدها لحد ما تكتبها بإيدك
@@ -450,7 +553,7 @@
           if (same) { const q = same.querySelector('.l-qty'); q.value = num(q.value) + 1; }
           else {
             let row = rows.find((r) => !r.querySelector('.l-product').value);
-            if (!row) { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); row = lines.lastElementChild; }
+            if (!row) { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); row = lines.lastElementChild; comboLines(row); }
             row.querySelector('.l-product').value = p.id;
             row.querySelector('.l-price').value = p.price || '';
           }
@@ -458,7 +561,7 @@
           UI.toast(`+1 ${productLabel(p)}`);
         };
         attachScanner(f, (code) => { const p = OPS.findByCode(S().products, code); if (p) addProduct(p); else UI.toast(`مفيش منتج بالكود «${code}»`, 'bad'); });
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
+        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); comboLines(lines.lastElementChild); recalc(); const inp = lines.lastElementChild.querySelector('.combo-input'); if (inp) inp.focus(); });
         lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
         lines.addEventListener('change', (e) => {
           if (e.target.classList.contains('l-product')) { const p = productById(e.target.value); const pr = e.target.closest('tr').querySelector('.l-price'); if (p && !num(pr.value)) pr.value = p.price || ''; }
@@ -534,7 +637,7 @@
         const dupTrack = RULES.trackingTaken(S(), obj.trackingNo, obj.id);
         if (dupTrack) return fail(`رقم البوليصة ${obj.trackingNo} مسجل قبل كده على فاتورة ${invoiceNo(dupTrack)}`);
         const lockedChanges = RULES.lockedSaleChanges(S(), isNew ? null : sale, obj);
-        if (lockedChanges.length) return fail(`الفاتورة داخلة في تسوية كشف شركة الشحن — مينفعش تغيّر: ${lockedChanges.join('، ')}`);
+        if (lockedChanges.length) return fail(`الفاتورة داخلة في تسوية مع شركة الشحن — مينفعش تغيّر: ${lockedChanges.join('، ')}`);
         const stock = RULES.checkSaleStock(S(), J(), obj, isNew ? null : sale);
         if (stock.errors.length) return fail(stockMsg(stock.errors, obj.status));
         obj.preorder = stock.preorder;
@@ -661,7 +764,7 @@
         if (!fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
         if (!dateOk(fd.get('returnDate'), 'تاريخ المرتجع')) return false;
         const upd = { ...sale, status: 'returned', returnReason: fd.get('returnReason'), returnDate: fd.get('returnDate'), returnFee: num(fd.get('returnFee')), refundAccountId: prepaid ? fd.get('refundAccountId') : '' };
-        if (RULES.lockedSaleChanges(S(), sale, upd).length) return fail('الفاتورة داخلة في تسوية كشف شركة الشحن — الحالة مقفولة');
+        if (RULES.lockedSaleChanges(S(), sale, upd).length) return fail('الفاتورة داخلة في تسوية مع شركة الشحن — الحالة مقفولة');
         const e = RULES.saleDateError(upd); if (e) return fail(e);
         const stock = RULES.checkSaleStock(S(), J(), upd, sale);
         if (stock.errors.length) return fail(stockMsg(stock.errors, upd.status));
@@ -695,6 +798,7 @@
         <div class="summary" id="ret-sum"></div>`,
       onOpen(f) {
         const lines = f.querySelector('#lines');
+        comboLines(lines);
         const t = Acc.saleTotals(sale), factor = t.gross ? t.net / t.gross : 1;
         const recalc = () => {
           const value = [...f.querySelectorAll('.r-qty')].reduce((a, i) => a + num(i.value) * num(sale.items[i.dataset.line].price) * factor, 0);
@@ -704,7 +808,7 @@
           f.querySelector('#ex-box').hidden = !exchange;
           f.querySelector('#ret-sum').innerHTML = `<div class="strong"><span>قيمة المرتجع</span><b>${fmt(value)} ج.م</b></div>${exchange ? `<div><span>قيمة البديل</span><b>${fmt(ex)}</b></div><div class="strong"><span>${ex - value >= 0 ? 'العميل يدفع فرق' : 'نرجّع للعميل فرق'}</span><b>${fmt(Math.abs(ex - value))} ج.م</b></div>` : `<div><span>${prepaid ? 'هيترجع للعميل' : 'المندوب هيحصّل أقل بـ'}</span><b>${fmt(value)}</b></div>`}`;
         };
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); recalc(); });
+        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', saleLineRow({ qty: 1 })); comboLines(lines.lastElementChild); recalc(); const inp = lines.lastElementChild.querySelector('.combo-input'); if (inp) inp.focus(); });
         lines.addEventListener('change', (e) => { if (e.target.classList.contains('l-product')) { const p = productById(e.target.value); const pr0 = e.target.closest('tr').querySelector('.l-price'); if (p && !num(pr0.value)) pr0.value = p.price || ''; } recalc(); });
         lines.addEventListener('click', (e) => { if (e.target.closest('[data-line-remove]') && lines.children.length > 1) { e.target.closest('tr').remove(); recalc(); } });
         f.addEventListener('input', recalc); f.addEventListener('change', recalc);
@@ -744,13 +848,13 @@
     const s = S();
     const rows = [...s.shipments].sort((a, b) => (a.orderDate < b.orderDate ? 1 : -1)).map((sh) => {
       const c = Acc.shipmentCosting(sh);
-      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>`)}${td(esc(nameOf('suppliers', sh.supplierId)))}${td(fmtDate(sh.orderDate))}
+      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>${sh.local ? ' ' + UI.pill('شراء محلي', 'info') : ''}`)}${td(esc(sh.supplierId ? nameOf('suppliers', sh.supplierId) : 'مورد مش متسجل'))}${td(fmtDate(sh.orderDate))}
         ${tdn(`${fmt(c.goodsForeign)} <span class="cur">${sh.currency}</span>`)}${tdn(fmt(c.rate, 4))}${tdn(fmt(c.goodsEGP))}${tdn(fmt(c.extras))}${tdn(`<b>${fmt(c.landedTotal)}</b>`)}${tdn(fmt(c.totalQty))}
         ${td(UI.pill(SHIP_STATUSES[sh.status], statusKind[sh.status]))}
         ${actions(sh.status !== 'received' && sh.status !== 'cancelled' ? btn('استلام', 'receiveShipment', sh.id) : '', btn('تكلفة الوحدة', 'landedShipment', sh.id), btn('حذف', 'delShipment', sh.id, 'danger'))}</tr>`;
     });
-    return `${header('شحنات الاستيراد', 'سعر الصرف ومصاريف الشحن والجمارك تتوزع على الأصناف بنسبة قيمتها لتعطيك تكلفة الوحدة الحقيقية بالجنيه.', '<button class="btn btn-primary" data-action="newShipment">+ شحنة جديدة</button>')}
-      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { empty: 'لم تسجل أي شحنة بعد. ابدأ بإضافة مورد ثم شحنة.' })}`;
+    return `${header('المشتريات والاستيراد', 'شحنات الاستيراد: سعر الصرف ومصاريف الشحن والجمارك تتوزع على الأصناف بنسبة قيمتها لتعطيك تكلفة الوحدة الحقيقية بالجنيه. والشراء المحلي: بضاعة من مورد في مصر بتدخل المخزن على طول.', '<button class="btn" data-action="newLocalPurchase">+ شراء محلي</button><button class="btn btn-primary" data-action="newShipment">+ شحنة استيراد</button>')}
+      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { desc: true, empty: 'لسه ما سجلتش مشتريات. شحنة استيراد: ابدأ بإضافة مورد. شراء محلي: اضغط «+ شراء محلي».' })}`;
   }
 
   function shipLineRow(it = {}) {
@@ -769,30 +873,50 @@
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
   }
 
-  function shipmentForm(sh) {
+  // الشراء المحلي: مورد في مصر بالجنيه، البضاعة بتدخل المخزن على طول، والدفع من حساب أو من جيبك (رأس مال) أو آجل
+  const localSuppliers = () => S().suppliers.filter((x) => x.currency === 'EGP');
+  function shipmentForm(sh, opts = {}) {
     const s = S();
-    if (!s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
+    const local = sh ? !!sh.local : !!opts.local;
+    if (!local && !s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
     const isNew = !sh || !!sh.__draft;
     if (sh && sh.__draft) { sh = { ...sh }; delete sh.__draft; }
-    const sup0 = s.suppliers[0];
-    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' };
-    const body = `
+    const sup0 = local ? localSuppliers()[0] || { id: '', currency: 'EGP' } : s.suppliers[0];
+    sh = sh || (local
+      ? { id: uid(), local: true, ref: '', supplierId: sup0.id, currency: 'EGP', rate: 1, orderDate: today(), status: 'received', receivedDate: today(), items: [{ qty: 1 }], costs: [], notes: '', payMode: 'account', payAccountId: (s.accounts.find((a) => a.type === 'cash') || s.accounts[0] || {}).id, payPartnerId: '' }
+      : { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' });
+    const supOpts = local ? [{ v: '', l: 'مورد مش متسجل (محل / تاجر)' }, ...localSuppliers().map((x) => ({ v: x.id, l: x.name }))] : s.suppliers.map((x) => ({ v: x.id, l: `${x.name} (${COUNTRIES[x.country] || ''})` }));
+    const head = local ? `
+      <div class="form-grid">
+        ${UI.field('رقم فاتورة المورد / اسم المحل', UI.input('ref', sh.ref, 'placeholder="مثال: فاتورة 1520 — محل العطار"'))}
+        ${UI.field('المورد', UI.select('supplierId', supOpts, sh.supplierId || ''), { hint: 'الموردين اللي عملتهم بالجنيه (مصر). أضف مورد من شاشة الموردين لو عايز تتابع حسابه' })}
+        ${UI.field('التاريخ', UI.input('orderDate', sh.orderDate, 'type="date" required'), { req: true, hint: 'البضاعة بتدخل المخزن في نفس اليوم' })}
+        <input type="hidden" name="currency" value="EGP"><input type="hidden" name="rate" value="1"><input type="hidden" name="status" value="received"><input type="hidden" name="receivedDate" value="">
+      </div>
+      <h3 class="sub-title">الدفع</h3>
+      <div class="form-grid">
+        ${UI.field('دفعت منين؟', UI.select('payMode', Acc.LOCAL_PAY, sh.payMode || 'account'))}
+        ${UI.field('من حساب', UI.select('payAccountId', accountOptions(), sh.payAccountId), { cls: 'pay-acc' })}
+        ${UI.field('من جيب مين', UI.select('payPartnerId', [{ v: '', l: 'صاحب المشروع' }, ...s.partners.map((p) => ({ v: p.id, l: p.name }))], sh.payPartnerId || ''), { cls: 'pay-partner', hint: 'المبلغ بيتسجل زيادة في رأس المال' })}
+        ${UI.field('ميعاد السداد', UI.input('dueDate', sh.dueDate || '', 'type="date"'), { cls: 'pay-due', hint: 'هيظهرلك تنبيه قبل الميعاد لو لسه عليك رصيد' })}
+      </div>` : `
       <div class="form-grid">
         ${UI.field('رقم / مرجع الشحنة', UI.input('ref', sh.ref, 'placeholder="مثال: SA-2610"'))}
-        ${UI.field('المورد', UI.select('supplierId', s.suppliers.map((x) => ({ v: x.id, l: `${x.name} (${COUNTRIES[x.country] || ''})` })), sh.supplierId), { req: true })}
+        ${UI.field('المورد', UI.select('supplierId', supOpts, sh.supplierId), { req: true })}
         ${UI.field('عملة الفاتورة', UI.select('currency', CURRENCIES, sh.currency))}
         ${UI.field('سعر الصرف (جنيه لكل وحدة)', UI.input('rate', sh.rate, 'type="number" min="0" step="0.0001" required'), { req: true, hint: 'السعر الذي حوّلت به فعليًا' })}
         ${UI.field('تاريخ الطلب', UI.input('orderDate', sh.orderDate, 'type="date" required'), { req: true })}
         ${UI.field('الحالة', UI.select('status', SHIP_STATUSES, sh.status))}
         ${UI.field('تاريخ الاستلام', UI.input('receivedDate', sh.receivedDate || today(), 'type="date"'), { cls: 'recv-field' })}
         ${UI.field('ميعاد سداد المورد', UI.input('dueDate', sh.dueDate || '', 'type="date"'), { hint: 'هيظهرلك تنبيه قبل الميعاد لو لسه عليك رصيد' })}
-      </div>
-      <h3 class="sub-title">الأصناف (بسعر المورد)</h3>
+      </div>`;
+    const body = `${head}
+      <h3 class="sub-title">الأصناف (${local ? 'بسعر الشراء بالجنيه' : 'بسعر المورد'})</h3>
       <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة <span class="cur-label"></span></th><th class="num">بالجنيه</th><th class="num">تكلفة الوحدة الواصلة</th><th></th></tr></thead>
         <tbody id="lines">${sh.items.map(shipLineRow).join('')}</tbody></table></div>
-      <button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button>
-      <h3 class="sub-title">مصاريف الشحن والجمارك بالجنيه</h3>
-      <p class="muted">لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
+      <div class="btn-row"><button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button><button type="button" class="btn btn-small" id="new-product">+ تكويد صنف جديد</button></div>
+      <h3 class="sub-title">${local ? 'مصاريف إضافية (نقل، توصيل…) — اختياري' : 'مصاريف الشحن والجمارك بالجنيه'}</h3>
+      <p class="muted" ${local ? 'hidden' : ''}>لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
       <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>يتوزع حسب</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
         <tbody id="costs">${sh.costs.map(costRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-cost">+ إضافة مصروف</button>
@@ -801,14 +925,16 @@
       <div class="summary" id="ship-summary"></div>`;
     const read = (f) => ({
       ...sh, ref: f.ref.value.trim(), supplierId: f.supplierId.value, currency: f.currency.value, rate: num(f.rate.value), orderDate: f.orderDate.value, status: f.status.value,
-      receivedDate: f.status.value === 'received' ? f.receivedDate.value : '', dueDate: f.dueDate.value, notes: f.notes.value,
+      receivedDate: local ? f.orderDate.value : f.status.value === 'received' ? f.receivedDate.value : '', dueDate: local && f.payMode.value !== 'credit' ? '' : f.dueDate.value, notes: f.notes.value,
+      ...(local ? { local: true, payMode: f.payMode.value, payAccountId: f.payMode.value === 'account' ? f.payAccountId.value : '', payPartnerId: f.payMode.value === 'capital' ? f.payPartnerId.value : '' } : {}),
       items: [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })).filter((l) => l.productId && l.qty > 0),
       costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim() || 'شحن وجمارك', amount: num(r.querySelector('.c-amount').value), basis: r.querySelector('.c-basis').value, accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
     });
     UI.modal({
-      title: isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
+      title: local ? (isNew ? 'شراء محلي' : `تعديل الشراء المحلي ${esc(sh.ref)}`) : isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines'), costs = f.querySelector('#costs');
+        comboLines(lines, { allowNew: true });
         const recalc = () => {
           const draft = read(f);
           const allRows = [...lines.querySelectorAll('.line')];
@@ -819,14 +945,26 @@
           if (!ww.hidden) ww.innerHTML = `<b>${c.missingWeight.filter(Boolean).map((id) => esc(productLabel(productById(id)))).join('، ')}</b> ملوش وزن شحن ولا حجم بالمللي، فالمصاريف اتوزعت مؤقتًا بعدد القطع. سجّل الوزن أو الحجم في المنتج عشان التوزيع يبقى بالحجم.`;
           allRows.forEach((r, i) => { r.querySelector('.l-egp').textContent = fmt(c.lines[i].egp); r.querySelector('.l-landed').textContent = fmt(c.lines[i].landedUnit); });
           f.querySelector('.cur-label').textContent = `(${draft.currency})`;
-          f.querySelector('.recv-field').hidden = draft.status !== 'received';
+          if (local) {
+            const m = f.payMode.value;
+            f.querySelector('.pay-acc').hidden = m !== 'account'; f.querySelector('.pay-partner').hidden = m !== 'capital' || !S().partners.length; f.querySelector('.pay-due').hidden = m !== 'credit';
+          } else f.querySelector('.recv-field').hidden = draft.status !== 'received';
           f.querySelector('#ship-summary').innerHTML = `<div><span>قيمة البضاعة</span><b>${fmt(c.goodsForeign)} ${draft.currency}</b></div><div><span>بالجنيه</span><b>${fmt(c.goodsEGP)}</b></div><div><span>مصاريف إضافية</span><b>${fmt(c.extras)}</b></div><div class="strong"><span>التكلفة الكلية الواصلة</span><b>${fmt(c.landedTotal)} ج.م</b></div><div><span>عدد القطع</span><b>${fmt(c.totalQty)}</b></div><div><span>نسبة المصاريف للبضاعة</span><b>${pct(c.goodsEGP ? c.extras / c.goodsEGP : 0)}</b></div>`;
         };
-        f.querySelector('#add-line').addEventListener('click', () => { lines.insertAdjacentHTML('beforeend', shipLineRow({ qty: 1 })); recalc(); });
+        const addLine = () => { lines.insertAdjacentHTML('beforeend', shipLineRow({ qty: 1 })); comboLines(lines.lastElementChild, { allowNew: true }); recalc(); return lines.lastElementChild; };
+        f.querySelector('#add-line').addEventListener('click', () => { const r = addLine(); const inp = r.querySelector('.combo-input'); if (inp) inp.focus(); });
+        // صنف جديد: يتكود، ويتحط في أول سطر فاضي أو في سطر جديد
+        f.querySelector('#new-product').addEventListener('click', async () => {
+          const p = await quickProductForm(''); if (!p) return;
+          addProductOption(f, p);
+          const row = [...lines.querySelectorAll('.line')].find((r) => !r.querySelector('.l-product').value) || addLine();
+          const sel = row.querySelector('.l-product'); sel.value = p.id; sel.dispatchEvent(new Event('change', { bubbles: true }));
+          UI.toast(`تم تكويد ${productLabel(p)}`); const q = row.querySelector('.l-cost'); if (q) q.focus();
+        });
         f.querySelector('#add-cost').addEventListener('click', () => { costs.insertAdjacentHTML('beforeend', costRow({})); recalc(); });
         f.addEventListener('click', (e) => { const b = e.target.closest('[data-line-remove]'); if (b) { const tr = b.closest('tr'); if (tr.classList.contains('cost') || lines.children.length > 1) { tr.remove(); recalc(); } } });
-        f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) { f.currency.value = sp.currency; f.rate.value = S().settings.rates[sp.currency] || 1; } recalc(); });
-        f.currency.addEventListener('change', () => { f.rate.value = f.currency.value === 'EGP' ? 1 : S().settings.rates[f.currency.value] || f.rate.value; recalc(); });
+        if (!local) f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) { f.currency.value = sp.currency; f.rate.value = S().settings.rates[sp.currency] || 1; } recalc(); });
+        if (!local) f.currency.addEventListener('change', () => { f.rate.value = f.currency.value === 'EGP' ? 1 : S().settings.rates[f.currency.value] || f.rate.value; recalc(); });
         f.addEventListener('input', recalc); f.addEventListener('change', recalc);
         recalc();
       },
@@ -834,12 +972,14 @@
         const obj = read(f);
         if (!obj.items.length) { UI.toast('أضف صنفًا واحدًا على الأقل', 'bad'); return false; }
         if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
-        if (!dateOk(obj.orderDate, 'تاريخ الطلب')) return false;
+        if (local && obj.payMode === 'credit' && !obj.supplierId) return fail('الشراء الآجل لازم يكون على مورد متسجل — اختار المورد أو غيّر طريقة الدفع');
+        if (local && obj.payMode === 'account' && !obj.payAccountId) return fail('اختار الحساب اللي دفعت منه');
+        if (!dateOk(obj.orderDate, local ? 'تاريخ الشراء' : 'تاريخ الطلب')) return false;
         const shErr = RULES.shipmentDateError(obj);
         if (shErr) return fail(shErr);
         if (!cashOk(f, RULES.withDoc(S(), 'shipments', obj))) return false;
         DB.upsert('shipments', obj);
-        UI.toast(isNew ? 'تم تسجيل الشحنة' : 'تم حفظ الشحنة');
+        UI.toast(local ? (isNew ? 'تم تسجيل الشراء ودخلت البضاعة المخزن' : 'تم حفظ الشراء') : isNew ? 'تم تسجيل الشحنة' : 'تم حفظ الشحنة');
         render();
       },
     });
@@ -883,9 +1023,9 @@
       <section class="kpis kpis-3">${kpi('قيمة المخزون بالتكلفة', money0(totals.value))}${kpi('قيمته بسعر البيع', money0(totals.retail))}${kpi('ربح متوقع في المخزون', money0(totals.retail - totals.value), totals.retail ? `هامش ${pct((totals.retail - totals.value) / totals.retail)}` : '')}</section>
       ${table(['الكود', 'المنتج', 'الحجم', 'الفئة', '#سعر البيع', '#الرصيد', '#محجوز', '#متاح', '#متوسط التكلفة', '#قيمة المخزون', '#الهامش', 'الحالة', ''], rows, { empty: 'لا توجد منتجات بعد' })}
       <h2 class="section-title">تسويات المخزون (افتتاحي، تالف، تسترات، هدايا، فروق جرد)</h2>
-      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { empty: 'لا توجد تسويات' })}
+      ${table(['التاريخ', 'المنتج', 'السبب', '#الكمية', '#التكلفة', 'ملاحظات', ''], adj, { desc: true, empty: 'لا توجد تسويات' })}
       <h2 class="section-title">تقسيم العبوات (ديكانت) وفك البوكسات</h2>
-      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { empty: 'لم تقسم أي عبوة بعد' })}`;
+      ${table(['التاريخ', 'العبوة / البوكس', '#العدد', 'الناتج', '#تكلفة العبوات الفاضية', '#التكلفة الكلية', '#تكلفة المللي', ''], dec, { desc: true, empty: 'لم تقسم أي عبوة بعد' })}`;
   }
 
   function productForm(p) {
@@ -906,6 +1046,8 @@
       onSubmit(f, fd) {
         const barcode = fd.get('barcode').trim();
         if (barcode && !OPS.validBarcode(barcode)) { UI.toast('الباركود لازم يكون حروف وأرقام إنجليزي بس', 'bad'); return false; }
+        const dupP = RULES.productDuplicate(S(), { id: p.id, sku: fd.get('sku').trim(), brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')) });
+        if (dupP) { (dupP.field === 'sku' ? f.sku : f.name).focus(); return fail(dupP.field === 'sku' ? `الكود «${fd.get('sku').trim()}» مستخدم قبل كده للصنف ${productLabel(dupP.other)}` : `الصنف ده متسجل قبل كده: ${productLabel(dupP.other)} — غيّر الاسم أو الحجم، أو عدّل الصنف الموجود`); }
         const dup = barcode && S().products.find((x) => x.id !== p.id && (x.barcode || '').toUpperCase() === barcode.toUpperCase());
         if (dup) { UI.toast(`الباركود ده مستخدم لـ ${productLabel(dup)}`, 'bad'); return false; }
         DB.upsert('products', { ...p, brand: fd.get('brand').trim(), name: fd.get('name').trim(), sizeMl: num(fd.get('sizeMl')), weightG: num(fd.get('weightG')), gender: fd.get('gender'), sku: fd.get('sku').trim(), barcode, price: num(fd.get('price')), minStock: num(fd.get('minStock')) });
@@ -942,7 +1084,7 @@
     const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم', decantOut: 'تفريغ / فك', decantIn: 'وارد من تقسيم / فك' };
     const rows = J().inventory.movements.filter((m) => m.productId === p.id).map((m) => {
       let ref = '';
-      if (m.src.type === 'shipment') ref = 'شحنة ' + ((DB.find('shipments', m.src.id) || {}).ref || '');
+      if (m.src.type === 'shipment') { const x = DB.find('shipments', m.src.id) || {}; ref = (x.local ? 'شراء محلي ' : 'شحنة ') + (x.ref || ''); }
       else if (m.src.type === 'sale') { const x = DB.find('sales', m.src.id) || {}; ref = `${isPromo(x) ? 'فاتورة دعاية' : 'فاتورة'} ${invoiceNo(x)}`; }
       else if (m.src.type === 'decant') { const d = DB.find('decants', m.src.id) || {}; ref = `${d.kind === 'unbox' ? 'فك بوكس' : 'تقسيم عبوة'} ${productLabel(productById(d.sourceProductId))}`; }
       else ref = Acc.ADJ_REASONS[(DB.find('adjustments', m.src.id) || {}).reason] || 'تسوية';
@@ -973,7 +1115,7 @@
     return `${header('الموردين', 'رصيد كل مورد يُتابع بعملته (ريال / درهم)، وفروق سعر الصرف بين وقت الشراء ووقت الدفع تُسجَّل تلقائيًا كربح أو خسارة.', '<button class="btn" data-action="newPayment">دفعة لمورد</button><button class="btn btn-primary" data-action="newSupplier">+ مورد جديد</button>')}
       ${table(['المورد', 'الدولة', 'العملة', 'الهاتف', '#الرصيد بالعملة', '#الرصيد الدفتري (ج.م)', 'الحالة', ''], rows, { empty: 'لا يوجد موردون بعد' })}
       <h2 class="section-title">الدفعات للموردين</h2>
-      ${table(['التاريخ', 'المورد', '#المبلغ', '#سعر الصرف', '#بالجنيه', '#عمولة التحويل', 'من حساب', '#فرق العملة', 'ملاحظات', ''], pays, { empty: 'لا توجد دفعات' })}`;
+      ${table(['التاريخ', 'المورد', '#المبلغ', '#سعر الصرف', '#بالجنيه', '#عمولة التحويل', 'من حساب', '#فرق العملة', 'ملاحظات', ''], pays, { desc: true, empty: 'لا توجد دفعات' })}`;
   }
 
   function supplierForm(x) {
@@ -1025,7 +1167,8 @@
   function supplierStatement(x) {
     const lines = J().suppliers.lines.filter((l) => l.supplierId === x.id);
     const rows = lines.map((l) => {
-      const doc = l.ref.type === 'shipment' ? `شحنة ${esc((DB.find('shipments', l.ref.id) || {}).ref || '')}` : `دفعة ${esc((DB.find('supplierPayments', l.ref.id) || {}).notes || '')}`;
+      const shOf = (id) => DB.find('shipments', id) || {};
+      const doc = l.ref.type === 'shipment' ? `${shOf(l.ref.id).local ? 'شراء محلي' : 'شحنة'} ${esc(shOf(l.ref.id).ref || '')}` : l.ref.type === 'localPay' ? `دفع شراء محلي ${esc(shOf(l.ref.id).ref || '')} — ${esc(Acc.LOCAL_PAY[shOf(l.ref.id).payMode] || '')}` : `دفعة ${esc((DB.find('supplierPayments', l.ref.id) || {}).notes || '')}`;
       return `<tr>${td(fmtDate(l.date))}${td(doc)}${tdn(l.foreign > 0 ? fmt(l.foreign) : '')}${tdn(l.foreign < 0 ? fmt(-l.foreign) : '')}${tdn(fmt(l.rate, 4))}${tdn(l.fx ? `<span class="${l.fx > 0 ? 'bad-text' : 'good-text'}">${fmt(l.fx)}</span>` : '—')}${tdn(fmt(l.balanceForeign))}${tdn(fmt(l.balanceEGP))}</tr>`;
     });
     UI.modal({ title: `كشف حساب — ${esc(x.name)}`, wide: true, tools: { title: `كشف حساب المورد — ${x.name}`, subtitle: `العملة: ${x.currency}`, file: `supplier-statement` },
@@ -1101,7 +1244,7 @@
       })}
       ${cashCountSection()}
       <h2 class="section-title">التحويلات والتحصيلات ورأس المال</h2>
-      ${table(['التاريخ', 'النوع', 'البيان', '#المبلغ', 'ملاحظات', ''], docs.map((d) => `<tr>${td(fmtDate(d.date))}${td(d.kind)}${td(esc(d.desc))}${tdn(fmt(Math.abs(d.amount)))}${td(esc(d.extra))}${actions(btn('تعديل', 'editDoc', `${d.list}:${d.id}`), btn('حذف', 'delDoc', `${d.list}:${d.id}`, 'danger'))}</tr>`), { empty: 'لا توجد مستندات في هذه الفترة' })}`;
+      ${table(['التاريخ', 'النوع', 'البيان', '#المبلغ', 'ملاحظات', ''], docs.map((d) => `<tr>${td(fmtDate(d.date))}${td(d.kind)}${td(esc(d.desc))}${tdn(fmt(Math.abs(d.amount)))}${td(esc(d.extra))}${actions(btn('تعديل', 'editDoc', `${d.list}:${d.id}`), btn('حذف', 'delDoc', `${d.list}:${d.id}`, 'danger'))}</tr>`), { desc: true, empty: 'لا توجد مستندات في هذه الفترة' })}`;
   }
 
   // ---------- جرد الخزينة ----------
@@ -1109,7 +1252,7 @@
     const s = S(), j = J();
     const list = [...s.cashCounts].sort((a, b) => (a.date < b.date ? 1 : -1));
     if (!list.length) return `<section class="panel count-hint"><h2 class="section-title">جرد الخزينة</h2><p class="muted">مرة في الشهر افتح البنك وفودافون كاش وعدّ الكاش، واكتب الرصيد الحقيقي. السيستم بيقارنه بالرصيد اللي عنده، ولو فيه فرق بيسجله زيادة أو عجز عشان الأرصدة تفضل مظبوطة.</p><button class="btn btn-primary btn-small" data-action="newCashCount" data-id="${treasuryAcc || ''}">أول جرد</button></section>`;
-    return `<h2 class="section-title">جرد الخزينة</h2>${table(['التاريخ', 'الحساب', '#رصيد السيستم', '#الرصيد الحقيقي', '#الفرق', 'ملاحظات', ''], list.map((k) => { const r = j.cashCounts[k.id] || { book: 0, diff: 0 }; return `<tr>${td(fmtDate(k.date))}${td(esc(nameOf('accounts', k.accountId)))}${tdn(fmt(r.book))}${tdn(fmt(k.actual))}${tdn(Math.abs(r.diff) < 0.005 ? UI.pill('مظبوط', 'good') : UI.pill(`${r.diff > 0 ? 'زيادة' : 'عجز'} ${fmt(Math.abs(r.diff))}`, r.diff > 0 ? 'info' : 'bad'))}${td(esc(k.notes || ''))}${actions(btn('تعديل', 'editCashCount', k.id), btn('حذف', 'delCashCount', k.id, 'danger'))}</tr>`; }))}`;
+    return `<h2 class="section-title">جرد الخزينة</h2>${table(['التاريخ', 'الحساب', '#رصيد السيستم', '#الرصيد الحقيقي', '#الفرق', 'ملاحظات', ''], list.map((k) => { const r = j.cashCounts[k.id] || { book: 0, diff: 0 }; return `<tr>${td(fmtDate(k.date))}${td(esc(nameOf('accounts', k.accountId)))}${tdn(fmt(r.book))}${tdn(fmt(k.actual))}${tdn(Math.abs(r.diff) < 0.005 ? UI.pill('مظبوط', 'good') : UI.pill(`${r.diff > 0 ? 'زيادة' : 'عجز'} ${fmt(Math.abs(r.diff))}`, r.diff > 0 ? 'info' : 'bad'))}${td(esc(k.notes || ''))}${actions(btn('تعديل', 'editCashCount', k.id), btn('حذف', 'delCashCount', k.id, 'danger'))}</tr>`; }), { desc: true })}`;
   }
   function cashCountForm(k, accountId) {
     const s = S(); const isNew = !k;
@@ -1185,25 +1328,44 @@
   // =====================================================================
   // المصروفات
   // =====================================================================
+  // كل المصروفات: اللي بتسجلها بإيدك + اللي بتتسجل لوحدها من الفواتير والشحنات والتحويلات والجرد… (من دفتر اليومية)
+  const expFilter = { src: '', acc: '' };
+  const SRC_GROUPS = { expense: 'سجلتها بإيدك', sale: 'من الفواتير والمرتجعات', stock: 'من الشحنات والمخزون', money: 'من الخزينة والموردين' };
+  const srcGroup = (src) => (src === 'expense' ? 'expense' : src === 'sale' || src === 'saleReturn' ? 'sale' : ['shipment', 'adjustment', 'decant'].includes(src) ? 'stock' : 'money');
   function expenses() {
     const s = S();
-    const list = s.expenses.filter((e) => inPeriod(e.date)).sort((a, b) => (a.date < b.date ? 1 : -1));
-    const byCat = {};
-    list.forEach((e) => (byCat[e.category] = (byCat[e.category] || 0) + num(e.amount)));
-    const total = list.reduce((a, e) => a + num(e.amount), 0);
-    const max = Math.max(1, ...Object.values(byCat));
+    const all = Acc.allExpenses(s, J(), period.from, period.to);
+    const opex = all.filter((r) => r.kind === 'opex'), disc = all.filter((r) => r.kind === 'discount'), other = all.filter((r) => r.kind === 'other');
+    const sum = (rows) => Acc.round2(rows.reduce((t, r) => t + r.amount, 0));
+    const byName = {}, accOfName = {};
+    all.forEach((r) => { byName[r.name] = (byName[r.name] || 0) + r.amount; accOfName[r.name] = r.acc; });
+    const max = Math.max(1, ...Object.values(byName));
+    const list = all.filter((r) => (!expFilter.src || srcGroup(r.source) === expFilter.src) && (!expFilter.acc || r.acc === expFilter.acc));
+    const accOpts = [{ v: '', l: 'كل البنود' }, ...[...new Map(all.map((r) => [r.acc, r.name])).entries()].map(([v, l]) => ({ v, l }))];
+    const rowActions = (r) => r.source === 'expense' && r.ref && r.ref.type === 'expense' ? actions(btn('تعديل', 'editExpense', r.ref.id), btn('حذف', 'delExpense', r.ref.id, 'danger'))
+      : (r.source === 'sale' || r.source === 'saleReturn') && r.ref ? actions(btn('عرض الفاتورة', 'viewSale', r.ref.id)) : actions();
+    const acctOf = (r) => (r.source === 'expense' && r.ref ? paidFromName(DB.find('expenses', r.ref.id) || {}) : '');
     const due = OPS.dueRecurring(s, today());
     const rec = s.recurring.map((r) => { const last = s.expenses.filter((e) => e.recurringId === r.id).map((e) => e.period).sort().pop(); return `<tr>${td(esc((Acc.COA_MAP[r.category] || {}).name || r.category))}${td(esc(r.notes || ''))}${tdn(fmt(r.amount))}${td(esc(nameOf('accounts', r.accountId)))}${tdn('يوم ' + r.day)}${td(last ? monthLong(last) : '—')}${td(r.active === false ? UI.pill('متوقف', 'mute') : UI.pill('شغال', 'good'))}${actions(btn('تعديل', 'editRecurring', r.id), btn('حذف', 'delRecurring', r.id, 'danger'))}</tr>`; });
-    return `${header('المصروفات', 'الإعلانات والتغليف والرواتب وغيرها. مصاريف شحن الطلبات تُسجل تلقائيًا من الطلب نفسه.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
+    return `${header('المصروفات', 'كل المصروفات في مكان واحد: اللي بتسجلها بإيدك، واللي السيستم بيسجلها لوحده من الفواتير (الشحن، العينات، فواتير الدعاية، عمولات الدفع، الخصم) والشحنات والتحويلات والجرد.', `${periodBar()}<button class="btn" data-action="newFormation">+ مصروف تأسيس</button><button class="btn" data-action="newRecurring">+ مصروف ثابت شهري</button><button class="btn btn-primary" data-action="newExpense">+ مصروف</button>`)}
       ${due.length ? `<section class="panel due-panel"><h2 class="section-title">مصروفات ثابتة مستحقة (${due.length}) <button class="btn btn-small btn-primary" data-action="postAllRecurring">تسجيل الكل</button></h2><ul class="list">${due.map((d, i) => `<li><span>${esc((Acc.COA_MAP[d.category] || {}).name || '')} — ${esc(d.notes)} · ${monthLong(d.period)}</span><b>${fmt(d.amount)} ج.م</b><button class="link-btn" data-action="postRecurring" data-id="${i}">تسجيل</button></li>`).join('')}</ul></section>` : ''}
+      <section class="kpis">
+        ${kpi('المصروفات التشغيلية', money(sum(opex)), 'زي اللي في قائمة الدخل بالظبط')}
+        ${kpi('منها اتسجلت لوحدها', money(sum(opex.filter((r) => r.source !== 'expense'))), 'شحن، عينات، دعاية، عمولات…')}
+        ${kpi('خصومات الفواتير', money(sum(disc)), 'بتقلل الإيراد في قائمة الدخل')}
+        ${other.length ? kpi('خسائر فروق العملة', money(sum(other))) : ''}
+      </section>
       <section class="grid-2 exp-top">
-        <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(total)}</span></h2>
-          ${Object.keys(byCat).length ? `<ul class="hbars">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<li><span>${esc(Acc.COA_MAP[c] ? Acc.COA_MAP[c].name : c)}</span><div class="hbar"><i style="width:${(v / max) * 100}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
+        <div class="panel"><h2 class="section-title">حسب البند <span class="muted">— الإجمالي ${money(sum(all))}</span></h2>
+          ${Object.keys(byName).length ? `<ul class="hbars">${Object.entries(byName).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<li><span><button type="button" class="link-btn" data-action="openStatement" data-id="acc:${accOfName[n]}" title="كشف حساب البند">${esc(n)}</button></span><div class="hbar"><i style="width:${Math.max(0, (v / max) * 100)}%"></i></div><b>${fmt(v)}</b></li>`).join('')}</ul>` : UI.empty('لا مصروفات في هذه الفترة')}
         </div>
       </section>
       ${formationSection()}
       ${s.recurring.length ? `<h2 class="section-title">المصروفات الثابتة الشهرية</h2>${table(['البند', 'البيان', '#المبلغ', 'من حساب', '#الميعاد', 'آخر تسجيل', 'الحالة', ''], rec)}` : ''}
-      ${table(['التاريخ', 'البند', 'البيان', 'من حساب', '#المبلغ', ''], list.map((e) => `<tr>${td(fmtDate(e.date))}${td(esc((Acc.COA_MAP[e.category] || {}).name || e.category))}${td(`${esc(e.notes || '')}${e.campaignId ? ' ' + UI.pill(nameOf('campaigns', e.campaignId), 'info') : ''}`)}${td(esc(nameOf('accounts', e.accountId)))}${tdn(fmt(e.amount))}${actions(btn('تعديل', 'editExpense', e.id), btn('حذف', 'delExpense', e.id, 'danger'))}</tr>`), { empty: 'لا توجد مصروفات في هذه الفترة' })}`;
+      <h2 class="section-title">كل المصروفات <span class="muted">— ${list.length} بند</span></h2>
+      <div class="filters">${UI.select('expSrc', [{ v: '', l: 'كل المصادر' }, ...Object.entries(SRC_GROUPS).map(([v, l]) => ({ v, l }))], expFilter.src, 'data-change="expSrc" aria-label="المصدر"')}${UI.select('expAcc', accOpts, expFilter.acc, 'data-change="expAcc" aria-label="البند"')}</div>
+      ${table(['التاريخ', 'البند', 'البيان', 'المصدر', 'من حساب', '#المبلغ', ''], list.map((r) => `<tr class="${r.source === 'expense' ? '' : 'auto-row'}">${td(fmtDate(r.date))}${td(`${esc(r.name)}${r.kind === 'discount' ? ' ' + UI.pill('بيقلل الإيراد', 'info') : ''}`)}${td(esc(r.desc))}${td(r.source === 'expense' ? UI.pill('يدوي', 'good') : `<small class="muted">${esc(Acc.EXPENSE_SOURCES[r.source] || 'تلقائي')}</small>`)}${td(esc(acctOf(r)))}${tdn(r.amount < 0 ? `<span class="good-text">${fmt(r.amount)}</span>` : fmt(r.amount))}${rowActions(r)}</tr>`), { desc: true, empty: 'لا توجد مصروفات في هذه الفترة', foot: list.length ? `<tr><td colspan="5">الإجمالي</td>${tdn(`<b>${fmt(sum(list))}</b>`)}<td></td></tr>` : '' })}
+      <p class="muted">البنود اللي مصدرها «من فاتورة» أو «من شحنة» بتتعدل من المستند نفسه. المبلغ بالسالب معناه استرداد (زي عمولة اترجعت مع مرتجع). تكلفة البضاعة المباعة مش هنا، هي في قائمة الدخل تحت «تكلفة البضاعة».</p>`;
   }
   // ---------- التأسيس ورأس المال ----------
   // مصروفات قبل بداية الشغل الفعلي: بتتحسب رأس مال تأسيس ومش بتدخل في أرباح وخسائر أي فترة
@@ -1226,7 +1388,7 @@
           <li class="cap-total"><span>الإجمالي</span><b>${fmt(fc.total)} ج.م</b></li></ul>
           ${fc.formationFromCash ? `<p class="muted">ومنهم ${fmt(fc.formationFromCash)} ج.م مصروفات تأسيس اتدفعت من حسابات النشاط (مش فلوس جديدة).</p>` : ''}</div>
       </div>
-      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
+      ${rows.length ? table(['التاريخ', 'البند', 'البيان', 'اتدفع', '#المبلغ', ''], rows, { desc: true, foot: `<tr><td colspan="4">إجمالي مصروفات التأسيس</td>${tdn(fmt(fc.formationTotal) + ' ج.م')}<td></td></tr>` }) : ''}
     </section>`;
   }
   function formationForm(x) {
@@ -1272,10 +1434,11 @@
     const s = S(); const isNew = !e;
     e = e || { id: uid(), date: today(), category: '5300', amount: '', accountId: (s.accounts[0] || {}).id, notes: '', campaignId: '' };
     UI.modal({ title: isNew ? 'مصروف جديد' : 'تعديل المصروف',
-      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', accountOptions(), e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
+      body: `<div class="form-grid">${UI.field('التاريخ', UI.input('date', e.date, 'type="date" required'), { req: true })}${UI.field('البند', UI.select('category', Acc.EXPENSE_CATEGORIES.map((c) => ({ v: c, l: Acc.COA_MAP[c].name })), e.category))}${UI.field('المبلغ', UI.input('amount', e.amount, 'type="number" min="0" step="0.01" required'), { req: true })}${UI.field('دُفع من', UI.select('accountId', payFromOptions(), e.courierId ? 'courier:' + e.courierId : e.accountId))}${UI.field('الحملة الإعلانية', UI.select('campaignId', campaignOptions('غير مرتبط بحملة'), e.campaignId || ''), { cls: 'camp-field', hint: 'يدخل في إنفاق الحملة وحساب العائد' })}${UI.field('البيان', UI.input('notes', e.notes, 'placeholder="إعلانات ميتا، علب، مرتب…"'), { cls: 'span-2' })}</div>`,
       onOpen(f) { const t = () => { f.querySelector('.camp-field').hidden = f.category.value !== '5300'; }; f.category.addEventListener('change', t); t(); },
       onSubmit(f, fd) {
-        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: fd.get('accountId'), campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
+        const from = String(fd.get('accountId') || '');
+        const obj = { ...e, date: fd.get('date'), category: fd.get('category'), amount: num(fd.get('amount')), accountId: from.startsWith('courier:') ? '' : from, courierId: from.startsWith('courier:') ? from.slice(8) : '', campaignId: fd.get('category') === '5300' ? fd.get('campaignId') : '', notes: fd.get('notes') };
         if (!(obj.amount > 0)) return fail('المبلغ لازم يكون أكبر من صفر');
         if (!dateOk(obj.date) || !cashOk(f, RULES.withDoc(S(), 'expenses', obj))) return false;
         DB.upsert('expenses', obj); UI.toast('تم حفظ المصروف'); render();
@@ -1285,7 +1448,7 @@
   // =====================================================================
   // التقارير
   // =====================================================================
-  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
+  const REPORTS = { income: 'قائمة الدخل', balance: 'الميزانية', cashflow: 'التدفقات النقدية', equity: 'التغير في حقوق الملكية', trial: 'ميزان المراجعة', journal: 'دفتر اليومية', ledger: 'دفتر الأستاذ', productsPerf: 'ربحية المنتجات', channels: 'أداء القنوات', returns: 'تحليل المرتجع' };
   let report = 'income', ledgerAcc = '1300';
   function reports() {
     const tabs = `<nav class="tabs" role="tablist">${Object.entries(REPORTS).map(([k, l]) => `<button role="tab" aria-selected="${k === report}" class="tab ${k === report ? 'active' : ''}" data-action="pickReport" data-id="${k}">${l}</button>`).join('')}</nav>`;
@@ -1300,7 +1463,7 @@
         <div class="table-wrap"><table class="fin"><tbody>
         ${line('إجمالي المبيعات', r.grossSales)}${line('(-) خصومات', -r.discounts, 'sub')}${line('(-) مردودات', -r.returns, 'sub')}${line('(+) إيراد الشحن من العملاء', r.shippingIncome, 'sub')}
         ${line('صافي المبيعات', r.netSales, 'total')}${line('(-) تكلفة البضاعة المباعة', -r.cogs)}${line(`مجمل الربح <small>(${pct(r.grossMargin)})</small>`, r.grossProfit, 'total')}
-        <tr class="head"><td colspan="2">المصروفات التشغيلية</td></tr>${r.opex.map((o) => line(o.name, -o.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">لا يوجد</td></tr>'}
+        <tr class="head"><td colspan="2">المصروفات التشغيلية</td></tr>${r.opex.map((o) => line(`<button type="button" class="link-btn" data-action="openStatement" data-id="acc:${o.code}" title="كشف حساب البند">${esc(o.name)}</button>`, -o.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">لا يوجد</td></tr>'}
         ${line('إجمالي المصروفات التشغيلية', -r.totalOpex)}${line('ربح التشغيل', r.operatingProfit, 'total')}
         ${r.fxGain ? line('(+) أرباح فروق العملة', r.fxGain, 'sub') : ''}${r.fxLoss ? line('(-) خسائر فروق العملة', -r.fxLoss, 'sub') : ''}${r.otherIncome ? line('(+) إيرادات أخرى', r.otherIncome, 'sub') : ''}
         ${line(`صافي الربح <small>(${pct(r.netMargin)})</small>`, r.netProfit, 'grand' + (r.netProfit < 0 ? ' neg' : ''))}
@@ -1312,6 +1475,39 @@
       return `<div class="statement"><h2>الميزانية العمومية <small class="muted">في ${fmtDate(to)}</small> ${b.balanced ? UI.pill('متوازنة', 'good') : UI.pill('غير متوازنة', 'bad')}</h2>
         <div class="grid-2">${block('الأصول', b.assets, b.totalAssets)}<div>${block('الالتزامات', b.liabilities, b.totalLiabilities)}${block('حقوق الملكية', b.equity, b.totalEquity)}
         <div class="table-wrap"><table class="fin"><tbody>${line('إجمالي الالتزامات وحقوق الملكية', b.totalLiabilities + b.totalEquity, 'grand')}</tbody></table></div></div></div></div>`;
+    }
+    if (report === 'cashflow') {
+      const cf = Acc.cashFlow(s, j, period.from, period.to);
+      const real = Acc.round2(Acc.cashBalances(s, j, to).reduce((t, a) => t + a.balance, 0));
+      const ok = Math.abs(real - cf.end) < 0.01;
+      const short = { operating: 'التشغيل', goods: 'البضاعة والتأسيس', financing: 'التمويل' };
+      return `<div class="statement"><h2>قائمة التدفقات النقدية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة لرصيد الخزينة', 'good') : UI.pill('مش مطابقة للخزينة', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('رصيد الفلوس أول الفترة', cf.start, 'total')}
+        ${cf.sections.map((x) => `<tr class="head"><td colspan="2">${x.title}</td></tr>${x.rows.map((r) => line(`${esc(r.label)} <small class="muted">(${r.count})</small>`, r.amount, 'sub')).join('') || '<tr class="sub"><td colspan="2">مفيش حركة</td></tr>'}${line(`صافي ${short[x.key]}`, x.total, 'total')}`).join('')}
+        ${line('صافي التغير في الفلوس', cf.net, 'total')}
+        <tr class="grand ${cf.end < 0 ? 'neg' : ''}"><td>رصيد الفلوس آخر الفترة</td>${tdn(fmt(cf.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">الفلوس هنا = الخزينة والبنوك والمحافظ. فلوس طلبات الدفع عند الاستلام بتظهر لما شركة الشحن تحولها («تحصيل من شركات الشحن»)، مش يوم البيع — وده الفرق بين الربح والفلوس اللي في إيدك. الرقم بين القوسين عدد المستندات.${ok ? '' : ` رصيد الخزينة الفعلي ${fmt(real)}.`}</p></div>`;
+    }
+    if (report === 'equity') {
+      const q = Acc.equityChanges(s, j, period.from, period.to || to);
+      const bs = Acc.balanceSheet(s, j, to);
+      const ok = Math.abs(bs.totalEquity - q.end) < 0.01;
+      const part = (label, v) => (Math.abs(v) >= 0.005 ? line(label, v, 'sub') : '');
+      return `<div class="statement"><h2>قائمة التغير في حقوق الملكية <small class="muted">${period.from ? fmtDate(period.from) + ' — ' + fmtDate(period.to) : 'كل الفترات'}</small> ${ok ? UI.pill('مطابقة للميزانية', 'good') : UI.pill('مش مطابقة للميزانية', 'bad')}</h2>
+        <div class="table-wrap"><table class="fin"><tbody>
+        ${line('حقوق الملكية أول الفترة', q.start, 'total')}
+        <tr class="head"><td colspan="2">(+) رأس مال اتضاف</td></tr>
+        ${part('أرصدة افتتاحية (فلوس أول المدة)', q.added.opening)}${part('بضاعة أول المدة', q.added.stock)}${part('مصروفات تأسيس من الجيب', q.added.formation)}${part('إضافات رأس مال', q.added.capital)}
+        ${line('إجمالي رأس المال اللي اتضاف', q.added.total, 'total')}
+        ${line(q.profit >= 0 ? '(+) صافي ربح الفترة' : '(−) صافي خسارة الفترة', q.profit, 'total')}
+        <tr class="head"><td colspan="2">(−) المسحوبات</td></tr>
+        ${part('مسحوبات شخصية', -q.withdrawn.personal)}${part('مسحوبات الشركاء من حسابهم الجاري', -q.withdrawn.partners)}
+        ${line('إجمالي المسحوبات', -q.withdrawn.total, 'total')}
+        <tr class="grand ${q.end < 0 ? 'neg' : ''}"><td>حقوق الملكية آخر الفترة</td>${tdn(fmt(q.end))}</tr>
+        </tbody></table></div>
+        <p class="muted">حقوق الملكية = اللي حطيته في النشاط + الأرباح اللي اتراكمت − اللي سحبته. آخر الفترة هنا لازم يساوي «إجمالي حقوق الملكية» في الميزانية. توزيع الأرباح على الشركاء مش بيغيّر الإجمالي (بينقل الربح لحسابهم الجاري)، والسحب منه هو اللي بيقلله.</p></div>`;
     }
     if (report === 'trial') {
       const t = Acc.trialBalance(s, j, to);
@@ -1443,6 +1639,7 @@
         <p class="muted">النسخة الاحتياطية ملف JSON فيه كل بياناتك. احفظه على جهازك أو Google Drive أسبوعيًا على الأقل.</p>
         <div class="btn-row">
           <button class="btn btn-primary" data-action="exportBackup">تصدير نسخة احتياطية</button>
+          <button class="btn" data-action="exportAll">تصدير كل البيانات Excel</button>
           <label class="btn file-btn">استيراد من ملف<input type="file" id="f-import" accept=".json,application/json" data-change="importFile" hidden></label>
           <button class="btn" data-action="pasteBackup">استيراد بلصق النص</button>
         </div>
@@ -1566,7 +1763,7 @@
     const who = (u) => (u === 'local' ? 'الجهاز ده' : u === CLOUD.uid ? 'إنت' : nm[u] || 'عضو');
     const rows = list.slice(0, 400).map((e) => `<tr>${td(`${fmtDate(String(e.at).slice(0, 10))} <small class="muted">${esc(new Date(e.at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: 'numeric', minute: '2-digit' }))}</small>`)}${td(esc(who(e.uid)))}${td(UI.pill(ACTION_LABEL[e.action] || e.action, e.action === 'delete' || e.action === 'denied' ? 'bad' : e.action === 'add' ? 'good' : 'info'))}${td(esc(e.label))}</tr>`);
     return `${header('سجل التعديلات', CLOUD.mode === 'cloud' ? 'آخر 14 يوم — مين أضاف أو عدّل أو حذف إيه.' : 'آخر 500 تعديل على الجهاز ده.')}
-      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { empty: 'مفيش تعديلات مسجلة لسه' })}`;
+      ${table(['الوقت', 'مين', 'العملية', 'على إيه'], rows, { desc: true, empty: 'مفيش تعديلات مسجلة لسه' })}`;
   }
   // قسم السحابة والفريق في الإعدادات
   // ---------- حماية بالباسورد ----------
@@ -1809,7 +2006,7 @@
   }
 
   // =====================================================================
-  // تسوية كشف حساب شركة الشحن
+  // تسوية شركات الشحن (يدوي)
   // =====================================================================
   let reconCourier = null;
   function reconcilePage() {
@@ -1823,115 +2020,119 @@
     }).join('');
     const pend = (un[reconCourier] || { sales: [] }).sales.map((id) => DB.find('sales', id)).sort((a, b) => (a.date < b.date ? -1 : 1));
     const hist = [...s.reconciliations].sort((a, b) => (a.date < b.date ? 1 : -1)).map((r) => `<tr>${td(fmtDate(r.date))}${td(esc(nameOf('couriers', r.courierId)))}${td(esc(r.fileName || ''))}${tdn(r.lines.length)}${tdn(fmt(r.net))}${td(r.settlementId && DB.find('settlements', r.settlementId) ? UI.pill('تم تسجيل التحصيل', 'good') : UI.pill('بدون تحصيل', 'mute'))}${actions(btn('التفاصيل', 'viewReconciliation', r.id), btn('حذف', 'delReconciliation', r.id, 'danger'))}</tr>`);
-    return `${header('تسوية شركات الشحن', 'ارفع كشف الحساب اللي بتبعته شركة الشحن (Excel أو CSV)، والنظام يطابقه مع طلباتك برقم البوليصة أو رقم الفاتورة ويطلعلك الفروق.', '<button class="btn" data-action="statementTemplate">نموذج كشف</button><button class="btn btn-primary" data-action="uploadStatement">رفع كشف حساب</button>')}
+    return `${header('تسوية شركات الشحن', 'لما شركة الشحن تحوّلك فلوس: اختار الطلبات اللي اتحاسبت عليها واكتب المبلغ اللي وصلك فعلًا، والنظام يسجل التحصيل ويقفل الطلبات دي.', `<button class="btn btn-primary" data-action="manualReconcile" data-id="${reconCourier || ''}">تسوية يدوية</button>`)}
       <section class="acc-cards">${cards || UI.empty('أضف شركة شحن من الإعدادات')}</section>
-      <h2 class="section-title">طلبات اتسلمت مع ${esc(nameOf('couriers', reconCourier))} ولسه ما دخلتش في أي كشف</h2>
+      <h2 class="section-title">طلبات اتسلمت مع ${esc(nameOf('couriers', reconCourier))} ولسه ما اتسوّتش</h2>
       ${table(['الفاتورة', 'التاريخ', 'البوليصة', 'العميل', 'الحالة', '#المحصل المتوقع', '#مصاريف الشحن', '#الصافي المتوقع', '#من كام يوم'], pend.map((x) => { const e = OPS.expectedFor(x); const age = OPS.daysBetween(x.date, today()); return `<tr>${td(`<button class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>`)}${td(fmtDate(x.date))}${td(esc(x.trackingNo || '—'), 'mono')}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}${tdn(`<span class="${age >= S().settings.alerts.settleDays ? 'bad-text' : ''}">${age}</span>`)}</tr>`; }), { empty: 'كل الطلبات المسلّمة اتسوّت 👌' })}
-      <h2 class="section-title">الكشوف اللي اتسوّت</h2>
-      ${table(['التاريخ', 'شركة الشحن', 'الملف', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { empty: 'لم ترفع أي كشف بعد' })}`;
+      <h2 class="section-title">التسويات اللي اتعملت</h2>
+      ${table(['التاريخ', 'شركة الشحن', 'البيان', '#عدد الطلبات', '#الصافي', 'التحصيل', ''], hist, { desc: true, empty: 'لسه ما عملتش أي تسوية' })}`;
   }
-  function pickStatementFile() {
-    if (!S().couriers.length) { UI.toast('أضف شركة شحن من الإعدادات', 'bad'); return; }
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.xlsx,.csv,.txt'; input.hidden = true;
-    input.addEventListener('change', async () => {
-      const file = input.files[0]; input.remove();
-      if (!file) return;
-      try {
-        const parsed = OPS.parseStatement(await IMP.readWorkbook(file));
-        if (!parsed || !parsed.rows.length) { UI.toast('مش لاقي عمود «رقم البوليصة» أو «رقم الطلب» ومعاه «المبلغ المحصل» أو «مصاريف الشحن» في الملف', 'bad'); return; }
-        reconcilePreview(file.name, parsed);
-      } catch (err) { UI.toast(err.message || 'تعذرت قراءة الملف', 'bad'); }
-    });
-    document.body.appendChild(input);
-    input.click();
-  }
-  function reconcilePreview(fileName, parsed) {
+  // تسوية يدوية: تختار الطلبات اللي شركة الشحن حاسبتك عليها وتكتب المبلغ اللي وصلك فعلًا
+  function manualReconcile(courierId) {
     const s = S();
-    const opts = { courierId: reconCourier || s.couriers[0].id, updateFees: true, updateStatus: true, settle: true, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), amount: null };
-    let res;
-    const run = () => { res = OPS.reconcile(S(), opts.courierId, parsed.rows, S().settings.invoicePrefix); if (opts.amount == null) opts.amount = res.totals.statementNet; };
-    run();
-    const saleCell = (id) => { const x = DB.find('sales', id); return x ? `<button type="button" class="link-btn strong" data-action="viewSale" data-id="${x.id}">${esc(invoiceNo(x))}</button>` : '—'; };
+    if (!s.couriers.length) { UI.toast('أضف شركة شحن من الإعدادات', 'bad'); return; }
+    const opts = { courierId: courierId || reconCourier || s.couriers[0].id, accountId: (s.accounts.find((a) => a.type === 'bank') || s.accounts[0] || {}).id, date: today(), settle: true, amount: null, notes: '' };
+    let picked = new Set();
+    const pending = () => ((OPS.unsettledByCourier(S(), today())[opts.courierId] || { sales: [] }).sales).map((id) => DB.find('sales', id)).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const reset = () => { picked = new Set(pending().map((x) => x.id)); opts.amount = null; };
+    reset();
+    const expected = () => Acc.round2(pending().filter((x) => picked.has(x.id)).reduce((t, x) => t + OPS.expectedFor(x).net, 0));
+    const rows = () => pending().map((x) => { const e = OPS.expectedFor(x); return `<tr>${td(`<input type="checkbox" class="mr-pick" value="${x.id}" ${picked.has(x.id) ? 'checked' : ''} aria-label="اختيار ${esc(invoiceNo(x))}">`)}${td(esc(invoiceNo(x)))}${td(fmtDate(x.date))}${td(esc(nameOf('customers', x.customerId)))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(e.cod))}${tdn(fmt(e.fee))}${tdn(fmt(e.net))}</tr>`; });
     const view = () => {
-      const t = res.totals;
-      const bad = res.matched.filter((m) => m.issues.length), ok = res.matched.filter((m) => !m.issues.length);
-      const mrow = (m) => `<tr class="${m.issues.length ? 'row-warn' : ''}">${td(esc(m.ref), 'mono')}${td(saleCell(m.saleId))}${td(esc(m.status || '—'))}${tdn(fmt(m.cod))}${tdn(fmt(m.expected.cod))}${tdn(fmt(m.fee))}${tdn(fmt(m.expected.fee))}${td((m.issues.map((i) => `<span class="bad-text">${esc(i)}</span>`).join('<br>') || UI.pill('مطابق', 'good')) + (m.matchedBy === 'phone' ? `<br><span class="muted">اتعرف عليه بتليفون العميل</span>` : ''))}</tr>`;
-      const head = ['البوليصة / الرقم', 'الفاتورة', 'الحالة في الكشف', '#المحصل', '#المتوقع', '#مصاريف الكشف', '#مصاريفنا', 'الملاحظة'];
-      return `
-        <p class="muted">الملف: <b>${esc(fileName)}</b> — ورقة «${esc(parsed.sheet)}» — ${parsed.rows.length} سطر</p>
-        <div class="form-grid">${UI.field('شركة الشحن', UI.select('rcCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-rc="courierId"'))}</div>
+      const list = pending();
+      const amt = opts.amount == null ? expected() : opts.amount;
+      const diff = Acc.round2(num(amt) - expected());
+      return `<div class="form-grid">${UI.field('شركة الشحن', UI.select('mrCourier', s.couriers.map((c) => ({ v: c.id, l: c.name })), opts.courierId, 'data-mr="courierId"'))}</div>
+        ${list.length ? `<p class="muted">علّم على الطلبات اللي شركة الشحن حاسبتك عليها في التحويل ده (اتسلمت أو رجعت).</p>
+          <label class="check"><input type="checkbox" class="mr-all" ${picked.size === list.length ? 'checked' : ''}> اختار الكل (${list.length})</label>
+          <div class="table-wrap"><table class="table"><thead><tr><th></th><th>الفاتورة</th><th>التاريخ</th><th>العميل</th><th>الحالة</th><th class="num">المحصل المتوقع</th><th class="num">مصاريف الشحن</th><th class="num">الصافي المتوقع</th></tr></thead><tbody>${rows().join('')}</tbody></table></div>`
+          : '<p class="good-text"><b>مفيش طلبات مستنية تسوية مع الشركة دي ✔</b> — تقدر تسجل التحصيل بس.</p>'}
         <div class="summary">
-          <div><span>إجمالي المحصل في الكشف</span><b>${fmt(t.statementCod)}</b></div>
-          <div><span>مصاريف الشحن في الكشف</span><b>${fmt(t.statementFee)}</b></div>
-          <div class="strong"><span>صافي الكشف (المفروض يتحول لك)</span><b>${fmt(t.statementNet)} ج.م</b></div>
-          <div><span>الصافي المتوقع حسب طلباتك</span><b>${fmt(t.expectedNet)}</b></div>
-          <div class="${t.codDiff < -0.5 ? 'bad-text' : ''}"><span>فرق التحصيل</span><b>${fmt(t.codDiff)}</b></div>
-          <div class="${t.feeDiff > 0.5 ? 'bad-text' : ''}"><span>فرق المصاريف</span><b>${fmt(t.feeDiff)}</b></div>
+          <div><span>الطلبات المختارة</span><b>${picked.size}</b></div>
+          <div class="strong"><span>الصافي المتوقع حسب طلباتك</span><b>${fmt(expected())} ج.م</b></div>
+          ${opts.settle && Math.abs(diff) >= 0.01 ? `<div class="${diff < 0 ? 'bad-text' : ''}"><span>فرق المبلغ اللي وصلك عن المتوقع</span><b>${fmt(diff)}</b></div>` : ''}
         </div>
-        ${bad.length ? `<h3 class="sub-title bad-text">طلبات فيها فروق (${bad.length})</h3>${table(head, bad.map(mrow))}` : '<p class="good-text"><b>كل الطلبات اللي في الكشف مطابقة ✔</b></p>'}
-        ${res.unmatched.length ? `<h3 class="sub-title bad-text">سطور في الكشف مش لاقي لها طلب (${res.unmatched.length})</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], res.unmatched.map((r) => `<tr>${td(esc(r.ref), 'mono')}${td(esc(r.status || '—'))}${tdn(fmt(r.cod))}${tdn(fmt(r.fee))}</tr>`))}<p class="muted">مش لاقي طلب بنفس رقم البوليصة ولا بنفس تليفون العميل ومبلغه. سجّل رقم البوليصة في الطلب (تعديل الطلب ← رقم البوليصة) وارفع الكشف تاني.</p>` : ''}
-        ${res.missing.length ? `<h3 class="sub-title warn-text">طلبات اتسلمت ومش موجودة في الكشف (${res.missing.length}) — صافي ${fmt(t.missingNet)} ج.م</h3>${table(['الفاتورة', 'التاريخ', 'الحالة', '#الصافي المتوقع'], res.missing.map((m) => { const x = DB.find('sales', m.saleId); return `<tr>${td(saleCell(m.saleId))}${td(fmtDate(m.date))}${td(UI.pill(STATUSES[x.status], statusKind[x.status]))}${tdn(fmt(m.expected.net))}</tr>`; }))}` : ''}
-        ${ok.length ? `<details class="imp-box"><summary>${ok.length} طلب مطابق (اضغط للتفاصيل)</summary>${table(head, ok.map(mrow))}</details>` : ''}
-        ${res.duplicates.length ? `<div class="imp-box warn"><b>${res.duplicates.length} سطر مكرر في الكشف لنفس الطلب — اتحسب مرة واحدة.</b></div>` : ''}
-        <h3 class="sub-title">عند الحفظ</h3>
-        <label class="check"><input type="checkbox" data-rc="updateFees" ${opts.updateFees ? 'checked' : ''}> عدّل مصاريف الشحن والمرتجع في الطلبات حسب الكشف</label>
-        <label class="check"><input type="checkbox" data-rc="updateStatus" ${opts.updateStatus ? 'checked' : ''}> عدّل حالة الطلبات (تم التسليم / مرتجع) حسب الكشف</label>
-        <label class="check"><input type="checkbox" data-rc="settle" ${opts.settle ? 'checked' : ''}> سجّل التحصيل في الخزينة</label>
+        <label class="check"><input type="checkbox" data-mr="settle" ${opts.settle ? 'checked' : ''}> سجّل التحصيل في الخزينة</label>
         <div class="form-grid" ${opts.settle ? '' : 'hidden'}>
-          ${UI.field('المبلغ اللي وصلك فعلًا', UI.input('rcAmount', opts.amount, 'type="number" step="0.01" data-rc="amount"'), { hint: 'صافي التحويل من شركة الشحن' })}
-          ${UI.field('إلى حساب', UI.select('rcAccount', accountOptions(), opts.accountId, 'data-rc="accountId"'))}
-          ${UI.field('تاريخ التحويل', UI.input('rcDate', opts.date, 'type="date" data-rc="date"'))}
+          ${UI.field('المبلغ اللي وصلك فعلًا', UI.input('mrAmount', amt, 'type="number" step="0.01" data-mr="amount"'), { hint: 'صافي التحويل بعد ما شركة الشحن خصمت مصاريفها. رقم سالب لو انت اللي دفعت لهم' })}
+          ${UI.field('إلى حساب', UI.select('mrAccount', accountOptions(), opts.accountId, 'data-mr="accountId"'))}
+          ${UI.field('تاريخ التحويل', UI.input('mrDate', opts.date, 'type="date" data-mr="date"'))}
+          ${UI.field('ملاحظات', UI.input('mrNotes', opts.notes, 'data-mr="notes" placeholder="رقم التحويل، الفرق سببه إيه…"'))}
         </div>`;
     };
-    UI.modal({ title: 'مطابقة كشف شركة الشحن', wide: true, submit: 'حفظ التسوية', body: `<div id="rc-view">${view()}</div>`,
+    UI.modal({ title: 'تسوية يدوية مع شركة الشحن', wide: true, submit: 'حفظ التسوية', body: `<div id="mr-view">${view()}</div>`,
       onOpen(f) {
-        const box = f.querySelector('#rc-view');
+        const box = f.querySelector('#mr-view');
+        const redraw = () => { box.innerHTML = view(); };
         box.addEventListener('change', (e) => {
-          const k = e.target.dataset.rc;
-          if (!k) return;
+          if (e.target.matches('.mr-pick')) { if (e.target.checked) picked.add(e.target.value); else picked.delete(e.target.value); redraw(); return; }
+          if (e.target.matches('.mr-all')) { picked = e.target.checked ? new Set(pending().map((x) => x.id)) : new Set(); redraw(); return; }
+          const k = e.target.dataset.mr; if (!k) return;
+          if (k === 'courierId') { opts.courierId = e.target.value; reset(); redraw(); return; }
           opts[k] = e.target.type === 'checkbox' ? e.target.checked : k === 'amount' ? num(e.target.value) : e.target.value;
-          if (k === 'courierId') { opts.amount = null; run(); }
-          if (k !== 'amount' && k !== 'date' && k !== 'accountId') box.innerHTML = view();
+          if (k === 'settle' || k === 'amount') redraw();
         });
       },
       onSubmit() {
-        const fresh = res.matched.filter((m) => !m.alreadyReconciled);
-        if (!fresh.length && !opts.settle) { UI.toast('مفيش طلبات جديدة في الكشف', 'bad'); return false; }
+        const chosen = pending().filter((x) => picked.has(x.id));
+        const amount = opts.amount == null ? expected() : num(opts.amount);
+        if (!chosen.length && !(opts.settle && amount)) { UI.toast('اختار طلبات أو اكتب المبلغ اللي وصلك', 'bad'); return false; }
         if (!dateOk(opts.date || today(), 'تاريخ التسوية')) return false;
-        let changed = 0;
-        fresh.forEach((m) => {
-          const sale = DB.find('sales', m.saleId);
-          const upd = { ...sale };
-          // اتعرف عليه بالتليفون: نحفظ رقم البوليصة عشان الكشف الجاي يتطابق على طول
-          if (m.matchedBy === 'phone' && !upd.trackingNo) upd.trackingNo = m.ref;
-          if (opts.updateStatus && m.statementStatus && m.statementStatus !== sale.status && sale.status !== 'cancelled') {
-            upd.status = m.statementStatus;
-            if (m.statementStatus === 'returned' && !upd.returnDate) upd.returnDate = m.date || today();
-          }
-          if (opts.updateFees && Math.abs(m.feeDiff) > 0.5) {
-            if (upd.status === 'returned') { const base = Math.min(num(upd.courierFee), m.fee); upd.courierFee = base; upd.returnFee = Acc.round2(m.fee - base); }
-            else upd.courierFee = m.fee;
-          }
-          if (JSON.stringify(upd) !== JSON.stringify(sale)) { Object.assign(sale, upd); changed++; }
-        });
-        const rec = { id: uid(), date: opts.date || today(), courierId: opts.courierId, fileName, net: res.totals.statementNet,
-          lines: fresh.map((m) => ({ saleId: m.saleId, ref: m.ref, cod: m.cod, fee: m.fee, status: m.status })), unmatched: res.unmatched.map((r) => ({ ref: r.ref, cod: r.cod, fee: r.fee, status: r.status })) };
-        if (opts.settle && num(opts.amount)) {
-          const st = { id: uid(), date: opts.date || today(), courierId: opts.courierId, accountId: opts.accountId, amount: num(opts.amount), notes: `تسوية كشف ${fileName}` };
+        const rec = { id: uid(), date: opts.date || today(), courierId: opts.courierId, fileName: 'تسوية يدوية', manual: true, net: expected(),
+          lines: chosen.map((x) => { const e = OPS.expectedFor(x); return { saleId: x.id, ref: x.trackingNo || '', cod: e.cod, fee: e.fee, status: STATUSES[x.status] }; }), unmatched: [] };
+        if (opts.settle && amount) {
+          const st = { id: uid(), date: rec.date, courierId: opts.courierId, accountId: opts.accountId, amount, notes: `تسوية يدوية — ${chosen.length} طلب${opts.notes ? ' — ' + opts.notes : ''}` };
           S().settlements.push(st); rec.settlementId = st.id;
         }
-        S().reconciliations.push(rec);
+        if (chosen.length) S().reconciliations.push(rec);
         DB.save();
         reconCourier = opts.courierId;
-        UI.toast(`تمت تسوية ${fresh.length} طلب${changed ? ` وتعديل ${changed}` : ''}${rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
+        UI.toast(`تمت تسوية ${chosen.length} طلب${rec.settlementId ? ' وتسجيل التحصيل' : ''}`);
         render();
       } });
   }
   function viewReconciliation(r) {
-    UI.modal({ title: `كشف ${esc(nameOf('couriers', r.courierId))} — ${fmtDate(r.date)}`, wide: true, tools: { title: `تسوية ${nameOf('couriers', r.courierId)}`, subtitle: `${r.fileName || ''} — ${fmtDate(r.date)}`, file: 'courier-reconciliation' },
+    UI.modal({ title: `تسوية ${esc(nameOf('couriers', r.courierId))} — ${fmtDate(r.date)}`, wide: true, tools: { title: `تسوية ${nameOf('couriers', r.courierId)}`, subtitle: `${r.fileName || ''} — ${fmtDate(r.date)}`, file: 'courier-reconciliation' },
       body: `${table(['الفاتورة', 'البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف', '#الصافي'], r.lines.map((l) => { const x = DB.find('sales', l.saleId) || {}; return `<tr>${td(esc(invoiceNo(x)))}${td(esc(l.ref || x.trackingNo || ''), 'mono')}${td(esc(l.status || ''))}${tdn(l.cod != null ? fmt(l.cod) : '—')}${tdn(l.fee != null ? fmt(l.fee) : '—')}${tdn(l.cod != null ? fmt(num(l.cod) - num(l.fee)) : '—')}</tr>`; }), { foot: `<tr><td colspan="5">صافي الكشف</td>${tdn(fmt(r.net))}</tr>` })}
         ${(r.unmatched || []).length ? `<h3 class="sub-title">سطور ما اتطابقتش</h3>${table(['البوليصة / الرقم', 'الحالة', '#المحصل', '#المصاريف'], r.unmatched.map((u) => `<tr>${td(esc(u.ref), 'mono')}${td(esc(u.status || ''))}${tdn(fmt(u.cod))}${tdn(fmt(u.fee))}</tr>`))}` : ''}` });
+  }
+
+  // =====================================================================
+  // كشف حساب: أي بند أو حساب (مصروف، بنك، شركة شحن، مورد، شريك، إيراد…) بكل حركاته في الفترة
+  // =====================================================================
+  let stmtKey = 'acc:5300';
+  function statementPage() {
+    const s = S(), j = J();
+    const list = Acc.statementAccounts(s);
+    if (!list.some((a) => a.key === stmtKey)) stmtKey = (list[0] || {}).key;
+    const st = Acc.accountStatement(s, j, stmtKey, period.from, period.to);
+    const picker = `<select id="stmt-acc" data-change="stmtKey" aria-label="الحساب">${Object.entries(Acc.STMT_GROUPS).map(([g, label]) => { const items = list.filter((a) => a.group === g); return items.length ? `<optgroup label="${esc(label)}">${items.map((a) => `<option value="${esc(a.key)}" ${a.key === stmtKey ? 'selected' : ''}>${esc(a.name)}${a.code ? ` (${a.code})` : ''}</option>`).join('')}</optgroup>` : ''; }).join('')}</select>`;
+    const head = header('كشف حساب', 'اختار أي بند أو حساب — مصروف زي الإعلانات، بنك أو خزينة، شركة شحن، مورد، شريك، أو إيراد — وهيطلعلك كل حركاته في الفترة. التصدير والطباعة من «أدوات».', periodBar());
+    if (!st) return `${head}<div class="filters stmt-pick">${picker}</div>${UI.empty('اختار حساب')}`;
+    const balLabel = st.credit ? 'دائن' : 'مدين';
+    const pTxt = period.from || period.to ? `${period.from ? fmtDate(period.from) : 'البداية'} — ${period.to ? fmtDate(period.to) : 'اليوم'}` : 'كل الفترات';
+    const docLink = (r) => {
+      const ref = r.ref || {};
+      if ((ref.type === 'sale' || ref.type === 'saleReturn') && DB.find('sales', ref.id)) return `<button class="link-btn" data-action="viewSale" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      if (ref.type === 'expense' && DB.find('expenses', ref.id)) return `<button class="link-btn" data-action="editExpense" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      if (ref.type === 'shipment' && DB.find('shipments', ref.id)) return `<button class="link-btn" data-action="editShipment" data-id="${ref.id}">${esc(r.desc)}</button>`;
+      return esc(r.desc);
+    };
+    const months = st.months.length > 1 ? `<h3 class="sub-title">حسب الشهر</h3>${table(['الشهر', '#عدد الحركات', '#مدين', '#دائن', `#الصافي (${st.flow ? (st.credit ? 'إيراد' : 'مصروف') : balLabel})`], st.months.map((m) => `<tr>${td(monthLong(m.month))}${tdn(m.count)}${tdn(fmt(m.dr))}${tdn(fmt(m.cr))}${tdn(`<b>${fmt(m.net)}</b>`)}</tr>`), { foot: `<tr><td>الإجمالي</td>${tdn(st.rows.length)}${tdn(fmt(st.totalDr))}${tdn(fmt(st.totalCr))}${tdn(`<b>${fmt(st.net)}</b>`)}</tr>` })}` : '';
+    const sources = st.sources.length > 1 ? `<h3 class="sub-title">حسب المصدر</h3>${table(['جاية منين', '#عدد الحركات', '#الصافي'], st.sources.map((x) => `<tr>${td(esc(x.label))}${tdn(x.count)}${tdn(fmt(x.net))}</tr>`))}` : '';
+    const kpis = st.flow
+      ? `${kpi(st.credit ? 'إجمالي الإيراد في الفترة' : 'إجمالي المصروف في الفترة', fmt(st.net) + ' ج.م', `${st.rows.length} حركة`)}${kpi('متوسط شهري', st.months.length ? fmt(Acc.round2(st.net / st.months.length)) : '0', `على ${st.months.length || 0} شهر`)}${kpi('أكبر حركة', fmt(Math.max(0, ...st.rows.map((r) => Math.abs(r.dr - r.cr)))))}${kpi('من بداية الحسابات لحد آخر الفترة', fmt(st.closing))}`
+      : `${kpi('رصيد أول الفترة', fmt(st.opening), balLabel)}${kpi('إجمالي مدين', fmt(st.totalDr), 'داخل / زيادة')}${kpi('إجمالي دائن', fmt(st.totalCr), 'خارج / نقص')}${kpi('رصيد آخر الفترة', fmt(st.closing) + ' ج.م', balLabel, st.closing < 0 ? 'bad' : '')}`;
+    const rows = st.rows.map((r) => `<tr>${td(fmtDate(r.date))}${td('#' + r.no, 'mono')}${td(docLink(r))}${td(`<small class="muted">${esc(r.sourceLabel)}</small>`)}${tdn(r.dr ? fmt(r.dr) : '')}${tdn(r.cr ? fmt(r.cr) : '')}${tdn(fmt(r.balance))}</tr>`);
+    return `${head}
+      <div class="filters stmt-pick">${picker}</div>
+      <section class="report stmt-report">
+        <h2>كشف حساب: ${esc(st.title)} <small class="muted">${esc(Acc.STMT_GROUPS[(list.find((a) => a.key === stmtKey) || {}).group] || '')} · ${pTxt}</small></h2>
+        <section class="kpis">${kpis}</section>
+        ${months}${sources}
+        <h3 class="sub-title">الحركات</h3>
+        ${table(['التاريخ', 'القيد', 'البيان', 'المصدر', '#مدين', '#دائن', `#الرصيد (${balLabel})`], rows, { empty: 'مفيش حركة على الحساب ده في الفترة دي', foot: rows.length ? `<tr><td colspan="4">الإجمالي · رصيد آخر الفترة</td>${tdn(fmt(st.totalDr))}${tdn(fmt(st.totalCr))}${tdn(`<b>${fmt(st.closing)}</b>`)}</tr>` : '' })}
+      </section>`;
   }
 
   // =====================================================================
@@ -1948,7 +2149,7 @@
       ${table(['الشريك', '#النسبة', '#رأس المال', '#أرباح موزعة', '#مسحوبات', '#رصيد الجاري', ''], rows, { empty: 'أضف الشركاء ونسبة كل واحد', foot: rows.length ? `<tr><td>الإجمالي</td>${tdn(pct(shares / 100))}${tdn(fmt(acc.reduce((a, r) => a + r.capital, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.distributed, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.drawn, 0)))}${tdn(fmt(acc.reduce((a, r) => a + r.balance, 0)))}<td></td></tr>` : '' })}
       <p class="muted">رصيد الجاري الموجب = أرباح مستحقة للشريك لسه ما سحبهاش. رأس المال بيتسجل من الخزينة ← «رأس مال / مسحوبات» مع اختيار الشريك.</p>
       <h2 class="section-title">توزيعات الأرباح</h2>
-      ${table(['تاريخ التوزيع', 'الفترة', '#صافي ربح الفترة', '#محتجز', 'نصيب الشركاء', '#الإجمالي', ''], dist, { empty: 'لم توزع أرباح بعد' })}`;
+      ${table(['تاريخ التوزيع', 'الفترة', '#صافي ربح الفترة', '#محتجز', 'نصيب الشركاء', '#الإجمالي', ''], dist, { desc: true, empty: 'لم توزع أرباح بعد' })}`;
   }
   function partnerForm(p) {
     const isNew = !p;
@@ -2275,10 +2476,32 @@
   // =====================================================================
   // الأحداث
   // =====================================================================
-  const del = (list, id, label, guard) => {
-    if (guard && guard()) { UI.toast(`لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`, 'bad'); return; }
-    UI.confirm(`هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
+  // كل الحذف بيعدّي من هنا. الحذف الجماعي بيشغّل نفس الدالة «تجربة» عشان ياخد نفس الشروط بالظبط
+  let delProbe = null;
+  const del = (list, id, label, guard, message) => {
+    const why = guard && guard();
+    const block = why ? (typeof why === 'string' ? why : `لا يمكن حذف ${label} لأنه مستخدم في مستندات أخرى`) : null;
+    if (delProbe) { delProbe.push({ list, id, block }); return; }
+    if (block) { UI.toast(block, 'bad'); return; }
+    UI.confirm(message || `هل تريد حذف ${label}؟ لا يمكن التراجع.`, () => { DB.remove(list, id); UI.toast('تم الحذف'); render(); });
   };
+  function probeDelete(action, id) {
+    delProbe = [];
+    try { ACTIONS[action](id); } catch (e) { /* لا شيء */ }
+    const r = delProbe[0] || null; delProbe = null; return r;
+  }
+  function bulkDelete(items) {
+    const probes = items.map((it) => probeDelete(it.action, it.id)).filter(Boolean);
+    const ok = probes.filter((p) => !p.block), blocked = probes.filter((p) => p.block);
+    if (!ok.length) return fail(blocked.length ? `مفيش حاجة ينفع تتحذف: ${blocked[0].block}${blocked.length > 1 ? ` (و${blocked.length - 1} غيره)` : ''}` : 'اختار حاجة الأول');
+    const all = ok.length === items.length;
+    F.Gate.guard(() => UI.confirm(`هتحذف ${ok.length === 1 ? 'عنصر واحد' : ok.length === 2 ? 'عنصرين' : `${ok.length} عناصر`}${blocked.length ? `.<br><b>${blocked.length} مش هيتحذفوا</b> لأنهم مستخدمين في مستندات تانية (${esc(blocked[0].block)})` : ''}. لا يمكن التراجع.`, () => {
+      const by = {};
+      ok.forEach((p) => (by[p.list] = by[p.list] || new Set()).add(p.id));
+      Object.entries(by).forEach(([l, ids]) => (S()[l] = S()[l].filter((x) => !ids.has(x.id))));
+      DB.save(); UI.toast(`تم حذف ${ok.length}${blocked.length ? ` — ${blocked.length} اتسابوا لأنهم مستخدمين` : ''}`); render();
+    }, all ? `حذف الكل (${ok.length})` : `حذف ${ok.length}`), 'الحذف محتاج الباسورد');
+  }
   // =====================================================================
   // الاستيراد من Excel
   // =====================================================================
@@ -2378,8 +2601,8 @@
 
   const ACTIONS = {
     newSale: () => saleForm(), newPromo: () => saleForm(null, 'promo'), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
-    delSale: (id) => (RULES.isReconciled(S(), id) ? fail('الفاتورة داخلة في تسوية كشف شركة الشحن — احذف التسوية الأول') : del('sales', id, 'هذا الطلب')),
-    newShipment: () => shipmentForm(), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
+    delSale: (id) => del('sales', id, 'هذا الطلب', () => RULES.isReconciled(S(), id) && 'الفاتورة داخلة في تسوية مع شركة الشحن — احذف التسوية الأول'),
+    newShipment: () => shipmentForm(), newLocalPurchase: () => shipmentForm(null, { local: true }), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
     delShipment: (id) => del('shipments', id, 'هذه الشحنة'),
     receiveShipment: (id) => {
       const sh = DB.find('shipments', id);
@@ -2394,16 +2617,16 @@
     newProduct: () => productForm(), editProduct: (id) => productForm(DB.find('products', id)), productMoves: (id) => productMoves(DB.find('products', id)),
     delProduct: (id) => del('products', id, 'هذا المنتج', () => used(id, [['sales', (x, i) => x.items.some((l) => l.productId === i)], ['shipments', (x, i) => x.items.some((l) => l.productId === i)], ['adjustments', (x, i) => x.productId === i], ['decants', (x, i) => x.sourceProductId === i || x.outputs.some((o) => o.productId === i)]])),
     newDecant: decantForm, unbox: unboxForm, viewDecant: (id) => viewDecant(DB.find('decants', id)),
-    delDecant: (id) => UI.confirm('هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.', () => { DB.remove('decants', id); UI.toast('تم الحذف'); render(); }),
+    delDecant: (id) => del('decants', id, 'العملية دي', null, 'هل تريد حذف العملية دي؟ العبوة أو البوكس الأصلي هيرجع للمخزون والقطع الناتجة هتتشال — لو اتباع منها حاجة هيظهر رصيد غير كافٍ.'),
     barcodeLabels, stockCount,
     newCampaign: () => campaignForm(), editCampaign: (id) => campaignForm(DB.find('campaigns', id)),
     delCampaign: (id) => del('campaigns', id, 'هذه الحملة', () => used(id, [['sales', (x, i) => x.campaignId === i], ['expenses', (x, i) => x.campaignId === i]])),
     pickCourier: (id) => { reconCourier = id; render(); },
+    openStatement: (id) => { stmtKey = id; if (location.hash === '#statement') render(); else location.hash = 'statement'; },
     goReconcile: (id) => { if (id) reconCourier = id; location.hash = 'reconcile'; },
-    uploadStatement: pickStatementFile,
-    statementTemplate: () => FX.exportExcel('courier-statement-template.xlsx', [{ name: 'كشف الحساب', plain: true, header: ['رقم البوليصة', 'رقم الطلب', 'المبلغ المحصل', 'مصاريف الشحن', 'الحالة', 'التاريخ'], rows: [] }], { business: S().settings.businessName, subtitle: '' }),
+    manualReconcile: (id) => manualReconcile(id),
     viewReconciliation: (id) => viewReconciliation(DB.find('reconciliations', id)),
-    delReconciliation: (id) => UI.confirm('هل تريد حذف هذه التسوية؟ الطلبات هترجع «لسه ما اتسوتش». التحصيل المسجل في الخزينة مش هيتحذف — احذفه من شاشة الخزينة لو محتاج.', () => { DB.remove('reconciliations', id); UI.toast('تم الحذف'); render(); }),
+    delReconciliation: (id) => del('reconciliations', id, 'التسوية دي', null, 'هل تريد حذف هذه التسوية؟ الطلبات هترجع «لسه ما اتسوتش». التحصيل المسجل في الخزينة مش هيتحذف — احذفه من شاشة الخزينة لو محتاج.'),
     newPartner: () => partnerForm(), editPartner: (id) => partnerForm(DB.find('partners', id)), partnerStatement: (id) => partnerStatement(DB.find('partners', id)),
     delPartner: (id) => del('partners', id, 'هذا الشريك', () => used(id, [['equity', (x, i) => x.partnerId === i], ['distributions', (x, i) => x.allocations.some((a) => a.partnerId === i)]])),
     partnerDrawing: (id) => { equityForm(); const f = document.getElementById('modal-form'); if (f) { f.type.value = 'drawing'; if (f.partnerId) f.partnerId.value = id; } },
@@ -2429,6 +2652,10 @@
     editDoc: (key) => { const [list, id] = key.split(':'); const doc = DB.find(list, id); ({ transfers: transferForm, settlements: settlementForm, equity: equityForm })[list](doc); },
     delDoc: (key) => { const [list, id] = key.split(':'); del(list, id, 'هذا المستند'); },
     openSearch: () => openSearch(),
+    bulkSelectAll: (ti) => { const st = bulkState(ti); if (st) { st.boxes.forEach((b) => (b.checked = true)); syncBulk(ti); } },
+    bulkClear: (ti) => { const st = bulkState(ti); if (st) { st.boxes.forEach((b) => (b.checked = false)); syncBulk(ti); } },
+    bulkDelete: (ti) => { const st = bulkState(ti); if (st) bulkDelete(st.sel.map((b) => ({ action: b.dataset.del, id: b.dataset.id }))); },
+    exportAll: () => exportAll(),
     openDrawer: () => { document.body.classList.add('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = false; },
     closeDrawer: () => { document.body.classList.remove('drawer-open'); const bd = document.querySelector('.drawer-backdrop'); if (bd) bd.hidden = true; },
     pickSettingsTab: (id) => { settingsTab = id; render(); },
@@ -2448,7 +2675,7 @@
     newAccount: () => accountForm(), editAccount: (id) => accountForm(DB.find('accounts', id)),
     delAccount: (id) => del('accounts', id, 'هذا الحساب', () => used(id, [['sales', (x, i) => x.payment === i], ['expenses', (x, i) => x.accountId === i], ['supplierPayments', (x, i) => x.accountId === i], ['settlements', (x, i) => x.accountId === i], ['equity', (x, i) => x.accountId === i], ['transfers', (x, i) => x.fromId === i || x.toId === i], ['shipments', (x, i) => (x.costs || []).some((c) => c.accountId === i)], ['decants', (x, i) => x.accountId === i]]) || num((DB.find('accounts', id) || {}).opening) !== 0),
     newCourier: () => courierForm(), editCourier: (id) => courierForm(DB.find('couriers', id)),
-    delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i]])),
+    delCourier: (id) => del('couriers', id, 'شركة الشحن', () => used(id, [['sales', (x, i) => x.courierId === i], ['settlements', (x, i) => x.courierId === i], ['expenses', (x, i) => x.courierId === i]])),
     importExcel: pickImportFile,
     importTemplate: () => FX.exportExcel('florume-import-template.xlsx', [
       { name: 'المبيعات', plain: true, header: ['orderNo', 'trackingNo', 'type', 'date', 'customerName', 'customerPhone', 'customerAddress', 'productName', 'qty', 'netTotal', 'cogs', 'profit', 'account'], rows: [] },
@@ -2488,15 +2715,18 @@
     periodFrom: (el) => { period = { ...period, preset: 'custom', from: el.value }; savePeriod(); render(); },
     periodTo: (el) => { period = { ...period, preset: 'custom', to: el.value }; savePeriod(); render(); },
     saleStatusFilter: (el) => { saleFilter.status = el.value; render(); },
+    expSrc: (el) => { expFilter.src = el.value; render(); },
+    expAcc: (el) => { expFilter.acc = el.value; render(); },
     saleChannelFilter: (el) => { saleFilter.channel = el.value; render(); },
     saleKindFilter: (el) => { saleFilter.kind = el.value; render(); },
     setRole: (el) => CLOUD.setRole(el.dataset.id, el.value).then(() => UI.toast('تم تغيير الدور')).catch(() => UI.toast('تعذر تغيير الدور', 'bad')),
     ledgerAcc: (el) => { ledgerAcc = el.value; render(); },
+    stmtKey: (el) => { stmtKey = el.value; render(); },
     saleStatus: (el) => {
       const sale = DB.find('sales', el.dataset.id);
       const upd = { ...sale, status: el.value };
       if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today() < sale.date ? sale.date : today();
-      if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية كشف شركة الشحن — الحالة مقفولة'); render(); return; }
+      if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية مع شركة الشحن — الحالة مقفولة'); render(); return; }
       if (el.value === 'returned' && !isPromo(sale)) { returnQuickForm(sale); return; }
       const stock = RULES.checkSaleStock(S(), J(), upd, sale);
       if (stock.errors.length) { fail(stockMsg(stock.errors, upd.status)); render(); return; }
@@ -2524,7 +2754,7 @@
   const PAGES = {
     dashboard: { title: 'لوحة التحكم', render: dashboard, period: true },
     sales: { title: 'المبيعات والطلبات', render: sales, period: true },
-    shipments: { title: 'شحنات الاستيراد', render: shipments },
+    shipments: { title: 'المشتريات والاستيراد', render: shipments },
     products: { title: 'المنتجات والمخزون', render: products },
     suppliers: { title: 'الموردين', render: suppliers },
     customers: { title: 'العملاء', render: customers },
@@ -2538,6 +2768,7 @@
     planning: { title: 'التخطيط', render: planningPage },
     audit: { title: 'سجل التعديلات', render: auditPage },
     reports: { title: 'التقارير', render: reports, period: true },
+    statement: { title: 'كشف حساب', render: statementPage, period: true },
     settings: { title: 'الإعدادات', render: settings },
   };
   const currentPage = () => (PAGES[location.hash.slice(1)] ? location.hash.slice(1) : 'dashboard');
@@ -2551,6 +2782,7 @@
     if (isReport && (report === 'balance' || report === 'trial')) subtitle = `حتى ${fmtDate(period.to || today())}`;
     if (key === 'sales' && (saleFilter.status || saleFilter.channel || saleFilter.q || saleFilter.kind)) subtitle += ` · مفلتر: ${[{ sale: 'فواتير بيع', promo: 'فواتير دعاية' }[saleFilter.kind], STATUSES[saleFilter.status], CHANNELS[saleFilter.channel], saleFilter.q].filter(Boolean).join('، ')}`;
     if (key === 'reconcile') subtitle += ` · ${nameOf('couriers', reconCourier)}`;
+    if (key === 'statement') { const a = Acc.statementAccounts(S()).find((x) => x.key === stmtKey); return { key, title: `كشف حساب — ${a ? a.name : ''}`, subtitle, root: main().querySelector('.stmt-report') || main() }; }
     if (key === 'treasury') subtitle += ` · حركة ${nameOf('accounts', treasuryAcc)}`;
     return { key, title, subtitle, root: isReport ? main().querySelector('.report') : main() };
   }
@@ -2594,6 +2826,7 @@
     try { m.innerHTML = PAGES[key].render(); }
     catch (err) { console.error(err); m.innerHTML = UI.empty(`حدث خطأ أثناء عرض الصفحة: ${esc(err.message)}`); }
     UI.labelTables(m);
+    enhanceTables(m);
     let n = 0;
     try { n = alertList().filter((a) => a.level !== 'info').length; } catch (e) { /* لا شيء */ }
     ['alert-badge', 'tb-badge'].forEach((id) => { const b = document.getElementById(id); if (b) { b.hidden = !n; b.textContent = n; } });
@@ -2601,7 +2834,7 @@
     if (key === 'settings') renderTeam();
     const pa = m.querySelector('.page-head .page-actions');
     // أدوات الصفحة (طباعة وتصدير واستيراد) في قايمة واحدة عشان الزراير الأساسية تبان
-    if (pa) pa.insertAdjacentHTML('afterbegin', `<details class="tools-menu doc-tools"><summary class="btn" aria-label="أدوات الصفحة">${icon('more')}<span>أدوات</span></summary><div class="menu" role="menu">${['sales', 'products', 'customers', 'expenses'].includes(key) ? `<button type="button" role="menuitem" data-action="importExcel">${icon('upload')}استيراد من Excel</button>` : ''}<button type="button" role="menuitem" data-action="excelPage">${icon('download')}تصدير Excel</button><button type="button" role="menuitem" data-action="printPage">${icon('print')}طباعة / PDF</button></div></details>`);
+    if (pa) pa.insertAdjacentHTML('afterbegin', `<details class="tools-menu doc-tools"><summary class="btn" aria-label="أدوات الصفحة">${icon('more')}<span>أدوات</span></summary><div class="menu" role="menu">${['sales', 'products', 'customers', 'expenses'].includes(key) ? `<button type="button" role="menuitem" data-action="importExcel">${icon('upload')}استيراد من Excel</button>` : ''}<button type="button" role="menuitem" data-action="excelPage">${icon('download')}تصدير Excel</button><button type="button" role="menuitem" data-action="printPage">${icon('print')}طباعة / PDF</button>${SYNC.seesCosts(CLOUD.role) ? `<button type="button" role="menuitem" data-action="exportAll">${icon('download')}تصدير كل بيانات السيستم</button>` : ''}</div></details>`);
     const sf = document.getElementById('settings-form');
     if (sf) sf.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -2641,6 +2874,7 @@
     health: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/>',
     audit: '<path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .5 4"/><path d="M3 4v5h5"/>',
     planning: '<path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
+    statement: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
     reports: '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
@@ -2656,8 +2890,70 @@
   };
   const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[k] || ''}</svg>`;
 
+  // ---------- التحديد والحذف الجماعي ----------
+  // أي جدول سطوره فيها زرار حذف: خانة تحديد جنب الرقم، و«تحديد الكل» في العنوان، وشريط بيظهر لما تحدد
+  function enhanceTables(root) {
+    if (CLOUD.readOnly) return;
+    root.querySelectorAll('table.data-table').forEach((t, ti) => {
+      const rows = [...t.tBodies[0].rows].filter((tr) => tr.querySelectorAll('[data-action^="del"]').length === 1 && tr.querySelector('td.serial'));
+      if (!rows.length) return;
+      t.dataset.bulk = ti;
+      rows.forEach((tr) => { const b = tr.querySelector('[data-action^="del"]'); const c = tr.querySelector('td.serial'); c.insertAdjacentHTML('afterbegin', `<input type="checkbox" class="row-sel" data-del="${b.dataset.action}" data-id="${esc(b.dataset.id)}" aria-label="تحديد السطر ${c.textContent.trim()}">`); });
+      const th = t.tHead.querySelector('th.serial'); if (th) th.insertAdjacentHTML('afterbegin', '<input type="checkbox" class="sel-all" aria-label="تحديد الكل">');
+      t.closest('.table-wrap').insertAdjacentHTML('beforebegin', `<div class="bulk-bar" data-for="${ti}" hidden role="region" aria-label="الحذف الجماعي"><b class="bulk-count"></b><button type="button" class="btn btn-small" data-action="bulkSelectAll" data-id="${ti}">تحديد الكل (${rows.length})</button><button type="button" class="btn btn-small" data-action="bulkClear" data-id="${ti}">إلغاء التحديد</button><button type="button" class="btn btn-small btn-danger" data-action="bulkDelete" data-id="${ti}"></button></div>`);
+    });
+  }
+  function bulkState(ti) {
+    const t = main().querySelector(`table[data-bulk="${ti}"]`); if (!t) return null;
+    const boxes = [...t.querySelectorAll('.row-sel')];
+    return { t, boxes, sel: boxes.filter((b) => b.checked), bar: main().querySelector(`.bulk-bar[data-for="${ti}"]`) };
+  }
+  function syncBulk(ti) {
+    const st = bulkState(ti); if (!st) return;
+    const n = st.sel.length, all = n && n === st.boxes.length;
+    st.bar.hidden = !n;
+    st.bar.querySelector('.bulk-count').textContent = n === 1 ? 'سطر واحد محدد' : n === 2 ? 'سطرين محددين' : `${n} محددين`;
+    st.bar.querySelector('[data-action="bulkDelete"]').textContent = all ? `حذف الكل (${n})` : `حذف المحدد (${n})`;
+    st.bar.querySelector('[data-action="bulkSelectAll"]').hidden = all;
+    const sa = st.t.querySelector('.sel-all'); if (sa) { sa.checked = all; sa.indeterminate = n > 0 && !all; }
+    st.boxes.forEach((b) => b.closest('tr').classList.toggle('row-picked', b.checked));
+  }
+
+  // ---------- تصدير كل البيانات Excel ----------
+  function exportAll() {
+    const s = S(), j = J(), costs = SYNC.seesCosts(CLOUD.role);
+    const nm = (list, id) => nameOf(list, id) || '';
+    const sheet = (name, header, rows) => ({ name, header, rows: rows.map((cells) => ({ cells })) });
+    const cust = (id) => DB.find('customers', id) || {};
+    const sheets = [];
+    sheets.push(sheet('ملخص', ['البيان', 'القيمة'], [['النشاط', s.settings.businessName], ['تاريخ التصدير', fmtDate(today())], ['بداية الحسابات', fmtDate(s.settings.startDate)], ['عدد الفواتير', s.sales.length], ['عدد المنتجات', s.products.length], ['عدد العملاء', s.customers.length], ['عدد الشحنات', s.shipments.length], ['عدد المصروفات', s.expenses.length]]));
+    sheets.push(sheet('الفواتير', ['م', 'الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الموبايل', 'المحافظة', 'القناة', 'الحالة', 'سبب المرتجع', 'الدفع', 'شركة الشحن', 'البوليصة', 'الأصناف', 'الخصم', 'الشحن المحصل', 'الإجمالي', ...(costs ? ['التكلفة', 'الربح'] : []), 'ملاحظات'],
+      s.sales.map((x, i) => { const t = Acc.saleTotals(x), pr = costs ? Acc.saleProfit(x, j) : null, c = cust(x.customerId); return [i + 1, invoiceNo(x), isPromo(x) ? 'دعاية' : 'بيع', x.date, c.name || '', c.phone || '', c.city || '', CHANNELS[x.channel] || x.channel || '', STATUSES[x.status] || x.status, OPS.RETURN_REASONS[x.returnReason] || '', x.payment === 'cod' ? 'عند الاستلام' : nm('accounts', x.payment), nm('couriers', x.courierId), x.trackingNo || '', x.items.reduce((a, l) => a + num(l.qty), 0), num(x.discount), num(x.shippingCharged), t.total, ...(costs ? [pr.cogs, pr.profit] : []), x.notes || '']; })));
+    const lines = []; s.sales.forEach((x) => x.items.forEach((l) => { const p = productById(l.productId); lines.push([lines.length + 1, invoiceNo(x), x.date, p ? productLabel(p) : '', p && p.sku || '', num(l.qty), num(l.price), Acc.round2(num(l.qty) * num(l.price))]); }));
+    sheets.push(sheet('أصناف الفواتير', ['م', 'الفاتورة', 'التاريخ', 'الصنف', 'الكود', 'الكمية', 'السعر', 'الإجمالي'], lines));
+    sheets.push(sheet('المنتجات والمخزون', ['م', 'الكود', 'الباركود', 'الماركة', 'الاسم', 'الحجم مل', 'سعر البيع', 'الرصيد', 'المحجوز', 'المتاح', ...(costs ? ['متوسط التكلفة', 'قيمة المخزون'] : [])],
+      s.products.map((p, i) => { const st = j.inventory.products[p.id] || {}; return [i + 1, p.sku || '', p.barcode || '', p.brand || '', p.name, num(p.sizeMl), num(p.price), num(st.qty), num(st.reserved), num(st.available), ...(costs ? [Acc.round2(num(st.avgCost)), Acc.round2(num(st.value))] : [])]; })));
+    sheets.push(sheet('العملاء', ['م', 'الاسم', 'الموبايل', 'المحافظة', 'العنوان', 'الطلبات', 'اتسلم', 'مرتجع', 'رفض'], s.customers.map((c, i) => { const r = OPS.customerRisk(s, c.id); return [i + 1, c.name, c.phone || '', c.city || '', c.address || '', r.orders, r.delivered, r.returned, r.refused]; })));
+    sheets.push(sheet('الموردين', ['م', 'المورد', 'البلد', 'العملة', 'الموبايل', 'ملاحظات'], s.suppliers.map((x, i) => [i + 1, x.name, x.country || '', x.currency || '', x.phone || '', x.notes || ''])));
+    if (costs) {
+      sheets.push(sheet('المشتريات والاستيراد', ['م', 'النوع', 'المرجع', 'المورد', 'العملة', 'سعر الصرف', 'تاريخ الطلب', 'الحالة', 'تاريخ الاستلام', 'قيمة البضاعة بالعملة', 'مصاريف إضافية ج.م'], s.shipments.map((x, i) => [i + 1, x.local ? `شراء محلي — ${Acc.LOCAL_PAY[x.payMode] || ''}` : 'استيراد', x.ref || '', x.supplierId ? nm('suppliers', x.supplierId) : 'مورد مش متسجل', x.currency, num(x.rate), x.orderDate, SHIP_STATUSES[x.status] || x.status, x.receivedDate || '', Acc.round2(x.items.reduce((a, l) => a + num(l.qty) * num(l.unitCost), 0)), Acc.round2((x.costs || []).reduce((a, c) => a + num(c.amount), 0))])));
+      sheets.push(sheet('دفعات الموردين', ['م', 'التاريخ', 'المورد', 'المبلغ بالعملة', 'سعر الصرف', 'بالجنيه', 'من حساب'], s.supplierPayments.map((x, i) => [i + 1, x.date, nm('suppliers', x.supplierId), num(x.amount), num(x.rate), Acc.round2(num(x.amount) * (num(x.rate) || 1)), nm('accounts', x.accountId)])));
+      sheets.push(sheet('المصروفات', ['م', 'التاريخ', 'البند', 'المبلغ', 'من حساب', 'الحملة', 'البيان'], s.expenses.map((x, i) => [i + 1, x.date, (Acc.COA_MAP[x.category] || {}).name || x.category, num(x.amount), x.courierId ? `رصيد ${nm('couriers', x.courierId)}` : nm('accounts', x.accountId), nm('campaigns', x.campaignId), x.notes || ''])));
+      sheets.push(sheet('مصروفات التأسيس', ['م', 'التاريخ', 'البند', 'المبلغ', 'اتدفع', 'البيان'], s.formation.map((x, i) => [i + 1, x.date, Acc.FORMATION_KINDS[x.kind] || '', num(x.amount), payerLabel(x), x.notes || ''])));
+      sheets.push(sheet('الحسابات', ['م', 'الحساب', 'النوع', 'رصيد افتتاحي', 'الرصيد الحالي'], Acc.cashBalances(s, j).map((a, i) => [i + 1, a.name, ACCOUNT_TYPES[a.type] || '', num(a.opening), Acc.round2(a.balance)])));
+      const moves = [...s.transfers.map((t) => [t.date, 'تحويل', `${nm('accounts', t.fromId)} ← ${nm('accounts', t.toId)}`, num(t.amount), t.notes || '']), ...s.settlements.map((t) => [t.date, 'تحصيل شحن', `${nm('couriers', t.courierId)} → ${nm('accounts', t.accountId)}`, num(t.amount), t.notes || '']), ...s.equity.map((t) => [t.date, t.type === 'drawing' ? 'مسحوبات' : 'رأس مال', nm('accounts', t.accountId), num(t.amount), t.notes || ''])].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      sheets.push(sheet('حركات الخزينة', ['م', 'التاريخ', 'النوع', 'البيان', 'المبلغ', 'ملاحظات'], moves.map((r, i) => [i + 1, ...r])));
+      sheets.push(sheet('جرد الخزينة', ['م', 'التاريخ', 'الحساب', 'رصيد السيستم', 'الرصيد الحقيقي', 'الفرق'], s.cashCounts.map((k, i) => { const r = j.cashCounts[k.id] || {}; return [i + 1, k.date, nm('accounts', k.accountId), num(r.book), num(k.actual), num(r.diff)]; })));
+      sheets.push(sheet('تسويات المخزون', ['م', 'التاريخ', 'الصنف', 'السبب', 'الكمية', 'تكلفة الوحدة', 'ملاحظات'], s.adjustments.map((x, i) => [i + 1, x.date, productLabel(productById(x.productId)), Acc.ADJ_REASONS[x.reason] || x.reason, num(x.qty), x.unitCost == null ? '' : num(x.unitCost), x.notes || ''])));
+      const tb = Acc.trialBalance(s, j, today());
+      sheets.push(sheet('ميزان المراجعة', ['م', 'الكود', 'الحساب', 'مدين', 'دائن', 'رصيد مدين', 'رصيد دائن'], tb.rows.map((r, i) => [i + 1, r.acc.split(':')[0], r.name, r.dr, r.cr, r.balDr, r.balCr])));
+      const je = []; j.entries.forEach((e) => e.lines.forEach((l) => je.push([e.no, e.date, e.desc, Acc.accountName(l.acc, s), l.dr || '', l.cr || ''])));
+      sheets.push(sheet('دفتر اليومية', ['القيد', 'التاريخ', 'البيان', 'الحساب', 'مدين', 'دائن'], je));
+    }
+    FX.exportExcel(`${s.settings.businessName || 'florume'}-كل-البيانات-${today()}.xlsx`, sheets.filter((x) => x.rows.length), { business: s.settings.businessName, subtitle: `كل البيانات حتى ${fmtDate(today())}` });
+  }
   // ---------- البحث السريع (Ctrl+K) ----------
-  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses']];
+  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['شراء محلي (بضاعة من مورد في مصر)', 'newLocalPurchase', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses'], ['تصدير كل البيانات Excel', 'exportAll', 'reports']];
   function searchResults(q) {
     const s = S(), out = [];
     const n = (t) => IMP.normName(IMP.latinDigits(String(t || ''))).toLowerCase();
@@ -2673,6 +2969,7 @@
         .forEach((x) => out.push({ group: 'فاتورة', label: `${invoiceNo(x)} — ${custName(x.customerId) || '—'}`, sub: `${fmtDate(x.date)} · ${STATUSES[x.status] || ''} · ${fmt(Acc.saleTotals(x).total)} ج.م`, icon: 'sales', sec: 'daily', run: () => ACTIONS.viewSale(x.id) }));
       if (canPage('customers')) s.customers.filter((c) => has(c.name, c.phone)).slice(0, 5).forEach((c) => out.push({ group: 'عميل', label: c.name, sub: [c.phone, c.city].filter(Boolean).join(' · '), icon: 'customers', sec: 'daily', run: () => { custQ = c.name; custSeg = ''; if (location.hash === '#customers') render(); else location.hash = 'customers'; } }));
       if (canPage('products')) s.products.filter((p) => has(p.name, p.brand, p.sku, productLabel(p))).slice(0, 5).forEach((p) => out.push({ group: 'منتج', label: productLabel(p), sub: `متاح ${fmt((J().inventory.products[p.id] || {}).available || 0)}${p.sku ? ' · ' + p.sku : ''}`, icon: 'products', sec: 'goods', run: () => ACTIONS.productMoves(p.id) }));
+      if (canPage('statement')) Acc.statementAccounts(s).filter((a) => has(a.name, 'كشف حساب')).slice(0, 5).forEach((a) => out.push({ group: 'كشف حساب', label: a.name, sub: Acc.STMT_GROUPS[a.group], icon: 'statement', sec: 'money', run: () => ACTIONS.openStatement(a.key) }));
       if (canPage('suppliers')) s.suppliers.filter((x) => has(x.name)).slice(0, 3).forEach((x) => out.push({ group: 'مورد', label: x.name, sub: 'كشف حساب', icon: 'suppliers', sec: 'goods', run: () => ACTIONS.supplierStatement(x.id) }));
     }
     return out;
@@ -2755,6 +3052,11 @@
       else ACTIONS[a](el.dataset.id);
     });
     document.addEventListener('change', (e) => {
+      if (e.target.matches('.row-sel, .sel-all')) {
+        const t = e.target.closest('table[data-bulk]'); if (!t) return;
+        if (e.target.matches('.sel-all')) t.querySelectorAll('.row-sel').forEach((b) => (b.checked = e.target.checked));
+        syncBulk(t.dataset.bulk); return;
+      }
       const el = e.target.closest('[data-change]'); if (!el || !CHANGES[el.dataset.change]) return;
       const reason = LOCKED_CHANGES[el.dataset.change];
       if (reason) F.Gate.guard(() => CHANGES[el.dataset.change](el), reason, render);

@@ -1,6 +1,6 @@
 /*
  * أدوات التشغيل — Florume
- * دوال نقية (بدون واجهة): تسوية كشف حساب شركة الشحن مع الطلبات، التنبيهات اليومية،
+ * دوال نقية (بدون واجهة): حسابات تسوية شركات الشحن، التنبيهات اليومية،
  * رابط إرسال الفاتورة على واتساب، وترميز الباركود Code 128.
  */
 (function (root) {
@@ -10,59 +10,11 @@
   const num = (n) => Number(n) || 0;
   const round2 = (n) => Math.round(num(n) * 100) / 100;
   const str = (v) => (v == null ? '' : String(v).replace(/\s+/g, ' ').trim());
-  const cleanRef = (s) => IMP.latinDigits(str(s)).replace(/[#\s]/g, '').toUpperCase();
   const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 
   // =====================================================================
-  // تسوية كشف حساب شركة الشحن
+  // تسوية شركات الشحن (يدوي): الطلبات اللي اتسوّت، والمتوقع من كل طلب، واللي لسه مستني
   // =====================================================================
-  const STATEMENT_FIELDS = {
-    ref: ['trackingno', 'trackingnumber', 'tracking', 'awb', 'رقمالبوليصه', 'البوليصه', 'رقمالشحنه', 'orderid', 'orderno', 'order', 'reference', 'ref', 'رقمالطلب', 'رقمالفاتوره', 'الفاتوره', 'المرجع', 'businessreference'],
-    cod: ['cod', 'codamount', 'collected', 'collectedamount', 'المحصل', 'المبلغالمحصل', 'التحصيل', 'قيمهالتحصيل', 'مبلغالتحصيل', 'المبلغ'],
-    // بوسطة: الدفع الأونلاين اللي حصّلته هي بيتحول مع التحصيل
-    online: ['onlinepaymentamount', 'onlinepayment'],
-    // إجمالي المصاريف (بعد الخصومات وشامل الضريبة) قبل سعر الشحن لوحده
-    fee: ['totalfees', 'اجماليالمصاريف', 'اجماليالرسوم', 'fees', 'fee', 'shippingfee', 'shippingfees', 'deliveryfee', 'مصاريفالشحن', 'تكلفهالشحن', 'الرسوم', 'رسومالشحن', 'مصاريف'],
-    status: ['status', 'orderstatus', 'state', 'الحاله', 'حالهالشحنه'],
-    date: ['date', 'completedat', 'deliverydate', 'التاريخ', 'تاريخالتسليم'],
-    phone: ['customerphone', 'receiverphone', 'phone', 'رقمالتليفون', 'التليفون', 'رقمالموبايل', 'الموبايل', 'تليفونالعميل'],
-  };
-  function mapStatementHeader(cells) {
-    const keys = cells.map(IMP.normKey);
-    const map = {};
-    Object.entries(STATEMENT_FIELDS).forEach(([field, aliases]) => {
-      // نفضّل ترتيب الأسماء المعرّفة: رقم البوليصة قبل رقم الطلب
-      for (const alias of aliases) {
-        const i = keys.findIndex((k, idx) => k === alias && !Object.values(map).includes(idx));
-        if (i >= 0) { map[field] = i; break; }
-      }
-    });
-    return map;
-  }
-  // يقرأ أوراق الملف ويرجع سطور الكشف: رقم البوليصة/الطلب، المحصل، المصاريف، الحالة
-  function parseStatement(sheets) {
-    for (const sh of sheets) {
-      const rows = sh.rows || [];
-      for (let h = 0; h < Math.min(rows.length, 10); h++) {
-        const map = mapStatementHeader(rows[h] || []);
-        if (map.ref == null || (map.cod == null && map.fee == null)) continue;
-        const out = [];
-        rows.slice(h + 1).forEach((cells, i) => {
-          const ref = cleanRef(cells[map.ref]);
-          if (!ref) return;
-          const cod = (map.cod != null ? num(IMP.toNumber(cells[map.cod])) : 0) + (map.online != null ? num(IMP.toNumber(cells[map.online])) : 0);
-          const fee = map.fee != null ? IMP.toNumber(cells[map.fee]) : 0;
-          const date = map.date != null ? IMP.toDate(cells[map.date]) : '';
-          out.push({ row: h + i + 2, ref, cod: round2(Math.abs(num(cod))), fee: round2(Math.abs(num(fee))), status: map.status != null ? str(cells[map.status]) : '', date: date === 'invalid' ? '' : date, phone: map.phone != null ? phoneKey(cells[map.phone]) : '' });
-        });
-        return { sheet: sh.name, columns: Object.keys(map), rows: out };
-      }
-    }
-    return null;
-  }
-  const statusFromText = (t) => (/مرتجع|رجع|رفض|return|reject|refus|cancel/i.test(t) ? 'returned' : /تسليم|تم التوصيل|سلم|deliver|complete|success/i.test(t) ? 'delivered' : '');
-
-  // الطلبات اللي اتحسبت في تسوية سابقة
   function reconciledSales(state) {
     const set = new Map();
     (state.reconciliations || []).forEach((r) => (r.lines || []).forEach((l) => l.saleId && set.set(l.saleId, r)));
@@ -78,69 +30,6 @@
     const cod = sale.payment === 'cod' && !gone ? Math.max(0, t.total - pr.value - num(sale.exchangeCredit)) : 0;
     const fee = round2(num(sale.courierFee) + (returned ? num(sale.returnFee) : 0) + pr.fees);
     return { cod: round2(cod), fee, net: round2(cod - fee) };
-  }
-
-  function reconcile(state, courierId, rows, invoicePrefix) {
-    const prefix = cleanRef(invoicePrefix || '');
-    const index = new Map();
-    const done = reconciledSales(state);
-    (state.sales || []).forEach((sale) => {
-      if (courierId && sale.courierId !== courierId) return;
-      if (sale.trackingNo) index.set(cleanRef(sale.trackingNo), sale);
-      if (sale.no != null) { index.set(`${prefix}${sale.no}`, sale); if (!index.has(String(sale.no))) index.set(String(sale.no), sale); }
-    });
-    const seen = new Set();
-    const matched = [], unmatched = [], duplicates = [];
-    const check = (r, sale, matchedBy) => {
-      seen.add(sale.id);
-      const statementStatus = statusFromText(r.status);
-      const exp = expectedFor(statementStatus === 'returned' ? { ...sale, status: 'returned' } : sale);
-      const issues = [];
-      const codDiff = round2(r.cod - exp.cod), feeDiff = round2(r.fee - exp.fee);
-      if (Math.abs(codDiff) > 0.5) issues.push(codDiff < 0 ? 'محصل أقل من قيمة الطلب' : 'محصل أكتر من قيمة الطلب');
-      if (Math.abs(feeDiff) > 0.5) issues.push(feeDiff > 0 ? 'مصاريف شحن أعلى من المسجلة' : 'مصاريف شحن أقل من المسجلة');
-      if (statementStatus && statementStatus !== sale.status) issues.push(`الحالة في الكشف «${r.status}» والنظام «${sale.status}»`);
-      if (!Acc.BOOKED.has(sale.status)) issues.push('الطلب لسه ما خرجش في النظام');
-      if (done.has(sale.id)) issues.push('اتسوّى قبل كده في كشف سابق');
-      matched.push({ ...r, saleId: sale.id, statementStatus, expected: exp, codDiff, feeDiff, issues, alreadyReconciled: done.has(sale.id), matchedBy });
-    };
-    // 1) برقم البوليصة أو رقم الفاتورة
-    const leftover = [];
-    rows.forEach((r) => {
-      const sale = index.get(r.ref) || (prefix && r.ref.startsWith(prefix) ? index.get(r.ref.slice(prefix.length)) : null);
-      if (!sale) { leftover.push(r); return; }
-      if (seen.has(sale.id)) { duplicates.push({ ...r, saleId: sale.id }); return; }
-      check(r, sale, 'ref');
-    });
-    // 2) الباقي بتليفون العميل: نفضّل الطلب اللي مبلغه زي المحصل، وبعدين الأقرب في التاريخ
-    const phoneOf = new Map((state.customers || []).map((c) => [c.id, phoneKey(c.phone)]));
-    leftover.forEach((r) => {
-      const cands = r.phone ? (state.sales || []).filter((x) => (!courierId || x.courierId === courierId) && !Acc.isPromo(x) && !seen.has(x.id) && !done.has(x.id)
-        && x.status !== 'cancelled' && phoneOf.get(x.customerId) === r.phone && (!r.date || !x.date || x.date <= r.date)) : [];
-      if (!cands.length) { unmatched.push(r); return; }
-      const st = statusFromText(r.status);
-      const codOf = (x) => expectedFor(st === 'returned' ? { ...x, status: 'returned' } : x).cod;
-      const same = cands.filter((x) => Math.abs(codOf(x) - r.cod) <= 0.5);
-      const pool = same.length ? same : cands.length === 1 ? cands : [];
-      if (!pool.length) { unmatched.push(r); return; }
-      pool.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-      check(r, pool[0], 'phone');
-    });
-    const maxDate = rows.reduce((m, r) => (r.date > m ? r.date : m), '');
-    // طلبات اتسلمت أو رجعت (دفع عند الاستلام) ومش موجودة في الكشف ولا في كشف سابق
-    const missing = (state.sales || []).filter((s) => (!courierId || s.courierId === courierId) && !Acc.isPromo(s) && s.payment === 'cod'
-      && (s.status === 'delivered' || s.status === 'returned') && !seen.has(s.id) && !done.has(s.id) && (!maxDate || s.date <= maxDate))
-      .map((s) => ({ saleId: s.id, date: s.date, expected: expectedFor(s) }));
-    const sum = (list, f) => round2(list.reduce((a, x) => a + f(x), 0));
-    const fresh = matched.filter((m) => !m.alreadyReconciled);
-    const totals = {
-      statementCod: sum(rows, (r) => r.cod), statementFee: sum(rows, (r) => r.fee), statementNet: sum(rows, (r) => r.cod - r.fee),
-      expectedNet: sum(fresh, (m) => m.expected.net), matchedNet: sum(fresh, (m) => m.cod - m.fee),
-      codDiff: sum(fresh, (m) => m.codDiff), feeDiff: sum(fresh, (m) => m.feeDiff),
-      missingNet: sum(missing, (m) => m.expected.net), unmatchedNet: sum(unmatched, (r) => r.cod - r.fee),
-      issues: matched.filter((m) => m.issues.length).length,
-    };
-    return { matched, unmatched, duplicates, missing, totals, maxDate };
   }
 
   // =====================================================================
@@ -225,7 +114,7 @@
       const left = daysBetween(today, sh.dueDate);
       if (left > c.dueDays) return;
       const sup = ((state.suppliers || []).find((x) => x.id === sh.supplierId) || {});
-      push({ type: 'due', level: left < 0 ? 'bad' : 'warn', days: -left, title: left < 0 ? `ميعاد سداد شحنة ${sh.ref || ''} فات من ${-left} يوم` : left === 0 ? `ميعاد سداد شحنة ${sh.ref || ''} النهارده` : `ميعاد سداد شحنة ${sh.ref || ''} بعد ${left} يوم`, detail: `${sup.name || ''} — المتبقي عليها ${round2(owed).toLocaleString('en-US')} ${sup.currency || ''}`, action: 'supplierStatement', id: sh.supplierId });
+      push({ type: 'due', level: left < 0 ? 'bad' : 'warn', days: -left, title: `ميعاد سداد ${sh.local ? 'شراء محلي' : 'شحنة'} ${sh.ref || ''} ${left < 0 ? `فات من ${-left} يوم` : left === 0 ? 'النهارده' : `بعد ${left} يوم`}`, detail: `${sup.name || ''} — المتبقي عليها ${round2(owed).toLocaleString('en-US')} ${sup.currency || ''}`, action: 'supplierStatement', id: sh.supplierId });
     });
 
     // منتجات راكدة: عليها رصيد وما اتباعتش من مدة
@@ -403,7 +292,7 @@
     return { total: { ...total, loss: round2(total.loss), rate: total.orders ? total.returned / total.orders : 0 }, gov: rows('gov'), courier: rows('courier'), channel: rows('channel'), reason: rows('reason') };
   }
 
-  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, STATEMENT_FIELDS, parseStatement, statusFromText, reconcile, expectedFor, FEE_CALC_DEFAULTS, courierFeeCalc, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
+  const api = { RETURN_REASONS, RISKY_REASONS, phoneKey, customerRisk, returnAnalysis, dueRecurring, expectedFor, FEE_CALC_DEFAULTS, courierFeeCalc, reconciledSales, unsettledByCourier, shipmentOutstanding, ALERT_DEFAULTS, alerts, waPhone, waLink, C128, code128, barcodeSvg, validBarcode, findByCode, autoBarcode, productCode, daysBetween };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OPS = api;
 })(typeof window !== 'undefined' ? window : globalThis);
