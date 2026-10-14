@@ -130,37 +130,22 @@ test('campaign performance: spend, CPA and ROAS', () => {
   near(r.netProfit, 1825 - 1500);
 });
 
-test('courier statement reconciliation finds differences and missing orders', () => {
+test('manual courier reconciliation: expected net per order, settled orders leave the pending list', () => {
   const s = baseState();
   s.adjustments.push({ id: 'a1', date: '2026-01-01', productId: 'p1', qty: 10, unitCost: 500, reason: 'opening' });
   const sale = (id, no, extra) => ({ id, no, date: '2026-01-05', status: 'delivered', items: [{ productId: 'p1', qty: 1, price: 1000 }], courierId: 'bosta', courierFee: 50, payment: 'cod', ...extra });
-  s.sales.push(sale('s1', 1, { trackingNo: 'BST111' }), sale('s2', 2, { trackingNo: 'BST222' }), sale('s3', 3, {}), sale('s4', 4, { status: 'returned', returnFee: 20 }), sale('s5', 5, {}));
-  const sheets = [{ name: 'كشف', rows: [
-    ['كشف حساب بوسطة'],
-    ['رقم البوليصة', 'المبلغ المحصل', 'مصاريف الشحن', 'الحالة'],
-    ['BST111', '1,000', 50, 'تم التسليم'],
-    ['bst222', 1000, 65, 'تم التسليم'],
-    ['FL-3', 900, 50, 'تم التسليم'],
-    ['FL-4', 0, 70, 'مرتجع'],
-    ['XYZ', 300, 40, 'تم التسليم'],
-  ] }];
-  const st = OPS.parseStatement(sheets);
-  assert.equal(st.rows.length, 5);
-  const r = OPS.reconcile(s, 'bosta', st.rows, 'FL-');
-  assert.equal(r.matched.length, 4);
-  assert.equal(r.unmatched.length, 1);
-  const byId = Object.fromEntries(r.matched.map((m) => [m.saleId, m]));
-  assert.equal(byId.s1.issues.length, 0);
-  near(byId.s2.feeDiff, 15);
-  near(byId.s3.codDiff, -100);
-  assert.equal(byId.s4.issues.length, 0); // مرتجع: 50 شحن + 20 مرتجع
-  assert.deepEqual(r.missing.map((m) => m.saleId), ['s5']);
-  near(r.totals.statementNet, 950 + 935 + 850 - 70 + 260);
-  // بعد حفظ التسوية لا يظهر الطلب كمستحق
-  s.reconciliations.push({ id: 'r1', courierId: 'bosta', lines: r.matched.map((m) => ({ saleId: m.saleId })) });
-  const un = OPS.unsettledByCourier(s, '2026-01-31');
+  s.sales.push(sale('s1', 1), sale('s2', 2), sale('s3', 3, { status: 'returned', returnFee: 20 }), sale('s4', 4, { status: 'shipped' }));
+  near(OPS.expectedFor(s.sales.find((x) => x.id === 's1')).net, 950);
+  near(OPS.expectedFor(s.sales.find((x) => x.id === 's3')).net, -70, 'returned: no cash, shipping + return fee');
+  let un = OPS.unsettledByCourier(s, '2026-01-31');
+  assert.equal(un.bosta.count, 3, 'shipped orders are not due yet');
+  near(un.bosta.net, 950 + 950 - 70);
+  assert.equal(un.bosta.days, 26);
+  s.reconciliations.push({ id: 'r1', courierId: 'bosta', manual: true, lines: [{ saleId: 's1' }, { saleId: 's3' }] });
+  un = OPS.unsettledByCourier(s, '2026-01-31');
   assert.equal(un.bosta.count, 1);
   near(un.bosta.net, 950);
+  assert.ok(OPS.reconciledSales(s).has('s3'));
 });
 
 test('alerts: late orders, supplier due dates, stagnant stock', () => {
