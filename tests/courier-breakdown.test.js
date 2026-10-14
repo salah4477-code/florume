@@ -23,11 +23,11 @@ test('the courier book balance splits into pending orders, orders still out, unl
   const b = Acc.courierBreakdown(s, j, 'b');
   assert.equal(b.balance, Acc.courierBalances(s, j).b);
   assert.equal(b.pending, 850 + 2350 + 7900); assert.equal(b.pendingCount, 3);
-  assert.equal(b.shipped, 500); assert.equal(b.shippedCount, 1);
+  assert.equal(b.shipped, 0, 'an order still with the courier is not owed yet');
   assert.equal(b.unlinkedPaid, 10800); assert.equal(b.unlinkedCount, 2);
   assert.equal(b.expenses, 70);
   assert.equal(parts(b), b.balance, 'the lines add up to the balance');
-  assert.equal(b.balance, 11100 + 500 - 10800 - 70);
+  assert.equal(b.balance, 11100 - 10800 - 70);
   assert.deepEqual(Acc.unlinkedSettlements(s, 'b').map((x) => x.id), ['t1', 't2']);
   assert.equal(Acc.courierBreakdown(s, j, 'a').balance, 0);
 });

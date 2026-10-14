@@ -285,7 +285,7 @@
         ${actions(waButton(x), btn('تعديل', 'editSale', x.id), btn('حذف', 'delSale', x.id, 'danger'))}</tr>`;
     });
     return `
-      ${header('المبيعات والطلبات', 'كل طلب يُسجَّل كإيراد عند خروجه مع شركة الشحن، وتُحسب تكلفته بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn" data-action="newPromo">+ فاتورة دعاية</button><button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
+      ${header('المبيعات والطلبات', 'الطلب بيتسجل مبيعات لما يتسلم للعميل (بتاريخ التسليم). وهو مع شركة الشحن بضاعته بتبان «بضاعة مع شركات الشحن» ومش بتزوّد المستحق على الشركة. التكلفة بمتوسط تكلفة المخزون.', `${periodBar()}<button class="btn" data-action="newPromo">+ فاتورة دعاية</button><button class="btn btn-primary" data-action="newSale">+ طلب جديد</button>`)}
       <div class="filters">
         <input type="search" id="f-q" placeholder="بحث برقم الفاتورة أو البوليصة أو العميل أو الموبايل" value="${esc(saleFilter.q)}" data-input="saleQ">
         ${UI.select('fkind', { '': 'كل الفواتير', sale: 'فواتير بيع', promo: 'فواتير دعاية' }, saleFilter.kind, 'data-change="saleKindFilter" aria-label="نوع الفاتورة"')}
@@ -471,6 +471,9 @@
         ${UI.field('عينة هدية مع الطلب', UI.select('sampleProductId', [{ v: '', l: 'من غير عينة' }, ...S().products.map((p) => ({ v: p.id, l: productLabel(p) }))], sample0.productId || ''), { cls: 'sale-only', hint: 'تتخصم من المخزون وتتحسب مصروف عينات' })}
         ${UI.field('عدد العينات', UI.input('sampleQty', sample0.qty || 1, 'type="number" min="1" step="1"'), { cls: 'sale-only sample-qty' })}
       </div>
+      <div class="form-grid delivered-fields" hidden>
+        ${UI.field('تاريخ التسليم', UI.input('deliveredDate', sale.deliveredDate || (sale.status === 'delivered' ? sale.date : (today() < sale.date ? sale.date : today())), 'type="date"'), { hint: 'المبيعات والمستحق على شركة الشحن بيتسجلوا بالتاريخ ده' })}
+      </div>
       <div class="form-grid return-fields" hidden>
         ${UI.field('سبب المرتجع', UI.select('returnReason', RETURN_OPTS(), sale.returnReason || ''), { req: true, hint: 'بيساعدك تعرف المرتجع جاي منين، وبينبهك من العملاء اللي بيرفضوا' })}
         ${UI.field('تاريخ المرتجع', UI.input('returnDate', sale.returnDate || today(), 'type="date"'))}
@@ -576,6 +579,7 @@
           f.querySelector('.new-customer').hidden = f.customerId.value !== '__new';
           f.querySelector('#f-cName').required = f.customerId.value === '__new';
           f.querySelector('.return-fields').hidden = f.status.value !== 'returned';
+          f.querySelector('.delivered-fields').hidden = f.status.value !== 'delivered';
           f.querySelector('.lost-fields').hidden = f.status.value !== 'lost';
           riskBox(f, sale.id);
           f.querySelectorAll('.prepaid-only').forEach((el) => (el.hidden = promo || f.payment.value === 'cod'));
@@ -615,7 +619,7 @@
         if (status === 'returned' && !fd.get('returnReason')) { f.returnReason.focus(); return fail('اختار سبب المرتجع'); }
         const obj = { ...sale, returnReason: status === 'returned' ? fd.get('returnReason') : '', kind: promo ? 'promo' : 'sale', date: fd.get('date'), customerId: fd.get('customerId'), channel: fd.get('channel'), status, items: merged.items, campaignId: fd.get('campaignId'), trackingNo: fd.get('trackingNo').trim(),
           discount: promo ? 0 : num(fd.get('discount')), shippingCharged: promo ? 0 : num(fd.get('shippingCharged')), payment: promo ? 'cod' : fd.get('payment'),
-          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), openPackage: fd.get('openPackage') === 'on', declaredValue: fd.get('declaredValue') === '' ? null : num(fd.get('declaredValue')), returnDate: status === 'returned' ? fd.get('returnDate') : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
+          courierId: fd.get('courierId'), courierFee: num(fd.get('courierFee')), openPackage: fd.get('openPackage') === 'on', declaredValue: fd.get('declaredValue') === '' ? null : num(fd.get('declaredValue')), returnDate: status === 'returned' ? fd.get('returnDate') : '', deliveredDate: status === 'delivered' ? (!sale.deliveredDate && sale.status === 'delivered' && fd.get('deliveredDate') === sale.date ? '' : fd.get('deliveredDate')) : (sale.returns || []).length ? sale.deliveredDate || '' : '', returnFee: status === 'returned' ? num(fd.get('returnFee')) : 0, notes: fd.get('notes'),
           refundAccountId: status === 'returned' ? fd.get('refundAccountId') : '', lostDate: status === 'lost' ? fd.get('lostDate') : '', compensation: status === 'lost' ? num(fd.get('compensation')) : 0, lostRefundAccountId: status === 'lost' ? fd.get('lostRefundAccountId') : '',
           samples: !promo && fd.get('sampleProductId') ? [{ productId: fd.get('sampleProductId'), qty: num(fd.get('sampleQty')) || 1 }] : [] };
         // كود الخصم وعمولة المؤثر وعمولة الدفع بتتحفظ رقم ثابت وقت الحفظ
@@ -2760,13 +2764,15 @@
       const sale = DB.find('sales', el.dataset.id);
       const upd = { ...sale, status: el.value };
       if (el.value === 'returned' && !upd.returnDate) upd.returnDate = today() < sale.date ? sale.date : today();
+      // التسليم: المبيعات بتتسجل بتاريخ النهارده (تقدر تعدله من الفاتورة)
+      if (el.value === 'delivered' && !upd.deliveredDate) upd.deliveredDate = today() < sale.date ? sale.date : today();
       if (RULES.lockedSaleChanges(S(), sale, upd).length) { fail('الفاتورة داخلة في تسوية مع شركة الشحن — الحالة مقفولة'); render(); return; }
       if (el.value === 'returned' && !isPromo(sale)) { returnQuickForm(sale); return; }
       const stock = RULES.checkSaleStock(S(), J(), upd, sale);
       if (stock.errors.length) { fail(stockMsg(stock.errors, upd.status)); render(); return; }
       upd.preorder = stock.preorder;
       DB.upsert('sales', upd);
-      UI.toast(el.value === 'returned' ? 'تم تسجيل المرتجع — عدّل الطلب لإضافة مصاريف المرتجع' : `الحالة: ${STATUSES[el.value]}`);
+      UI.toast(el.value === 'returned' ? 'تم تسجيل المرتجع — عدّل الطلب لإضافة مصاريف المرتجع' : el.value === 'delivered' ? `اتسلم — المبيعات اتسجلت بتاريخ ${fmtDate(upd.deliveredDate)}` : `الحالة: ${STATUSES[el.value]}`);
       render();
     },
     importFile: (el) => { const file = el.files[0]; if (!file) return; const r = new FileReader(); r.onload = () => importState(r.result); r.readAsText(file); },

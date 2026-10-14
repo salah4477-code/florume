@@ -127,11 +127,14 @@ test('full cycle: books balance and the balance sheet ties out', () => {
   const bs = Acc.balanceSheet(s, j, '2026-01-31');
   assert.ok(bs.balanced, JSON.stringify(bs));
   const is = Acc.incomeStatement(s, j, '2026-01-01', '2026-01-31');
-  near(is.grossSales, 3900 + 1800);
+  // s2 لسه مع شركة الشحن: مش مبيعات لسه (بتتسجل عند التسليم)، وفلوسه المدفوعة مقدم دفعة مقدمة من العميل
+  near(is.grossSales, 3900);
+  near((bs.liabilities.find((l) => /دفعات مقدمة من العملاء/.test(l.name)) || {}).amount, 1800);
+  assert.ok((bs.assets.find((a) => a.name === 'بضاعة مع شركات الشحن') || {}).amount > 0);
   near(is.discounts, 100);
   near(is.shippingIncome, 60);
   // الربح المحتجز في الميزانية = صافي الربح
   near(bs.equity[2].amount, is.netProfit);
-  // courier: 3860 COD - 55 - 55 fees - 3805 settled = -55 (we owe for prepaid order)
-  near(Acc.courierBalances(s, j).bosta, -55);
+  // courier: 3860 COD - 55 fee - 3805 settled = 0؛ مصاريف الطلب اللي لسه مع الشحن بتتسجل لما يتسلم أو يرجع
+  near(Acc.courierBalances(s, j).bosta, 0);
 });
