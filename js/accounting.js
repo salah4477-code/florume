@@ -285,13 +285,19 @@
   }
 
   // ---------- أرصدة الموردين بالعملة الأجنبية وفروق العملة ----------
+  // الشراء المحلي: بيتدفع من حساب، أو من جيب صاحب المشروع / شريك (زيادة رأس مال)، أو آجل على المورد
+  const LOCAL_PAY = { account: 'دفع من حساب', capital: 'من جيبي (زيادة رأس مال)', credit: 'آجل على المورد' };
+  const localPaid = (sh) => (sh.payMode || 'account') !== 'credit';
   function computeSuppliers(state, asOf) {
     const events = [];
     let seq = 0;
     (state.shipments || []).forEach((sh) => {
       if (sh.status === 'cancelled') return;
       const c = shipmentCosting(sh);
+      if (!sh.supplierId) return; // شراء محلي من مورد مش متسجل
       if (c.goodsForeign) events.push({ kind: 'purchase', date: sh.orderDate, seq: seq++, supplierId: sh.supplierId, foreign: c.goodsForeign, rate: c.rate, ref: { type: 'shipment', id: sh.id } });
+      // شراء محلي مدفوع على طول (من حساب أو من جيبك): الدفعة بتقفل حساب المورد في نفس اليوم
+      if (sh.local && localPaid(sh) && c.goodsForeign) events.push({ kind: 'payment', date: sh.orderDate, seq: seq++, supplierId: sh.supplierId, foreign: -c.goodsForeign, rate: 1, ref: { type: 'localPay', id: sh.id } });
     });
     (state.supplierPayments || []).forEach((p) =>
       events.push({ kind: 'payment', date: p.date, seq: seq++, supplierId: p.supplierId, foreign: -num(p.amount), rate: num(p.rate) || 1, ref: { type: 'supplierPayment', id: p.id } })
@@ -317,7 +323,7 @@
         if (Math.abs(b.foreign) < EPS) { b.foreign = 0; b.egp = 0; }
       }
       const adj = round2(b.egp - (before + x * ev.rate));
-      fx[ev.ref.id] = adj;
+      fx[ev.ref.type === 'localPay' ? ev.ref.id + ':pay' : ev.ref.id] = adj;
       lines.push({ ...ev, egp: round2(x * ev.rate), fx: adj, balanceForeign: round2(b.foreign), balanceEGP: round2(b.egp) });
     }
     Object.values(balances).forEach((b) => { b.foreign = round2(b.foreign); b.egp = round2(b.egp); });
@@ -395,8 +401,17 @@
       const c = shipmentCosting(sh);
       const party = { type: 'supplier', id: sh.supplierId };
       const ref = { type: 'shipment', id: sh.id };
-      const label = `شحنة ${sh.ref || ''} — ${name('suppliers', sh.supplierId)}`;
-      add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsForeign} ${sh.currency} × ${c.rate})`, [
+      const label = sh.local ? `شراء محلي ${sh.ref || ''} — ${sh.supplierId ? name('suppliers', sh.supplierId) : 'مورد مش متسجل'}` : `شحنة ${sh.ref || ''} — ${name('suppliers', sh.supplierId)}`;
+      if (sh.local) {
+        // الدفع: من حساب، أو زيادة رأس مال من جيبك (أو جيب شريك)، أو آجل على المورد
+        const partner = sh.payPartnerId ? { type: 'partner', id: sh.payPartnerId } : undefined;
+        const payCr = (amt) => (sh.payMode === 'capital' ? { acc: '3100', dr: 0, cr: amt, party: partner } : { acc: cashCode(sh.payAccountId), dr: 0, cr: amt });
+        const how = sh.payMode === 'capital' ? `من جيب ${partner ? name('partners', sh.payPartnerId) : 'صاحب المشروع'} — زيادة رأس مال` : sh.payMode === 'credit' ? 'آجل' : `من ${name('accounts', sh.payAccountId)}`;
+        if (sh.supplierId) {
+          add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsEGP} ج.م)`, [{ acc: '1310', dr: c.goodsEGP, cr: 0 }, { acc: '2100', dr: 0, cr: c.goodsEGP, party }, ...fxLines(sup.fx[sh.id] || 0, party)]);
+          if (localPaid(sh)) add(sh.orderDate, 'supplierPayment', ref, `دفع ${label} — ${how}`, [{ acc: '2100', dr: c.goodsEGP, cr: 0, party }, payCr(c.goodsEGP), ...fxLines(sup.fx[sh.id + ':pay'] || 0, party)]);
+        } else add(sh.orderDate, 'supplierPayment', ref, `${label} — ${how}`, [{ acc: '1310', dr: c.goodsEGP, cr: 0 }, payCr(c.goodsEGP)]);
+      } else add(sh.orderDate, 'shipment', ref, `${label} (${c.goodsForeign} ${sh.currency} × ${c.rate})`, [
         { acc: '1310', dr: c.goodsEGP, cr: 0 }, { acc: '2100', dr: 0, cr: c.goodsEGP, party }, ...fxLines(sup.fx[sh.id] || 0, party),
       ]);
       (sh.costs || []).forEach((cost) => {
@@ -850,7 +865,7 @@
         case 'transfer': put('operating', 'عمولات التحويل بين الحسابات', cash); break;
         case 'cashCount': put('operating', 'فروق جرد الخزينة', cash); break;
         case 'decant': put('operating', 'خامات التقسيم والتغليف', cash); break;
-        case 'supplierPayment': put('goods', 'دفعات للموردين (شامل عمولة التحويل)', cash); break;
+        case 'supplierPayment': put('goods', 'مشتريات ودفعات للموردين (شامل عمولة التحويل)', cash); break;
         case 'shipment': put('goods', 'مصاريف شحن وجمارك الشحنات', cash); break;
         case 'formation': put('goods', 'مصروفات التأسيس من حسابات النشاط', cash); break;
         default: put('operating', 'حركات أخرى', cash);
@@ -923,7 +938,7 @@
         else if (e.source === 'adjustment' && l.acc === '3100') r.stock += l.cr - l.dr;
         else if (e.source === 'formation' && l.acc === '3100') r.formationOwn += l.cr;
         else if (e.source === 'formation' && l.acc.startsWith('1100:')) r.formationFromCash += l.cr;
-        else if (e.source === 'equity' && l.acc === '3100') r.added += l.cr - l.dr;
+        else if (l.acc === '3100') r.added += l.cr - l.dr; // إضافات رأس مال (فلوس أو بضاعة اشتريتها من جيبك)
       });
     });
     Object.keys(r).forEach((k) => (r[k] = round2(r[k])));
@@ -967,7 +982,7 @@
   }
 
   const api = {
-    COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
+    LOCAL_PAY, COA, COA_MAP, EXPENSE_CATEGORIES, ADJ_REASONS, FORMATION_KINDS, foundingCapital, EXPENSE_SOURCES, allExpenses, CF_SECTIONS, cashFlow, equityChanges, BOOKED, REVERSED, partialReturns, round2, cashCode, accountName, isPromo,
     COST_BASES, unitWeight, saleTotals, shipmentCosting, computeInventory, computeSuppliers, buildJournal,
     trialBalance, incomeStatement, balanceSheet, ledger, cashBalances, courierBalances,
     saleProfit, productPerformance, channelPerformance, monthlySeries,

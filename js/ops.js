@@ -320,7 +320,7 @@
       const left = daysBetween(today, sh.dueDate);
       if (left > c.dueDays) return;
       const sup = ((state.suppliers || []).find((x) => x.id === sh.supplierId) || {});
-      push({ type: 'due', level: left < 0 ? 'bad' : 'warn', days: -left, title: left < 0 ? `ميعاد سداد شحنة ${sh.ref || ''} فات من ${-left} يوم` : left === 0 ? `ميعاد سداد شحنة ${sh.ref || ''} النهارده` : `ميعاد سداد شحنة ${sh.ref || ''} بعد ${left} يوم`, detail: `${sup.name || ''} — المتبقي عليها ${round2(owed).toLocaleString('en-US')} ${sup.currency || ''}`, action: 'supplierStatement', id: sh.supplierId });
+      push({ type: 'due', level: left < 0 ? 'bad' : 'warn', days: -left, title: `ميعاد سداد ${sh.local ? 'شراء محلي' : 'شحنة'} ${sh.ref || ''} ${left < 0 ? `فات من ${-left} يوم` : left === 0 ? 'النهارده' : `بعد ${left} يوم`}`, detail: `${sup.name || ''} — المتبقي عليها ${round2(owed).toLocaleString('en-US')} ${sup.currency || ''}`, action: 'supplierStatement', id: sh.supplierId });
     });
 
     // منتجات راكدة: عليها رصيد وما اتباعتش من مدة

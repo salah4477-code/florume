@@ -826,13 +826,13 @@
     const s = S();
     const rows = [...s.shipments].sort((a, b) => (a.orderDate < b.orderDate ? 1 : -1)).map((sh) => {
       const c = Acc.shipmentCosting(sh);
-      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>`)}${td(esc(nameOf('suppliers', sh.supplierId)))}${td(fmtDate(sh.orderDate))}
+      return `<tr>${td(`<button class="link-btn strong" data-action="editShipment" data-id="${sh.id}">${esc(sh.ref || '—')}</button>${sh.local ? ' ' + UI.pill('شراء محلي', 'info') : ''}`)}${td(esc(sh.supplierId ? nameOf('suppliers', sh.supplierId) : 'مورد مش متسجل'))}${td(fmtDate(sh.orderDate))}
         ${tdn(`${fmt(c.goodsForeign)} <span class="cur">${sh.currency}</span>`)}${tdn(fmt(c.rate, 4))}${tdn(fmt(c.goodsEGP))}${tdn(fmt(c.extras))}${tdn(`<b>${fmt(c.landedTotal)}</b>`)}${tdn(fmt(c.totalQty))}
         ${td(UI.pill(SHIP_STATUSES[sh.status], statusKind[sh.status]))}
         ${actions(sh.status !== 'received' && sh.status !== 'cancelled' ? btn('استلام', 'receiveShipment', sh.id) : '', btn('تكلفة الوحدة', 'landedShipment', sh.id), btn('حذف', 'delShipment', sh.id, 'danger'))}</tr>`;
     });
-    return `${header('شحنات الاستيراد', 'سعر الصرف ومصاريف الشحن والجمارك تتوزع على الأصناف بنسبة قيمتها لتعطيك تكلفة الوحدة الحقيقية بالجنيه.', '<button class="btn btn-primary" data-action="newShipment">+ شحنة جديدة</button>')}
-      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { desc: true, empty: 'لم تسجل أي شحنة بعد. ابدأ بإضافة مورد ثم شحنة.' })}`;
+    return `${header('المشتريات والاستيراد', 'شحنات الاستيراد: سعر الصرف ومصاريف الشحن والجمارك تتوزع على الأصناف بنسبة قيمتها لتعطيك تكلفة الوحدة الحقيقية بالجنيه. والشراء المحلي: بضاعة من مورد في مصر بتدخل المخزن على طول.', '<button class="btn" data-action="newLocalPurchase">+ شراء محلي</button><button class="btn btn-primary" data-action="newShipment">+ شحنة استيراد</button>')}
+      ${table(['المرجع', 'المورد', 'تاريخ الطلب', '#قيمة البضاعة', '#سعر الصرف', '#القيمة بالجنيه', '#مصاريف إضافية', '#التكلفة الكلية', '#القطع', 'الحالة', ''], rows, { desc: true, empty: 'لسه ما سجلتش مشتريات. شحنة استيراد: ابدأ بإضافة مورد. شراء محلي: اضغط «+ شراء محلي».' })}`;
   }
 
   function shipLineRow(it = {}) {
@@ -851,30 +851,50 @@
       <td><button type="button" class="icon-btn" data-line-remove aria-label="حذف السطر">✕</button></td></tr>`;
   }
 
-  function shipmentForm(sh) {
+  // الشراء المحلي: مورد في مصر بالجنيه، البضاعة بتدخل المخزن على طول، والدفع من حساب أو من جيبك (رأس مال) أو آجل
+  const localSuppliers = () => S().suppliers.filter((x) => x.currency === 'EGP');
+  function shipmentForm(sh, opts = {}) {
     const s = S();
-    if (!s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
+    const local = sh ? !!sh.local : !!opts.local;
+    if (!local && !s.suppliers.length) { UI.toast('أضف موردًا أولًا من شاشة الموردين', 'bad'); location.hash = 'suppliers'; return; }
     const isNew = !sh || !!sh.__draft;
     if (sh && sh.__draft) { sh = { ...sh }; delete sh.__draft; }
-    const sup0 = s.suppliers[0];
-    sh = sh || { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' };
-    const body = `
+    const sup0 = local ? localSuppliers()[0] || { id: '', currency: 'EGP' } : s.suppliers[0];
+    sh = sh || (local
+      ? { id: uid(), local: true, ref: '', supplierId: sup0.id, currency: 'EGP', rate: 1, orderDate: today(), status: 'received', receivedDate: today(), items: [{ qty: 1 }], costs: [], notes: '', payMode: 'account', payAccountId: (s.accounts.find((a) => a.type === 'cash') || s.accounts[0] || {}).id, payPartnerId: '' }
+      : { id: uid(), ref: '', supplierId: sup0.id, currency: sup0.currency, rate: s.settings.rates[sup0.currency] || 1, orderDate: today(), status: 'ordered', receivedDate: '', items: [{ qty: 1 }], costs: [{ label: 'شحن وجمارك', basis: 'weight' }], notes: '' });
+    const supOpts = local ? [{ v: '', l: 'مورد مش متسجل (محل / تاجر)' }, ...localSuppliers().map((x) => ({ v: x.id, l: x.name }))] : s.suppliers.map((x) => ({ v: x.id, l: `${x.name} (${COUNTRIES[x.country] || ''})` }));
+    const head = local ? `
+      <div class="form-grid">
+        ${UI.field('رقم فاتورة المورد / اسم المحل', UI.input('ref', sh.ref, 'placeholder="مثال: فاتورة 1520 — محل العطار"'))}
+        ${UI.field('المورد', UI.select('supplierId', supOpts, sh.supplierId || ''), { hint: 'الموردين اللي عملتهم بالجنيه (مصر). أضف مورد من شاشة الموردين لو عايز تتابع حسابه' })}
+        ${UI.field('التاريخ', UI.input('orderDate', sh.orderDate, 'type="date" required'), { req: true, hint: 'البضاعة بتدخل المخزن في نفس اليوم' })}
+        <input type="hidden" name="currency" value="EGP"><input type="hidden" name="rate" value="1"><input type="hidden" name="status" value="received"><input type="hidden" name="receivedDate" value="">
+      </div>
+      <h3 class="sub-title">الدفع</h3>
+      <div class="form-grid">
+        ${UI.field('دفعت منين؟', UI.select('payMode', Acc.LOCAL_PAY, sh.payMode || 'account'))}
+        ${UI.field('من حساب', UI.select('payAccountId', accountOptions(), sh.payAccountId), { cls: 'pay-acc' })}
+        ${UI.field('من جيب مين', UI.select('payPartnerId', [{ v: '', l: 'صاحب المشروع' }, ...s.partners.map((p) => ({ v: p.id, l: p.name }))], sh.payPartnerId || ''), { cls: 'pay-partner', hint: 'المبلغ بيتسجل زيادة في رأس المال' })}
+        ${UI.field('ميعاد السداد', UI.input('dueDate', sh.dueDate || '', 'type="date"'), { cls: 'pay-due', hint: 'هيظهرلك تنبيه قبل الميعاد لو لسه عليك رصيد' })}
+      </div>` : `
       <div class="form-grid">
         ${UI.field('رقم / مرجع الشحنة', UI.input('ref', sh.ref, 'placeholder="مثال: SA-2610"'))}
-        ${UI.field('المورد', UI.select('supplierId', s.suppliers.map((x) => ({ v: x.id, l: `${x.name} (${COUNTRIES[x.country] || ''})` })), sh.supplierId), { req: true })}
+        ${UI.field('المورد', UI.select('supplierId', supOpts, sh.supplierId), { req: true })}
         ${UI.field('عملة الفاتورة', UI.select('currency', CURRENCIES, sh.currency))}
         ${UI.field('سعر الصرف (جنيه لكل وحدة)', UI.input('rate', sh.rate, 'type="number" min="0" step="0.0001" required'), { req: true, hint: 'السعر الذي حوّلت به فعليًا' })}
         ${UI.field('تاريخ الطلب', UI.input('orderDate', sh.orderDate, 'type="date" required'), { req: true })}
         ${UI.field('الحالة', UI.select('status', SHIP_STATUSES, sh.status))}
         ${UI.field('تاريخ الاستلام', UI.input('receivedDate', sh.receivedDate || today(), 'type="date"'), { cls: 'recv-field' })}
         ${UI.field('ميعاد سداد المورد', UI.input('dueDate', sh.dueDate || '', 'type="date"'), { hint: 'هيظهرلك تنبيه قبل الميعاد لو لسه عليك رصيد' })}
-      </div>
-      <h3 class="sub-title">الأصناف (بسعر المورد)</h3>
+      </div>`;
+    const body = `${head}
+      <h3 class="sub-title">الأصناف (${local ? 'بسعر الشراء بالجنيه' : 'بسعر المورد'})</h3>
       <div class="table-wrap"><table class="lines"><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة <span class="cur-label"></span></th><th class="num">بالجنيه</th><th class="num">تكلفة الوحدة الواصلة</th><th></th></tr></thead>
         <tbody id="lines">${sh.items.map(shipLineRow).join('')}</tbody></table></div>
       <div class="btn-row"><button type="button" class="btn btn-small" id="add-line">+ إضافة صنف</button><button type="button" class="btn btn-small" id="new-product">+ تكويد صنف جديد</button></div>
-      <h3 class="sub-title">مصاريف الشحن والجمارك بالجنيه</h3>
-      <p class="muted">لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
+      <h3 class="sub-title">${local ? 'مصاريف إضافية (نقل، توصيل…) — اختياري' : 'مصاريف الشحن والجمارك بالجنيه'}</h3>
+      <p class="muted" ${local ? 'hidden' : ''}>لو بتدفع الشحن والجمارك مع بعض، سجّلهم في سطر واحد. «الوزن / الحجم» بيدي القطعة الكبيرة نصيب أكبر: بياخد وزن الشحن من المنتج، ولو مش متسجل ياخد حجمه بالمللي، والبوكس بيتحسب بمجموع قطعه.</p>
       <div class="table-wrap"><table class="lines"><thead><tr><th>البند</th><th>المبلغ</th><th>يتوزع حسب</th><th>دُفع من</th><th>تاريخ الدفع</th><th></th></tr></thead>
         <tbody id="costs">${sh.costs.map(costRow).join('')}</tbody></table></div>
       <button type="button" class="btn btn-small" id="add-cost">+ إضافة مصروف</button>
@@ -883,12 +903,13 @@
       <div class="summary" id="ship-summary"></div>`;
     const read = (f) => ({
       ...sh, ref: f.ref.value.trim(), supplierId: f.supplierId.value, currency: f.currency.value, rate: num(f.rate.value), orderDate: f.orderDate.value, status: f.status.value,
-      receivedDate: f.status.value === 'received' ? f.receivedDate.value : '', dueDate: f.dueDate.value, notes: f.notes.value,
+      receivedDate: local ? f.orderDate.value : f.status.value === 'received' ? f.receivedDate.value : '', dueDate: local && f.payMode.value !== 'credit' ? '' : f.dueDate.value, notes: f.notes.value,
+      ...(local ? { local: true, payMode: f.payMode.value, payAccountId: f.payMode.value === 'account' ? f.payAccountId.value : '', payPartnerId: f.payMode.value === 'capital' ? f.payPartnerId.value : '' } : {}),
       items: [...f.querySelectorAll('#lines .line')].map((r) => ({ productId: r.querySelector('.l-product').value, qty: num(r.querySelector('.l-qty').value), unitCost: num(r.querySelector('.l-cost').value) })).filter((l) => l.productId && l.qty > 0),
       costs: [...f.querySelectorAll('#costs .cost')].map((r) => ({ label: r.querySelector('.c-label').value.trim() || 'شحن وجمارك', amount: num(r.querySelector('.c-amount').value), basis: r.querySelector('.c-basis').value, accountId: r.querySelector('.c-account').value, date: r.querySelector('.c-date').value })).filter((c) => c.amount > 0),
     });
     UI.modal({
-      title: isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
+      title: local ? (isNew ? 'شراء محلي' : `تعديل الشراء المحلي ${esc(sh.ref)}`) : isNew ? 'شحنة استيراد جديدة' : `تعديل الشحنة ${esc(sh.ref)}`, body, wide: true,
       onOpen(f) {
         const lines = f.querySelector('#lines'), costs = f.querySelector('#costs');
         comboLines(lines, { allowNew: true });
@@ -902,7 +923,10 @@
           if (!ww.hidden) ww.innerHTML = `<b>${c.missingWeight.filter(Boolean).map((id) => esc(productLabel(productById(id)))).join('، ')}</b> ملوش وزن شحن ولا حجم بالمللي، فالمصاريف اتوزعت مؤقتًا بعدد القطع. سجّل الوزن أو الحجم في المنتج عشان التوزيع يبقى بالحجم.`;
           allRows.forEach((r, i) => { r.querySelector('.l-egp').textContent = fmt(c.lines[i].egp); r.querySelector('.l-landed').textContent = fmt(c.lines[i].landedUnit); });
           f.querySelector('.cur-label').textContent = `(${draft.currency})`;
-          f.querySelector('.recv-field').hidden = draft.status !== 'received';
+          if (local) {
+            const m = f.payMode.value;
+            f.querySelector('.pay-acc').hidden = m !== 'account'; f.querySelector('.pay-partner').hidden = m !== 'capital' || !S().partners.length; f.querySelector('.pay-due').hidden = m !== 'credit';
+          } else f.querySelector('.recv-field').hidden = draft.status !== 'received';
           f.querySelector('#ship-summary').innerHTML = `<div><span>قيمة البضاعة</span><b>${fmt(c.goodsForeign)} ${draft.currency}</b></div><div><span>بالجنيه</span><b>${fmt(c.goodsEGP)}</b></div><div><span>مصاريف إضافية</span><b>${fmt(c.extras)}</b></div><div class="strong"><span>التكلفة الكلية الواصلة</span><b>${fmt(c.landedTotal)} ج.م</b></div><div><span>عدد القطع</span><b>${fmt(c.totalQty)}</b></div><div><span>نسبة المصاريف للبضاعة</span><b>${pct(c.goodsEGP ? c.extras / c.goodsEGP : 0)}</b></div>`;
         };
         const addLine = () => { lines.insertAdjacentHTML('beforeend', shipLineRow({ qty: 1 })); comboLines(lines.lastElementChild, { allowNew: true }); recalc(); return lines.lastElementChild; };
@@ -917,8 +941,8 @@
         });
         f.querySelector('#add-cost').addEventListener('click', () => { costs.insertAdjacentHTML('beforeend', costRow({})); recalc(); });
         f.addEventListener('click', (e) => { const b = e.target.closest('[data-line-remove]'); if (b) { const tr = b.closest('tr'); if (tr.classList.contains('cost') || lines.children.length > 1) { tr.remove(); recalc(); } } });
-        f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) { f.currency.value = sp.currency; f.rate.value = S().settings.rates[sp.currency] || 1; } recalc(); });
-        f.currency.addEventListener('change', () => { f.rate.value = f.currency.value === 'EGP' ? 1 : S().settings.rates[f.currency.value] || f.rate.value; recalc(); });
+        if (!local) f.supplierId.addEventListener('change', () => { const sp = DB.find('suppliers', f.supplierId.value); if (sp) { f.currency.value = sp.currency; f.rate.value = S().settings.rates[sp.currency] || 1; } recalc(); });
+        if (!local) f.currency.addEventListener('change', () => { f.rate.value = f.currency.value === 'EGP' ? 1 : S().settings.rates[f.currency.value] || f.rate.value; recalc(); });
         f.addEventListener('input', recalc); f.addEventListener('change', recalc);
         recalc();
       },
@@ -926,12 +950,14 @@
         const obj = read(f);
         if (!obj.items.length) { UI.toast('أضف صنفًا واحدًا على الأقل', 'bad'); return false; }
         if (!(obj.rate > 0)) return fail('سعر الصرف لازم يكون أكبر من صفر');
-        if (!dateOk(obj.orderDate, 'تاريخ الطلب')) return false;
+        if (local && obj.payMode === 'credit' && !obj.supplierId) return fail('الشراء الآجل لازم يكون على مورد متسجل — اختار المورد أو غيّر طريقة الدفع');
+        if (local && obj.payMode === 'account' && !obj.payAccountId) return fail('اختار الحساب اللي دفعت منه');
+        if (!dateOk(obj.orderDate, local ? 'تاريخ الشراء' : 'تاريخ الطلب')) return false;
         const shErr = RULES.shipmentDateError(obj);
         if (shErr) return fail(shErr);
         if (!cashOk(f, RULES.withDoc(S(), 'shipments', obj))) return false;
         DB.upsert('shipments', obj);
-        UI.toast(isNew ? 'تم تسجيل الشحنة' : 'تم حفظ الشحنة');
+        UI.toast(local ? (isNew ? 'تم تسجيل الشراء ودخلت البضاعة المخزن' : 'تم حفظ الشراء') : isNew ? 'تم تسجيل الشحنة' : 'تم حفظ الشحنة');
         render();
       },
     });
@@ -1036,7 +1062,7 @@
     const labels = { in: 'وارد', sale: 'بيع', return: 'مرتجع', outAdj: 'تسوية بالخصم', decantOut: 'تفريغ / فك', decantIn: 'وارد من تقسيم / فك' };
     const rows = J().inventory.movements.filter((m) => m.productId === p.id).map((m) => {
       let ref = '';
-      if (m.src.type === 'shipment') ref = 'شحنة ' + ((DB.find('shipments', m.src.id) || {}).ref || '');
+      if (m.src.type === 'shipment') { const x = DB.find('shipments', m.src.id) || {}; ref = (x.local ? 'شراء محلي ' : 'شحنة ') + (x.ref || ''); }
       else if (m.src.type === 'sale') { const x = DB.find('sales', m.src.id) || {}; ref = `${isPromo(x) ? 'فاتورة دعاية' : 'فاتورة'} ${invoiceNo(x)}`; }
       else if (m.src.type === 'decant') { const d = DB.find('decants', m.src.id) || {}; ref = `${d.kind === 'unbox' ? 'فك بوكس' : 'تقسيم عبوة'} ${productLabel(productById(d.sourceProductId))}`; }
       else ref = Acc.ADJ_REASONS[(DB.find('adjustments', m.src.id) || {}).reason] || 'تسوية';
@@ -1119,7 +1145,8 @@
   function supplierStatement(x) {
     const lines = J().suppliers.lines.filter((l) => l.supplierId === x.id);
     const rows = lines.map((l) => {
-      const doc = l.ref.type === 'shipment' ? `شحنة ${esc((DB.find('shipments', l.ref.id) || {}).ref || '')}` : `دفعة ${esc((DB.find('supplierPayments', l.ref.id) || {}).notes || '')}`;
+      const shOf = (id) => DB.find('shipments', id) || {};
+      const doc = l.ref.type === 'shipment' ? `${shOf(l.ref.id).local ? 'شراء محلي' : 'شحنة'} ${esc(shOf(l.ref.id).ref || '')}` : l.ref.type === 'localPay' ? `دفع شراء محلي ${esc(shOf(l.ref.id).ref || '')} — ${esc(Acc.LOCAL_PAY[shOf(l.ref.id).payMode] || '')}` : `دفعة ${esc((DB.find('supplierPayments', l.ref.id) || {}).notes || '')}`;
       return `<tr>${td(fmtDate(l.date))}${td(doc)}${tdn(l.foreign > 0 ? fmt(l.foreign) : '')}${tdn(l.foreign < 0 ? fmt(-l.foreign) : '')}${tdn(fmt(l.rate, 4))}${tdn(l.fx ? `<span class="${l.fx > 0 ? 'bad-text' : 'good-text'}">${fmt(l.fx)}</span>` : '—')}${tdn(fmt(l.balanceForeign))}${tdn(fmt(l.balanceEGP))}</tr>`;
     });
     UI.modal({ title: `كشف حساب — ${esc(x.name)}`, wide: true, tools: { title: `كشف حساب المورد — ${x.name}`, subtitle: `العملة: ${x.currency}`, file: `supplier-statement` },
@@ -2497,7 +2524,7 @@
   const ACTIONS = {
     newSale: () => saleForm(), newPromo: () => saleForm(null, 'promo'), editSale: (id) => saleForm(DB.find('sales', id)), viewSale: (id) => viewSale(DB.find('sales', id)),
     delSale: (id) => del('sales', id, 'هذا الطلب', () => RULES.isReconciled(S(), id) && 'الفاتورة داخلة في تسوية مع شركة الشحن — احذف التسوية الأول'),
-    newShipment: () => shipmentForm(), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
+    newShipment: () => shipmentForm(), newLocalPurchase: () => shipmentForm(null, { local: true }), editShipment: (id) => shipmentForm(DB.find('shipments', id)), landedShipment: (id) => landedView(DB.find('shipments', id)),
     delShipment: (id) => del('shipments', id, 'هذه الشحنة'),
     receiveShipment: (id) => {
       const sh = DB.find('shipments', id);
@@ -2647,7 +2674,7 @@
   const PAGES = {
     dashboard: { title: 'لوحة التحكم', render: dashboard, period: true },
     sales: { title: 'المبيعات والطلبات', render: sales, period: true },
-    shipments: { title: 'شحنات الاستيراد', render: shipments },
+    shipments: { title: 'المشتريات والاستيراد', render: shipments },
     products: { title: 'المنتجات والمخزون', render: products },
     suppliers: { title: 'الموردين', render: suppliers },
     customers: { title: 'العملاء', render: customers },
@@ -2826,7 +2853,7 @@
     sheets.push(sheet('العملاء', ['م', 'الاسم', 'الموبايل', 'المحافظة', 'العنوان', 'الطلبات', 'اتسلم', 'مرتجع', 'رفض'], s.customers.map((c, i) => { const r = OPS.customerRisk(s, c.id); return [i + 1, c.name, c.phone || '', c.city || '', c.address || '', r.orders, r.delivered, r.returned, r.refused]; })));
     sheets.push(sheet('الموردين', ['م', 'المورد', 'البلد', 'العملة', 'الموبايل', 'ملاحظات'], s.suppliers.map((x, i) => [i + 1, x.name, x.country || '', x.currency || '', x.phone || '', x.notes || ''])));
     if (costs) {
-      sheets.push(sheet('شحنات الاستيراد', ['م', 'المرجع', 'المورد', 'العملة', 'سعر الصرف', 'تاريخ الطلب', 'الحالة', 'تاريخ الاستلام', 'قيمة البضاعة بالعملة', 'مصاريف إضافية ج.م'], s.shipments.map((x, i) => [i + 1, x.ref || '', nm('suppliers', x.supplierId), x.currency, num(x.rate), x.orderDate, SHIP_STATUSES[x.status] || x.status, x.receivedDate || '', Acc.round2(x.items.reduce((a, l) => a + num(l.qty) * num(l.unitCost), 0)), Acc.round2((x.costs || []).reduce((a, c) => a + num(c.amount), 0))])));
+      sheets.push(sheet('المشتريات والاستيراد', ['م', 'النوع', 'المرجع', 'المورد', 'العملة', 'سعر الصرف', 'تاريخ الطلب', 'الحالة', 'تاريخ الاستلام', 'قيمة البضاعة بالعملة', 'مصاريف إضافية ج.م'], s.shipments.map((x, i) => [i + 1, x.local ? `شراء محلي — ${Acc.LOCAL_PAY[x.payMode] || ''}` : 'استيراد', x.ref || '', x.supplierId ? nm('suppliers', x.supplierId) : 'مورد مش متسجل', x.currency, num(x.rate), x.orderDate, SHIP_STATUSES[x.status] || x.status, x.receivedDate || '', Acc.round2(x.items.reduce((a, l) => a + num(l.qty) * num(l.unitCost), 0)), Acc.round2((x.costs || []).reduce((a, c) => a + num(c.amount), 0))])));
       sheets.push(sheet('دفعات الموردين', ['م', 'التاريخ', 'المورد', 'المبلغ بالعملة', 'سعر الصرف', 'بالجنيه', 'من حساب'], s.supplierPayments.map((x, i) => [i + 1, x.date, nm('suppliers', x.supplierId), num(x.amount), num(x.rate), Acc.round2(num(x.amount) * (num(x.rate) || 1)), nm('accounts', x.accountId)])));
       sheets.push(sheet('المصروفات', ['م', 'التاريخ', 'البند', 'المبلغ', 'من حساب', 'الحملة', 'البيان'], s.expenses.map((x, i) => [i + 1, x.date, (Acc.COA_MAP[x.category] || {}).name || x.category, num(x.amount), x.courierId ? `رصيد ${nm('couriers', x.courierId)}` : nm('accounts', x.accountId), nm('campaigns', x.campaignId), x.notes || ''])));
       sheets.push(sheet('مصروفات التأسيس', ['م', 'التاريخ', 'البند', 'المبلغ', 'اتدفع', 'البيان'], s.formation.map((x, i) => [i + 1, x.date, Acc.FORMATION_KINDS[x.kind] || '', num(x.amount), payerLabel(x), x.notes || ''])));
@@ -2843,7 +2870,7 @@
     FX.exportExcel(`${s.settings.businessName || 'florume'}-كل-البيانات-${today()}.xlsx`, sheets.filter((x) => x.rows.length), { business: s.settings.businessName, subtitle: `كل البيانات حتى ${fmtDate(today())}` });
   }
   // ---------- البحث السريع (Ctrl+K) ----------
-  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses'], ['تصدير كل البيانات Excel', 'exportAll', 'reports']];
+  const QUICK_ACTIONS = [['طلب جديد', 'newSale', 'sales'], ['مصروف جديد', 'newExpense', 'expenses'], ['تحصيل من شركة شحن', 'newSettlement', 'treasury'], ['تحويل بين الحسابات', 'newTransfer', 'treasury'], ['جرد الخزينة', 'newCashCount', 'treasury'], ['شحنة استيراد جديدة', 'newShipment', 'shipments'], ['شراء محلي (بضاعة من مورد في مصر)', 'newLocalPurchase', 'shipments'], ['منتج جديد', 'newProduct', 'products'], ['عميل جديد', 'newCustomer', 'customers'], ['مصروف تأسيس', 'newFormation', 'expenses'], ['تصدير كل البيانات Excel', 'exportAll', 'reports']];
   function searchResults(q) {
     const s = S(), out = [];
     const n = (t) => IMP.normName(IMP.latinDigits(String(t || ''))).toLowerCase();
